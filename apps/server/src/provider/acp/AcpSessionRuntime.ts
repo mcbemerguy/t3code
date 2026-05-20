@@ -546,7 +546,9 @@ const makeAcpSessionRuntime = (
       setConfigOption,
       setModel: (model) =>
         getStartedState.pipe(
-          Effect.flatMap((started) => setConfigOption(started.modelConfigId ?? "model", model)),
+          Effect.flatMap((started) =>
+            started.modelConfigId ? setConfigOption(started.modelConfigId, model) : Effect.void,
+          ),
           Effect.asVoid,
         ),
       request: (method, payload) =>

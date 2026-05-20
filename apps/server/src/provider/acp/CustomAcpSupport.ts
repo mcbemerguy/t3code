@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import type * as EffectAcpErrors from "effect-acp/errors";
+import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
 import {
@@ -25,6 +25,14 @@ export interface CustomAcpSelectOption {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function toCustomAcpSettingsError(cause: unknown): EffectAcpErrors.AcpTransportError {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  return new EffectAcpErrors.AcpTransportError({
+    detail: `Invalid Custom ACP settings: ${message}`,
+    cause,
+  });
 }
 
 function parseShellWords(line: string): ReadonlyArray<string> {
@@ -208,15 +216,24 @@ export const makeCustomAcpRuntime = (
 ): Effect.Effect<AcpSessionRuntimeShape, EffectAcpErrors.AcpError, Scope.Scope> =>
   Effect.gen(function* () {
     const { childProcessSpawner, settings, environment, ...runtimeInput } = input;
-    const authMethodId = normalizeCustomAcpAuthMethodId(settings.authMethodId);
+    const parsedSettings = yield* Effect.try({
+      try: () => ({
+        authMethodId: normalizeCustomAcpAuthMethodId(settings.authMethodId),
+        spawn: buildCustomAcpSpawnInput(settings, input.cwd, environment),
+        clientCapabilities: buildCustomAcpClientCapabilities(settings),
+      }),
+      catch: toCustomAcpSettingsError,
+    });
     const runtimeOptions = {
       ...runtimeInput,
-      spawn: buildCustomAcpSpawnInput(settings, input.cwd, environment),
-      clientCapabilities: buildCustomAcpClientCapabilities(settings),
+      spawn: parsedSettings.spawn,
+      clientCapabilities: parsedSettings.clientCapabilities,
     } satisfies Omit<AcpSessionRuntimeOptions, "authMethodId">;
     const acpContext = yield* Layer.build(
       AcpSessionRuntime.layer(
-        authMethodId ? { ...runtimeOptions, authMethodId } : runtimeOptions,
+        parsedSettings.authMethodId
+          ? { ...runtimeOptions, authMethodId: parsedSettings.authMethodId }
+          : runtimeOptions,
       ).pipe(
         Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner)),
       ),

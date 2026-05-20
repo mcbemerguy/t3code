@@ -18,6 +18,7 @@ const emitInterleavedAssistantToolCalls =
   process.env.T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS === "1";
 const emitGenericToolPlaceholders = process.env.T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS === "1";
 const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
+const omitModelConfig = process.env.T3_ACP_OMIT_MODEL_CONFIG === "1";
 const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
@@ -52,6 +53,12 @@ process.once("exit", (code) => {
   logExit(`exit:${code}`);
 });
 
+function maybeOmitModelConfig(
+  options: ReadonlyArray<AcpSchema.SessionConfigOption>,
+): ReadonlyArray<AcpSchema.SessionConfigOption> {
+  return omitModelConfig ? options.filter((option) => option.category !== "model") : options;
+}
+
 function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
   if (parameterizedModelPicker) {
     const baseOptions: Array<AcpSchema.SessionConfigOption> = [
@@ -84,7 +91,7 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
 
     switch (currentModelId) {
       case "gpt-5.4":
-        return [
+        return maybeOmitModelConfig([
           ...baseOptions,
           {
             id: "reasoning",
@@ -122,9 +129,9 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
               { value: "true", name: "Fast" },
             ],
           },
-        ];
+        ]);
       case "composer-2":
-        return [
+        return maybeOmitModelConfig([
           ...baseOptions,
           {
             id: "fast",
@@ -137,9 +144,9 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
               { value: "true", name: "Fast" },
             ],
           },
-        ];
+        ]);
       case "claude-opus-4-6":
-        return [
+        return maybeOmitModelConfig([
           ...baseOptions,
           {
             id: "reasoning",
@@ -160,13 +167,13 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
             type: "boolean",
             currentValue: true,
           },
-        ];
+        ]);
       default:
-        return baseOptions;
+        return maybeOmitModelConfig(baseOptions);
     }
   }
 
-  return [
+  return maybeOmitModelConfig([
     {
       id: "model",
       name: "Model",
@@ -180,7 +187,7 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
         { value: "gpt-5.3-codex[reasoning=medium,fast=false]", name: "Codex 5.3" },
       ],
     },
-  ];
+  ]);
 }
 
 const availableModes: ReadonlyArray<AcpSchema.SessionMode> = [

@@ -150,6 +150,19 @@ describe("Custom ACP provider", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("falls back to the default model when ACP discovery exposes no model config", () =>
+    Effect.gen(function* () {
+      const snapshot = yield* checkCustomAcpProviderStatus(
+        makeCustomAcpSettings({ env: envText({ T3_ACP_OMIT_MODEL_CONFIG: "1" }) }),
+      );
+      assert.equal(snapshot.status, "ready");
+      assert.deepStrictEqual(
+        snapshot.models.map((model) => model.slug),
+        ["default"],
+      );
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("starts, prompts, streams events, and records the custom ACP resume cursor", () =>
     Effect.gen(function* () {
       const adapter = yield* makeGenericAcpAdapter(makeCustomAcpSettings(), {
@@ -321,6 +334,65 @@ describe("Custom ACP provider", () => {
             (entry.params as Record<string, unknown> | undefined)?.value === "composer-2",
         ),
       ).toBe(true);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("does not write a fallback model when the ACP server exposes no model config", () =>
+    Effect.gen(function* () {
+      const requestLog = yield* Effect.promise(() => tempFile("no-model-config.jsonl"));
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({ T3_ACP_OMIT_MODEL_CONFIG: "1", T3_ACP_REQUEST_LOG_PATH: requestLog }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-no-model-config");
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: customAcpInstanceId, model: "default" },
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "no model config",
+        attachments: [],
+        modelSelection: { instanceId: customAcpInstanceId, model: "composer-2" },
+      });
+      yield* adapter.stopSession(threadId);
+
+      const entries = yield* Effect.promise(() => readJsonLines(requestLog));
+      expect(
+        entries.some(
+          (entry) =>
+            entry.method === "session/set_config_option" &&
+            (entry.params as Record<string, unknown> | undefined)?.configId === "model",
+        ),
+      ).toBe(false);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("returns a typed adapter error for invalid custom ACP env settings", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeGenericAcpAdapter(makeCustomAcpSettings({ env: "BROKEN_ENV" }), {
+        instanceId: customAcpInstanceId,
+      });
+      const failed = yield* adapter
+        .startSession({
+          threadId: ThreadId.make("custom-acp-invalid-env"),
+          provider: customAcpDriver,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.exit);
+
+      assert.isTrue(Exit.isFailure(failed));
+      if (Exit.isFailure(failed)) {
+        assert.match(Cause.pretty(failed.cause), /ProviderAdapterProcessError/);
+        assert.match(Cause.pretty(failed.cause), /Invalid Custom ACP env line 1/);
+      }
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 });
