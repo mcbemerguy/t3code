@@ -57,6 +57,23 @@ describe("CustomAcpSupport", () => {
     ).toEqual(["acp", "--profile", "work profile", "--path", "C:\\Users\\Name With Spaces\\agent"]);
   });
 
+  it("preserves literal backslashes in unquoted and double-quoted args", () => {
+    expect(
+      parseCustomAcpArgs(String.raw`
+        --path C:\Users\Name\agent
+        --quoted "C:\Users\Name With Spaces\agent"
+        --regex ^\w+\s+$
+      `),
+    ).toEqual([
+      "--path",
+      String.raw`C:\Users\Name\agent`,
+      "--quoted",
+      String.raw`C:\Users\Name With Spaces\agent`,
+      "--regex",
+      String.raw`^\w+\s+$`,
+    ]);
+  });
+
   it("parses env KEY=value lines", () => {
     expect(
       parseCustomAcpEnv(`

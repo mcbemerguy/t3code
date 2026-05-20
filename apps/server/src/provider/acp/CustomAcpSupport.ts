@@ -21,16 +21,11 @@ function parseShellWords(line: string): ReadonlyArray<string> {
   const args: string[] = [];
   let current = "";
   let quote: "'" | '"' | undefined;
-  let escaping = false;
   let hasToken = false;
 
-  for (const char of line) {
-    if (escaping) {
-      current += char;
-      hasToken = true;
-      escaping = false;
-      continue;
-    }
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line.charAt(index);
+    const next = line[index + 1];
 
     if (quote === "'") {
       if (char === "'") {
@@ -45,8 +40,10 @@ function parseShellWords(line: string): ReadonlyArray<string> {
     if (quote === '"') {
       if (char === '"') {
         quote = undefined;
-      } else if (char === "\\") {
-        escaping = true;
+      } else if (char === "\\" && next === '"') {
+        current += next;
+        hasToken = true;
+        index += 1;
       } else {
         current += char;
         hasToken = true;
@@ -54,8 +51,10 @@ function parseShellWords(line: string): ReadonlyArray<string> {
       continue;
     }
 
-    if (char === "\\") {
-      escaping = true;
+    if (char === "\\" && next !== undefined && (/\s/u.test(next) || next === "'" || next === '"')) {
+      current += next;
+      hasToken = true;
+      index += 1;
       continue;
     }
     if (char === "'" || char === '"') {
@@ -63,7 +62,7 @@ function parseShellWords(line: string): ReadonlyArray<string> {
       hasToken = true;
       continue;
     }
-    if (/\s/.test(char)) {
+    if (/\s/u.test(char)) {
       if (hasToken) {
         args.push(current);
         current = "";
@@ -76,10 +75,6 @@ function parseShellWords(line: string): ReadonlyArray<string> {
     hasToken = true;
   }
 
-  if (escaping) {
-    current += "\\";
-    hasToken = true;
-  }
   if (quote) {
     throw new Error("Invalid Custom ACP arguments: unterminated quoted string");
   }

@@ -40,7 +40,10 @@ export function extractAskQuestions(params: AskQuestionRequest): ReadonlyArray<U
       options:
         options.length > 0
           ? options.map((option) => {
-              const label = nonEmptyOrFallback(option.label, option.id || "Option");
+              const label = nonEmptyOrFallback(
+                option.label,
+                nonEmptyOrFallback(option.id, "Option"),
+              );
               return {
                 label,
                 description: label,

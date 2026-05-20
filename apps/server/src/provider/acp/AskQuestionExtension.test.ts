@@ -50,6 +50,26 @@ describe("AskQuestionExtension", () => {
     ]);
   });
 
+  it("uses non-empty option label fallbacks", () => {
+    expect(
+      extractAskQuestions({
+        questions: [
+          {
+            id: "choice",
+            prompt: "Pick one",
+            options: [
+              { id: " fallback ", label: "  " },
+              { id: "  ", label: "  " },
+            ],
+          },
+        ],
+      })[0]?.options,
+    ).toEqual([
+      { label: "fallback", description: "fallback" },
+      { label: "Option", description: "Option" },
+    ]);
+  });
+
   it("returns the ACP response envelope with T3 answers", () => {
     const answers = { scope: "Workspace", files: ["A", "B"] };
     expect(makeAskQuestionResponse(answers)).toEqual({ answers });
