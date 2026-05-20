@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ProviderDriverKind } from "@t3tools/contracts";
 
-import { DRIVER_OPTION_BY_VALUE } from "./providerDriverMeta";
+import { DRIVER_OPTION_BY_VALUE, PROVIDER_CLIENT_DEFINITIONS } from "./providerDriverMeta";
 import {
   deriveProviderSettingsFields,
   nextProviderConfigWithFieldValue,
@@ -34,6 +34,29 @@ describe("ProviderSettingsForm helpers", () => {
       description: "Stored in plain text on disk.",
       control: "password",
     });
+  });
+
+  it("exposes Custom ACP as an active primitive provider definition", () => {
+    const activeValues = PROVIDER_CLIENT_DEFINITIONS.map((definition) => definition.value);
+    expect(activeValues).toContain(ProviderDriverKind.make("customAcp"));
+    expect(activeValues).not.toContain(ProviderDriverKind.make("acpRegistry"));
+
+    const customAcp = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("customAcp")];
+    expect(customAcp).toBeDefined();
+    expect(customAcp!.label).toBe("Custom ACP");
+
+    const fields = deriveProviderSettingsFields(customAcp!);
+    expect(fields.map((field) => [field.key, field.control])).toEqual([
+      ["command", "text"],
+      ["args", "textarea"],
+      ["env", "textarea"],
+      ["authMethodId", "text"],
+      ["askQuestionEnabled", "switch"],
+      ["askQuestionMethod", "text"],
+      ["manualModels", "textarea"],
+      ["clientCapabilitiesMetaJson", "textarea"],
+    ]);
+    expect(fields.some((field) => field.key === "displayName")).toBe(false);
   });
 
   it("preserves unknown config keys while omitting empty configurable fields", () => {

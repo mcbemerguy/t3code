@@ -101,4 +101,28 @@ describe("buildProviderInstanceUpdatePatch", () => {
     expect(patch.providerInstances?.[instanceId]).toEqual(nextInstance);
     expect(patch.providers).toBeUndefined();
   });
+
+  it("updates Custom ACP explicit instances without creating a legacy provider mirror", () => {
+    const instanceId = ProviderInstanceId.make("customAcp_local");
+    const nextInstance = {
+      driver: ProviderDriverKind.make("customAcp"),
+      displayName: "Local ACP",
+      enabled: true,
+      config: {
+        command: "pi",
+        args: "acp",
+      },
+    } satisfies ProviderInstanceConfig;
+
+    const patch = buildProviderInstanceUpdatePatch({
+      settings: DEFAULT_SERVER_SETTINGS,
+      instanceId,
+      instance: nextInstance,
+      driver: ProviderDriverKind.make("customAcp"),
+      isDefault: false,
+    });
+
+    expect(patch.providerInstances?.[instanceId]).toEqual(nextInstance);
+    expect(patch.providers).toBeUndefined();
+  });
 });

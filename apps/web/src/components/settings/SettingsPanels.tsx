@@ -117,7 +117,9 @@ function withoutProviderInstanceFavorites(
   return favorites.filter((favorite) => favorite.provider !== instanceId);
 }
 
-const PROVIDER_SETTINGS = DRIVER_OPTIONS.map((definition) => ({
+const PROVIDER_SETTINGS = DRIVER_OPTIONS.filter((definition) =>
+  Object.hasOwn(DEFAULT_UNIFIED_SETTINGS.providers, definition.value),
+).map((definition) => ({
   provider: definition.value,
 }));
 
