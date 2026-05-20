@@ -2,26 +2,12 @@
  * Public Docs: https://cursor.com/docs/cli/acp#cursor-extension-methods
  * Additional reference provided by the Cursor team: https://anysphere.enterprise.slack.com/files/U068SSJE141/F0APT1HSZRP/cursor-acp-extension-method-schemas.md
  */
-import type { UserInputQuestion } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
-const CursorAskQuestionOption = Schema.Struct({
-  id: Schema.String,
-  label: Schema.String,
-});
-
-const CursorAskQuestion = Schema.Struct({
-  id: Schema.String,
-  prompt: Schema.String,
-  options: Schema.Array(CursorAskQuestionOption),
-  allowMultiple: Schema.optional(Schema.Boolean),
-});
-
-export const CursorAskQuestionRequest = Schema.Struct({
-  toolCallId: Schema.String,
-  title: Schema.optional(Schema.String),
-  questions: Schema.Array(CursorAskQuestion),
-});
+export {
+  AskQuestionRequest as CursorAskQuestionRequest,
+  extractAskQuestions,
+} from "./AskQuestionExtension.ts";
 
 const CursorTodoStatus = Schema.String;
 
@@ -52,24 +38,6 @@ export const CursorUpdateTodosRequest = Schema.Struct({
   todos: Schema.Array(CursorTodo),
   merge: Schema.Boolean,
 });
-
-export function extractAskQuestions(
-  params: typeof CursorAskQuestionRequest.Type,
-): ReadonlyArray<UserInputQuestion> {
-  return params.questions.map((question) => ({
-    id: question.id,
-    header: "Question",
-    question: question.prompt,
-    multiSelect: question.allowMultiple === true,
-    options:
-      question.options.length > 0
-        ? question.options.map((option) => ({
-            label: option.label,
-            description: option.label,
-          }))
-        : [{ label: "OK", description: "Continue" }],
-  }));
-}
 
 export function extractPlanMarkdown(params: typeof CursorCreatePlanRequest.Type): string {
   return params.plan || "# Plan\n\n(Cursor did not supply plan text.)";

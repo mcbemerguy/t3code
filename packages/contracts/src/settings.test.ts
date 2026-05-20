@@ -2,11 +2,52 @@ import { describe, expect, it } from "vitest";
 import * as Schema from "effect/Schema";
 
 import { ProviderInstanceId } from "./providerInstance.ts";
-import { DEFAULT_SERVER_SETTINGS, ServerSettings, ServerSettingsPatch } from "./settings.ts";
+import {
+  CustomAcpSettings,
+  DEFAULT_SERVER_SETTINGS,
+  ServerSettings,
+  ServerSettingsPatch,
+} from "./settings.ts";
 
+const decodeCustomAcpSettings = Schema.decodeUnknownSync(CustomAcpSettings);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
+
+describe("CustomAcpSettings", () => {
+  it("decodes provider-form-compatible defaults without adding a legacy providers entry", () => {
+    const decoded = decodeCustomAcpSettings({});
+
+    expect(decoded).toEqual({
+      enabled: true,
+      command: "",
+      args: "",
+      env: "",
+      authMethodId: "",
+      askQuestionEnabled: true,
+      askQuestionMethod: "cursor/ask_question",
+      manualModels: "",
+      clientCapabilitiesMetaJson: "",
+    });
+    expect("customAcp" in DEFAULT_SERVER_SETTINGS.providers).toBe(false);
+  });
+
+  it("trims primitive command and method fields while preserving textarea strings", () => {
+    const decoded = decodeCustomAcpSettings({
+      command: "  /usr/local/bin/acp-agent  ",
+      args: "  --flag value  ",
+      env: "  FOO=bar  ",
+      authMethodId: "  login  ",
+      askQuestionMethod: "  custom/ask  ",
+    });
+
+    expect(decoded.command).toBe("/usr/local/bin/acp-agent");
+    expect(decoded.args).toBe("  --flag value  ");
+    expect(decoded.env).toBe("  FOO=bar  ");
+    expect(decoded.authMethodId).toBe("login");
+    expect(decoded.askQuestionMethod).toBe("custom/ask");
+  });
+});
 
 describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   it("defaults to an empty record so legacy configs without the key still decode", () => {

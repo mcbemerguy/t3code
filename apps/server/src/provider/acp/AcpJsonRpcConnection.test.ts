@@ -35,6 +35,10 @@ describe("AcpSessionRuntime", () => {
           _meta: { parameterizedModelPicker: true },
         },
       });
+      const authenticateStarted = requestEvents.find(
+        (event) => event.method === "authenticate" && event.status === "started",
+      );
+      expect(authenticateStarted?.payload).toEqual({ methodId: "test" });
     }).pipe(
       Effect.provide(
         AcpSessionRuntime.layer({
@@ -50,6 +54,36 @@ describe("AcpSessionRuntime", () => {
           },
           clientInfo: { name: "t3-test", version: "0.0.0" },
           authMethodId: "test",
+          requestLogger: (event) =>
+            Effect.sync(() => {
+              requestEvents.push(event);
+            }),
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    );
+  });
+
+  it.effect("skips authenticate when no auth method is configured", () => {
+    const requestEvents: Array<AcpSessionRequestLogEvent> = [];
+    return Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime;
+      const started = yield* runtime.start();
+
+      expect(started.sessionId).toBe("mock-session-1");
+      expect(requestEvents.map((event) => event.method)).toContain("initialize");
+      expect(requestEvents.map((event) => event.method)).toContain("session/new");
+      expect(requestEvents.some((event) => event.method === "authenticate")).toBe(false);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: bunExe,
+            args: [mockAgentPath],
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
           requestLogger: (event) =>
             Effect.sync(() => {
               requestEvents.push(event);
