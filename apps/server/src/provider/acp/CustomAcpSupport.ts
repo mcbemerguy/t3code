@@ -1,8 +1,18 @@
 import type { CustomAcpSettings, ServerProviderModel } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Scope from "effect/Scope";
+import { ChildProcessSpawner } from "effect/unstable/process";
+import type * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
-import type { AcpSpawnInput } from "./AcpSessionRuntime.ts";
+import {
+  AcpSessionRuntime,
+  type AcpSessionRuntimeOptions,
+  type AcpSessionRuntimeShape,
+  type AcpSpawnInput,
+} from "./AcpSessionRuntime.ts";
 
 const EMPTY_CUSTOM_ACP_MODEL_CAPABILITIES = createModelCapabilities({ optionDescriptors: [] });
 const DEFAULT_CUSTOM_ACP_FALLBACK_MODEL = "default";
@@ -170,8 +180,12 @@ export function normalizeCustomAcpAuthMethodId(
   return normalized ? normalized : undefined;
 }
 
-export function buildCustomAcpSpawnInput(settings: CustomAcpSettings, cwd: string): AcpSpawnInput {
-  const env = parseCustomAcpEnv(settings.env);
+export function buildCustomAcpSpawnInput(
+  settings: CustomAcpSettings,
+  cwd: string,
+  environment?: NodeJS.ProcessEnv,
+): AcpSpawnInput {
+  const env = { ...environment, ...parseCustomAcpEnv(settings.env) };
   return {
     command: settings.command.trim(),
     args: parseCustomAcpArgs(settings.args),
@@ -179,6 +193,36 @@ export function buildCustomAcpSpawnInput(settings: CustomAcpSettings, cwd: strin
     ...(Object.keys(env).length > 0 ? { env } : {}),
   };
 }
+
+export interface CustomAcpRuntimeInput extends Omit<
+  AcpSessionRuntimeOptions,
+  "authMethodId" | "clientCapabilities" | "spawn"
+> {
+  readonly childProcessSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
+  readonly settings: CustomAcpSettings;
+  readonly environment?: NodeJS.ProcessEnv;
+}
+
+export const makeCustomAcpRuntime = (
+  input: CustomAcpRuntimeInput,
+): Effect.Effect<AcpSessionRuntimeShape, EffectAcpErrors.AcpError, Scope.Scope> =>
+  Effect.gen(function* () {
+    const { childProcessSpawner, settings, environment, ...runtimeInput } = input;
+    const authMethodId = normalizeCustomAcpAuthMethodId(settings.authMethodId);
+    const runtimeOptions = {
+      ...runtimeInput,
+      spawn: buildCustomAcpSpawnInput(settings, input.cwd, environment),
+      clientCapabilities: buildCustomAcpClientCapabilities(settings),
+    } satisfies Omit<AcpSessionRuntimeOptions, "authMethodId">;
+    const acpContext = yield* Layer.build(
+      AcpSessionRuntime.layer(
+        authMethodId ? { ...runtimeOptions, authMethodId } : runtimeOptions,
+      ).pipe(
+        Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner)),
+      ),
+    );
+    return yield* Effect.service(AcpSessionRuntime).pipe(Effect.provide(acpContext));
+  });
 
 export function buildCustomAcpClientCapabilities(
   settings: Pick<CustomAcpSettings, "clientCapabilitiesMetaJson">,
