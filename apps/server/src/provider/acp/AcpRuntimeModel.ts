@@ -1,6 +1,8 @@
 import type * as EffectAcpSchema from "effect-acp/schema";
 import { deriveToolActivityPresentation } from "@t3tools/shared/toolActivity";
-import type { ToolLifecycleItemType } from "@t3tools/contracts";
+import type { ServerProviderSlashCommand, ToolLifecycleItemType } from "@t3tools/contracts";
+
+import { normalizeAcpAvailableCommandsToSlashCommands } from "./AcpAvailableCommands.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -47,6 +49,11 @@ export type AcpParsedSessionEvent =
       readonly modeId: string;
     }
   | {
+      readonly _tag: "AvailableCommandsUpdated";
+      readonly commands: ReadonlyArray<ServerProviderSlashCommand>;
+      readonly rawPayload: unknown;
+    }
+  | {
       readonly _tag: "AssistantItemStarted";
       readonly itemId: string;
     }
@@ -67,6 +74,7 @@ export type AcpParsedSessionEvent =
   | {
       readonly _tag: "ContentDelta";
       readonly itemId?: string;
+      readonly messageId?: string;
       readonly text: string;
       readonly rawPayload: unknown;
     };
@@ -424,6 +432,14 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
       }
       break;
     }
+    case "available_commands_update": {
+      events.push({
+        _tag: "AvailableCommandsUpdated",
+        commands: normalizeAcpAvailableCommandsToSlashCommands(upd.availableCommands),
+        rawPayload: params,
+      });
+      break;
+    }
     case "plan": {
       const plan = upd.entries.map((entry, index) => ({
         step: entry.content.trim().length > 0 ? entry.content.trim() : `Step ${index + 1}`,
@@ -466,8 +482,10 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
     }
     case "agent_message_chunk": {
       if (upd.content.type === "text" && upd.content.text.length > 0) {
+        const messageId = typeof upd.messageId === "string" ? upd.messageId.trim() : "";
         events.push({
           _tag: "ContentDelta",
+          ...(messageId ? { messageId } : {}),
           text: upd.content.text,
           rawPayload: params,
         });

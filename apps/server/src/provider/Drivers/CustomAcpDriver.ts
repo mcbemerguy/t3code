@@ -1,6 +1,9 @@
 import { CustomAcpSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -81,16 +84,34 @@ export const CustomAcpDriver: ProviderDriver<CustomAcpSettings, CustomAcpDriverE
         continuationGroupKey: continuationIdentity.continuationKey,
       });
       const effectiveConfig = { ...config, enabled } satisfies CustomAcpSettings;
+      // Phase 1 stores ACP slash commands at provider-instance scope. If multiple cwd-specific sessions report different commands, the latest session update wins.
+      const slashCommandsRef = yield* Ref.make<Option.Option<ServerProvider["slashCommands"]>>(
+        Option.none(),
+      );
+      const slashCommandsPubSub = yield* PubSub.unbounded<ServerProvider["slashCommands"]>();
+      const updateSlashCommands = (commands: ServerProvider["slashCommands"]) =>
+        Ref.set(slashCommandsRef, Option.some(commands)).pipe(
+          Effect.andThen(PubSub.publish(slashCommandsPubSub, commands)),
+          Effect.asVoid,
+        );
 
       const adapter = yield* makeGenericAcpAdapter(effectiveConfig, {
         provider: DRIVER_KIND,
         environment: processEnv,
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         instanceId,
+        onSlashCommandsUpdated: updateSlashCommands,
       });
       const textGeneration = yield* makeCustomAcpTextGeneration(effectiveConfig, processEnv);
       const checkProvider = checkCustomAcpProviderStatus(effectiveConfig, processEnv).pipe(
         Effect.map(stampIdentity),
+        Effect.flatMap((snapshot) =>
+          Ref.get(slashCommandsRef).pipe(
+            Effect.map((cached) =>
+              Option.isSome(cached) ? { ...snapshot, slashCommands: cached.value } : snapshot,
+            ),
+          ),
+        ),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       );
 
@@ -102,6 +123,20 @@ export const CustomAcpDriver: ProviderDriver<CustomAcpSettings, CustomAcpDriverE
         initialSnapshot: (settings) =>
           buildInitialCustomAcpProviderSnapshot(settings).pipe(Effect.map(stampIdentity)),
         checkProvider,
+        enrichSnapshot: ({ getSnapshot, publishSnapshot }) => {
+          const publishCommands = (slashCommands: ServerProvider["slashCommands"]) =>
+            getSnapshot.pipe(
+              Effect.flatMap((current) => publishSnapshot({ ...current, slashCommands })),
+            );
+          return Ref.get(slashCommandsRef).pipe(
+            Effect.flatMap((slashCommands) =>
+              Option.isSome(slashCommands) ? publishCommands(slashCommands.value) : Effect.void,
+            ),
+            Effect.andThen(
+              Stream.runForEach(Stream.fromPubSub(slashCommandsPubSub), publishCommands),
+            ),
+          );
+        },
         refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
       }).pipe(
         Effect.mapError(

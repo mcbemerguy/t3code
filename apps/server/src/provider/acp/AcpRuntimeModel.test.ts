@@ -245,6 +245,48 @@ describe("AcpRuntimeModel", () => {
     ]);
   });
 
+  it("parses available_commands_update into a normalized session event", () => {
+    const parsed = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "available_commands_update",
+        availableCommands: [
+          {
+            name: "/mock",
+            description: " Mock command ",
+            input: { hint: " args " },
+          },
+        ],
+      },
+    });
+
+    expect(parsed.events).toEqual([
+      {
+        _tag: "AvailableCommandsUpdated",
+        commands: [
+          {
+            name: "mock",
+            description: "Mock command",
+            input: { hint: "args" },
+          },
+        ],
+        rawPayload: {
+          sessionId: "session-1",
+          update: {
+            sessionUpdate: "available_commands_update",
+            availableCommands: [
+              {
+                name: "/mock",
+                description: " Mock command ",
+                input: { hint: " args " },
+              },
+            ],
+          },
+        },
+      },
+    ]);
+  });
+
   it("keeps permission request parsing compatible with loose extension payloads", () => {
     const request = parsePermissionRequest({
       sessionId: "session-1",

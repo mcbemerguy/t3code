@@ -11,6 +11,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import * as EffectAcpClient from "effect-acp/client";
 import * as EffectAcpErrors from "effect-acp/errors";
+import type { ServerProviderSlashCommand } from "@t3tools/contracts";
 import type * as EffectAcpSchema from "effect-acp/schema";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
 
@@ -92,6 +93,11 @@ export interface AcpSessionRuntimeShape {
   readonly start: () => Effect.Effect<AcpSessionRuntimeStartResult, EffectAcpErrors.AcpError>;
   readonly getEvents: () => Stream.Stream<AcpParsedSessionEvent, never>;
   readonly getModeState: Effect.Effect<AcpSessionModeState | undefined>;
+  readonly getAvailableCommands: Effect.Effect<ReadonlyArray<ServerProviderSlashCommand>>;
+  readonly getAvailableCommandsState: Effect.Effect<{
+    readonly commands: ReadonlyArray<ServerProviderSlashCommand>;
+    readonly updateCount: number;
+  }>;
   readonly getConfigOptions: Effect.Effect<ReadonlyArray<EffectAcpSchema.SessionConfigOption>>;
   readonly prompt: (
     payload: Omit<EffectAcpSchema.PromptRequest, "sessionId">,
@@ -128,6 +134,7 @@ type AcpStartState =
 interface AcpAssistantSegmentState {
   readonly nextSegmentIndex: number;
   readonly activeItemId?: string;
+  readonly activeAcpMessageId?: string;
 }
 
 interface EnsureActiveAssistantSegmentResult {
@@ -162,6 +169,8 @@ const makeAcpSessionRuntime = (
     const eventQueue = yield* Queue.unbounded<AcpParsedSessionEvent>();
     const modeStateRef = yield* Ref.make<AcpSessionModeState | undefined>(undefined);
     const toolCallsRef = yield* Ref.make(new Map<string, AcpToolCallState>());
+    const availableCommandsRef = yield* Ref.make<ReadonlyArray<ServerProviderSlashCommand>>([]);
+    const availableCommandsUpdateCountRef = yield* Ref.make(0);
     const assistantSegmentRef = yield* Ref.make<AcpAssistantSegmentState>({ nextSegmentIndex: 0 });
     const configOptionsRef = yield* Ref.make(sessionConfigOptionsFromSetup(undefined));
     const startStateRef = yield* Ref.make<AcpStartState>({ _tag: "NotStarted" });
@@ -235,6 +244,8 @@ const makeAcpSessionRuntime = (
         queue: eventQueue,
         modeStateRef,
         toolCallsRef,
+        availableCommandsRef,
+        availableCommandsUpdateCountRef,
         assistantSegmentRef,
         params: notification,
       }),
@@ -500,6 +511,11 @@ const makeAcpSessionRuntime = (
       start: () => start,
       getEvents: () => Stream.fromQueue(eventQueue),
       getModeState: Ref.get(modeStateRef),
+      getAvailableCommands: Ref.get(availableCommandsRef),
+      getAvailableCommandsState: Effect.all({
+        commands: Ref.get(availableCommandsRef),
+        updateCount: Ref.get(availableCommandsUpdateCountRef),
+      }),
       getConfigOptions: Ref.get(configOptionsRef),
       prompt: (payload) =>
         getStartedState.pipe(
@@ -585,12 +601,16 @@ const handleSessionUpdate = ({
   queue,
   modeStateRef,
   toolCallsRef,
+  availableCommandsRef,
+  availableCommandsUpdateCountRef,
   assistantSegmentRef,
   params,
 }: {
   readonly queue: Queue.Queue<AcpParsedSessionEvent>;
   readonly modeStateRef: Ref.Ref<AcpSessionModeState | undefined>;
   readonly toolCallsRef: Ref.Ref<Map<string, AcpToolCallState>>;
+  readonly availableCommandsRef: Ref.Ref<ReadonlyArray<ServerProviderSlashCommand>>;
+  readonly availableCommandsUpdateCountRef: Ref.Ref<number>;
   readonly assistantSegmentRef: Ref.Ref<AcpAssistantSegmentState>;
   readonly params: EffectAcpSchema.SessionNotification;
 }): Effect.Effect<void> =>
@@ -602,6 +622,12 @@ const handleSessionUpdate = ({
       );
     }
     for (const event of parsed.events) {
+      if (event._tag === "AvailableCommandsUpdated") {
+        yield* Ref.set(availableCommandsRef, event.commands);
+        yield* Ref.update(availableCommandsUpdateCountRef, (count) => count + 1);
+        yield* Queue.offer(queue, event);
+        continue;
+      }
       if (event._tag === "ToolCallUpdated") {
         yield* closeActiveAssistantSegment({
           queue,
@@ -635,10 +661,23 @@ const handleSessionUpdate = ({
             continue;
           }
         }
+        const currentSegment = yield* Ref.get(assistantSegmentRef);
+        if (
+          event.messageId &&
+          currentSegment.activeItemId &&
+          currentSegment.activeAcpMessageId !== event.messageId
+        ) {
+          yield* closeActiveAssistantSegment({
+            queue,
+            assistantSegmentRef,
+          });
+        }
+
         const itemId = yield* ensureActiveAssistantSegment({
           queue,
           assistantSegmentRef,
           sessionId: params.sessionId,
+          ...(event.messageId ? { acpMessageId: event.messageId } : {}),
         });
         yield* Queue.offer(queue, {
           ...event,
@@ -683,10 +722,12 @@ const ensureActiveAssistantSegment = ({
   queue,
   assistantSegmentRef,
   sessionId,
+  acpMessageId,
 }: {
   readonly queue: Queue.Queue<AcpParsedSessionEvent>;
   readonly assistantSegmentRef: Ref.Ref<AcpAssistantSegmentState>;
   readonly sessionId: string;
+  readonly acpMessageId?: string;
 }) =>
   Ref.modify<AcpAssistantSegmentState, EnsureActiveAssistantSegmentResult>(
     assistantSegmentRef,
@@ -706,6 +747,7 @@ const ensureActiveAssistantSegment = ({
         {
           nextSegmentIndex: current.nextSegmentIndex + 1,
           activeItemId: itemId,
+          ...(acpMessageId ? { activeAcpMessageId: acpMessageId } : {}),
         } satisfies AcpAssistantSegmentState,
       ] as const;
     },

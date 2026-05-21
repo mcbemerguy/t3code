@@ -13,6 +13,8 @@ import {
   type ProviderInstanceConfigMap,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
+  type ServerProvider,
+  type ServerProviderSlashCommand,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -161,6 +163,125 @@ describe("Custom ACP provider", () => {
         ["default"],
       );
     }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("includes ACP available commands from provider status discovery", () =>
+    Effect.gen(function* () {
+      const snapshot = yield* checkCustomAcpProviderStatus(
+        makeCustomAcpSettings({ env: envText({ T3_ACP_EMIT_AVAILABLE_COMMANDS: "1" }) }),
+      );
+      assert.equal(snapshot.status, "ready");
+      assert.deepStrictEqual(snapshot.slashCommands, [
+        {
+          name: "mock",
+          description: "Run a mock command",
+          input: { hint: "optional input" },
+        },
+      ]);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "publishes live ACP available command updates through the generic adapter callback",
+    () =>
+      Effect.gen(function* () {
+        const updatedCommands = yield* Deferred.make<ReadonlyArray<ServerProviderSlashCommand>>();
+        const adapter = yield* makeGenericAcpAdapter(
+          makeCustomAcpSettings({ env: envText({ T3_ACP_EMIT_AVAILABLE_COMMANDS: "1" }) }),
+          {
+            instanceId: customAcpInstanceId,
+            onSlashCommandsUpdated: (commands) => Deferred.succeed(updatedCommands, commands),
+          },
+        );
+        const threadId = ThreadId.make("custom-acp-available-commands");
+
+        yield* adapter.startSession({
+          threadId,
+          provider: customAcpDriver,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+
+        assert.deepStrictEqual(yield* Deferred.await(updatedCommands), [
+          {
+            name: "mock",
+            description: "Run a mock command",
+            input: { hint: "optional input" },
+          },
+        ]);
+        yield* adapter.stopSession(threadId);
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "refreshes the managed provider snapshot when a live ACP session reports commands",
+    () =>
+      Effect.gen(function* () {
+        const configMap: ProviderInstanceConfigMap = {
+          [customAcpInstanceId]: {
+            driver: customAcpDriver,
+            displayName: "Local ACP",
+            enabled: true,
+            config: makeCustomAcpSettings({
+              env: envText({ T3_ACP_EMIT_AVAILABLE_COMMANDS_ON_PROMPT: "1" }),
+            }),
+          },
+        };
+
+        const { registry } = yield* makeProviderInstanceRegistry({
+          drivers: [CustomAcpDriver],
+          configMap,
+        });
+        const instance = yield* registry.getInstance(customAcpInstanceId);
+        assert.isDefined(instance);
+
+        const baseline = yield* instance!.snapshot.refresh;
+        assert.equal(baseline.instanceId, customAcpInstanceId);
+        assert.equal(baseline.driver, customAcpDriver);
+        assert.equal(baseline.displayName, "Local ACP");
+        assert.equal(baseline.status, "ready");
+        assert.deepStrictEqual(baseline.slashCommands, []);
+
+        const snapshotFiber = yield* instance!.snapshot.streamChanges.pipe(
+          Stream.filter((snapshot) =>
+            snapshot.slashCommands.some((command) => command.name === "mock"),
+          ),
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        const threadId = ThreadId.make("custom-acp-managed-available-commands");
+        yield* instance!.adapter.startSession({
+          threadId,
+          provider: customAcpDriver,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        yield* instance!.adapter.sendTurn({ threadId, input: "refresh commands", attachments: [] });
+
+        const updated = Array.from(yield* Fiber.join(snapshotFiber))[0] as
+          | ServerProvider
+          | undefined;
+        assert.isDefined(updated);
+        assert.equal(updated!.instanceId, baseline.instanceId);
+        assert.equal(updated!.driver, baseline.driver);
+        assert.equal(updated!.displayName, baseline.displayName);
+        assert.equal(updated!.status, baseline.status);
+        assert.deepStrictEqual(updated!.auth, baseline.auth);
+        assert.deepStrictEqual(updated!.models, baseline.models);
+        assert.equal(updated!.version, baseline.version);
+        assert.deepStrictEqual(updated!.slashCommands, [
+          {
+            name: "mock",
+            description: "Run a mock command",
+            input: { hint: "optional input" },
+          },
+        ]);
+
+        const refreshed = yield* instance!.snapshot.refresh;
+        assert.deepStrictEqual(refreshed.slashCommands, updated!.slashCommands);
+        yield* instance!.adapter.stopSession(threadId);
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
   it.effect("starts, prompts, streams events, and records the custom ACP resume cursor", () =>

@@ -7,6 +7,7 @@ import {
   ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderSession,
+  type ServerProviderSlashCommand,
   type ProviderUserInputAnswers,
   RuntimeRequestId,
   type ThreadId,
@@ -95,6 +96,9 @@ export interface GenericAcpAdapterOptions {
   readonly nativeEventLogger?: EventNdjsonLogger;
   readonly instanceId?: typeof ProviderInstanceId.Type;
   readonly resolveSettings?: Effect.Effect<CustomAcpSettings>;
+  readonly onSlashCommandsUpdated?: (
+    commands: ReadonlyArray<ServerProviderSlashCommand>,
+  ) => Effect.Effect<void>;
 }
 
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
@@ -510,6 +514,17 @@ export function makeGenericAcpAdapter(
               Effect.gen(function* () {
                 switch (event._tag) {
                   case "ModeChanged":
+                    return;
+                  case "AvailableCommandsUpdated":
+                    yield* logNative(
+                      ctx.threadId,
+                      "session/update",
+                      event.rawPayload,
+                      "acp.jsonrpc",
+                    );
+                    if (options?.onSlashCommandsUpdated) {
+                      yield* options.onSlashCommandsUpdated(event.commands);
+                    }
                     return;
                   case "AssistantItemStarted":
                     yield* offerRuntimeEvent(

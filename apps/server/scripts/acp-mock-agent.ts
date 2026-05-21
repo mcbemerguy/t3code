@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 // @effect-diagnostics nodeBuiltinImport:off
+// @effect-diagnostics globalTimers:off
+// @effect-diagnostics runEffectInsideEffect:off
 import { appendFileSync } from "node:fs";
 
 import * as Effect from "effect/Effect";
@@ -18,6 +20,8 @@ const emitInterleavedAssistantToolCalls =
   process.env.T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS === "1";
 const emitGenericToolPlaceholders = process.env.T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS === "1";
 const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
+const emitAvailableCommands = process.env.T3_ACP_EMIT_AVAILABLE_COMMANDS === "1";
+const emitAvailableCommandsOnPrompt = process.env.T3_ACP_EMIT_AVAILABLE_COMMANDS_ON_PROMPT === "1";
 const omitModelConfig = process.env.T3_ACP_OMIT_MODEL_CONFIG === "1";
 const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
@@ -215,6 +219,20 @@ function modeState(): AcpSchema.SessionModeState {
   };
 }
 
+function availableCommands(): ReadonlyArray<AcpSchema.AvailableCommand> {
+  return [
+    {
+      name: "/mock",
+      description: "Run a mock command",
+      input: { hint: "optional input" },
+    },
+    {
+      name: "Mock",
+      description: "Duplicate ignored",
+    },
+  ];
+}
+
 const program = Effect.gen(function* () {
   const agent = yield* EffectAcpAgent.AcpAgent;
 
@@ -232,10 +250,25 @@ const program = Effect.gen(function* () {
   yield* agent.handleAuthenticate(() => Effect.succeed({}));
 
   yield* agent.handleCreateSession(() =>
-    Effect.succeed({
-      sessionId,
-      modes: modeState(),
-      configOptions: configOptions(),
+    Effect.sync(() => {
+      if (emitAvailableCommands) {
+        setTimeout(() => {
+          Effect.runFork(
+            agent.client.sessionUpdate({
+              sessionId,
+              update: {
+                sessionUpdate: "available_commands_update",
+                availableCommands: availableCommands(),
+              },
+            }),
+          );
+        }, 0);
+      }
+      return {
+        sessionId,
+        modes: modeState(),
+        configOptions: configOptions(),
+      };
     }),
   );
 
@@ -302,6 +335,16 @@ const program = Effect.gen(function* () {
   yield* agent.handlePrompt((request) =>
     Effect.gen(function* () {
       const requestedSessionId = String(request.sessionId ?? sessionId);
+
+      if (emitAvailableCommandsOnPrompt) {
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "available_commands_update",
+            availableCommands: availableCommands(),
+          },
+        });
+      }
 
       if (emitInterleavedAssistantToolCalls) {
         const toolCallId = "tool-call-1";
