@@ -733,7 +733,7 @@ describe("ProviderRuntimeIngestion", () => {
       itemId: asItemId("reasoning-item-1"),
       payload: {
         streamKind: "reasoning_text",
-        delta: "Inspecting ",
+        delta: "Inspecting",
       },
     });
     harness.emit({
@@ -746,7 +746,31 @@ describe("ProviderRuntimeIngestion", () => {
       itemId: asItemId("reasoning-item-1"),
       payload: {
         streamKind: "reasoning_text",
+        delta: " ",
+      },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning-delta-3"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reasoning"),
+      itemId: asItemId("reasoning-item-1"),
+      payload: {
+        streamKind: "reasoning_text",
         delta: "state",
+      },
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-reasoning-turn-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reasoning"),
+      payload: {
+        state: "completed",
       },
     });
 

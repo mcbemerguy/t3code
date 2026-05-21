@@ -57,8 +57,11 @@ const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
 const BUFFERED_REASONING_TEXT_BY_KEY_CACHE_CAPACITY = 20_000;
 const BUFFERED_REASONING_TEXT_BY_KEY_TTL = Duration.minutes(120);
+const REASONING_PROGRESS_DISPATCHED_LENGTH_BY_KEY_CACHE_CAPACITY = 20_000;
+const REASONING_PROGRESS_DISPATCHED_LENGTH_BY_KEY_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 const MAX_BUFFERED_REASONING_CHARS = 4_000;
+const REASONING_PROGRESS_DISPATCH_CHAR_INTERVAL = 80;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
 type TurnStartRequestedDomainEvent = Extract<
@@ -664,6 +667,11 @@ const make = Effect.gen(function* () {
     timeToLive: BUFFERED_REASONING_TEXT_BY_KEY_TTL,
     lookup: () => Effect.succeed(""),
   });
+  const reasoningProgressDispatchedLengthByKey = yield* Cache.make<string, number>({
+    capacity: REASONING_PROGRESS_DISPATCHED_LENGTH_BY_KEY_CACHE_CAPACITY,
+    timeToLive: REASONING_PROGRESS_DISPATCHED_LENGTH_BY_KEY_TTL,
+    lookup: () => Effect.succeed(0),
+  });
 
   const resolveThreadDetail = Effect.fn("resolveThreadDetail")(function* (threadId: ThreadId) {
     return yield* projectionSnapshotQuery
@@ -872,7 +880,12 @@ const make = Effect.gen(function* () {
       yield* Effect.forEach(
         keys,
         (key) =>
-          key.startsWith(prefix) ? Cache.invalidate(bufferedReasoningTextByKey, key) : Effect.void,
+          key.startsWith(prefix)
+            ? Effect.gen(function* () {
+                yield* Cache.invalidate(bufferedReasoningTextByKey, key);
+                yield* Cache.invalidate(reasoningProgressDispatchedLengthByKey, key);
+              })
+            : Effect.void,
         { concurrency: 1 },
       ).pipe(Effect.asVoid);
     });
@@ -884,7 +897,118 @@ const make = Effect.gen(function* () {
       yield* Effect.forEach(
         keys,
         (key) =>
-          key.startsWith(prefix) ? Cache.invalidate(bufferedReasoningTextByKey, key) : Effect.void,
+          key.startsWith(prefix)
+            ? Effect.gen(function* () {
+                yield* Cache.invalidate(bufferedReasoningTextByKey, key);
+                yield* Cache.invalidate(reasoningProgressDispatchedLengthByKey, key);
+              })
+            : Effect.void,
+        { concurrency: 1 },
+      ).pipe(Effect.asVoid);
+    });
+
+  const dispatchBufferedReasoningProgress = (input: {
+    readonly event: ProviderRuntimeEvent;
+    readonly threadId: ThreadId;
+    readonly reasoningKey: string;
+    readonly turnId?: TurnId;
+    readonly createdAt: string;
+    readonly force?: boolean;
+  }) =>
+    Effect.gen(function* () {
+      const bufferedReasoningText = yield* Cache.get(
+        bufferedReasoningTextByKey,
+        input.reasoningKey,
+      );
+      if (bufferedReasoningText.trim().length === 0) {
+        return false;
+      }
+      const lastDispatchedLength = Option.getOrElse(
+        yield* Cache.getOption(reasoningProgressDispatchedLengthByKey, input.reasoningKey),
+        () => 0,
+      );
+      if (
+        input.force !== true &&
+        lastDispatchedLength > 0 &&
+        bufferedReasoningText.length - lastDispatchedLength <
+          REASONING_PROGRESS_DISPATCH_CHAR_INTERVAL
+      ) {
+        return false;
+      }
+
+      yield* orchestrationEngine.dispatch({
+        type: "thread.activity.append",
+        commandId: providerCommandId(input.event, "reasoning-progress"),
+        threadId: input.threadId,
+        activity: {
+          id: reasoningActivityIdFromKey(input.reasoningKey),
+          createdAt: input.createdAt,
+          tone: "info",
+          kind: "task.progress",
+          summary: "Reasoning update",
+          payload: {
+            taskId: input.reasoningKey,
+            detail: truncateDetail(bufferedReasoningText),
+            summary: truncateDetail(bufferedReasoningText),
+          },
+          turnId: input.turnId ?? null,
+        },
+        createdAt: input.createdAt,
+      });
+      yield* Cache.set(
+        reasoningProgressDispatchedLengthByKey,
+        input.reasoningKey,
+        bufferedReasoningText.length,
+      );
+      return true;
+    });
+
+  const flushBufferedReasoningForTurn = (input: {
+    readonly event: ProviderRuntimeEvent;
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly createdAt: string;
+  }) =>
+    Effect.gen(function* () {
+      const prefix = `reasoning:${input.threadId}:${input.turnId}:`;
+      const keys = Array.from(yield* Cache.keys(bufferedReasoningTextByKey));
+      yield* Effect.forEach(
+        keys,
+        (reasoningKey) =>
+          reasoningKey.startsWith(prefix)
+            ? dispatchBufferedReasoningProgress({
+                event: input.event,
+                threadId: input.threadId,
+                reasoningKey,
+                turnId: input.turnId,
+                createdAt: input.createdAt,
+                force: true,
+              })
+            : Effect.void,
+        { concurrency: 1 },
+      ).pipe(Effect.asVoid);
+    });
+
+  const flushBufferedReasoningForSession = (input: {
+    readonly event: ProviderRuntimeEvent;
+    readonly threadId: ThreadId;
+    readonly createdAt: string;
+  }) =>
+    Effect.gen(function* () {
+      const prefix = `reasoning:${input.threadId}:`;
+      const keys = Array.from(yield* Cache.keys(bufferedReasoningTextByKey));
+      yield* Effect.forEach(
+        keys,
+        (reasoningKey) =>
+          reasoningKey.startsWith(prefix)
+            ? dispatchBufferedReasoningProgress({
+                event: input.event,
+                threadId: input.threadId,
+                reasoningKey,
+                createdAt: input.createdAt,
+                force: true,
+              })
+            : Effect.void,
         { concurrency: 1 },
       ).pipe(Effect.asVoid);
     });
@@ -1429,27 +1553,14 @@ const make = Effect.gen(function* () {
         }
       }
 
-      if (reasoningDelta && reasoningDelta.trim().length > 0) {
+      if (reasoningDelta !== undefined && reasoningDelta.length > 0) {
         const reasoningKey = reasoningActivityKeyFromEvent(event, thread.id);
         yield* appendBufferedReasoningText(reasoningKey, reasoningDelta);
-        const bufferedReasoningText = yield* Cache.get(bufferedReasoningTextByKey, reasoningKey);
-        yield* orchestrationEngine.dispatch({
-          type: "thread.activity.append",
-          commandId: providerCommandId(event, "reasoning-progress"),
+        yield* dispatchBufferedReasoningProgress({
+          event,
           threadId: thread.id,
-          activity: {
-            id: reasoningActivityIdFromKey(reasoningKey),
-            createdAt: now,
-            tone: "info",
-            kind: "task.progress",
-            summary: "Reasoning update",
-            payload: {
-              taskId: reasoningKey,
-              detail: truncateDetail(bufferedReasoningText),
-              summary: truncateDetail(bufferedReasoningText),
-            },
-            turnId: eventTurnId ?? null,
-          },
+          reasoningKey,
+          ...(eventTurnId ? { turnId: eventTurnId } : {}),
           createdAt: now,
         });
       }
@@ -1620,12 +1731,19 @@ const make = Effect.gen(function* () {
             turnId,
             updatedAt: now,
           });
+          yield* flushBufferedReasoningForTurn({
+            event,
+            threadId: thread.id,
+            turnId,
+            createdAt: now,
+          });
           yield* clearBufferedReasoningForTurn(thread.id, turnId);
         }
       }
 
       if (event.type === "session.exited") {
         yield* clearTurnStateForSession(thread.id);
+        yield* flushBufferedReasoningForSession({ event, threadId: thread.id, createdAt: now });
         yield* clearBufferedReasoningForSession(thread.id);
       }
 
