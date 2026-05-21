@@ -165,6 +165,57 @@ describe("Custom ACP provider", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("derives reasoning traits from ACP thought-level config options", () =>
+    Effect.gen(function* () {
+      const snapshot = yield* checkCustomAcpProviderStatus(
+        makeCustomAcpSettings({
+          env: envText({ T3_ACP_EMIT_THOUGHT_LEVEL_CONFIG: "1" }),
+          manualModels: "manual-one",
+        }),
+      );
+      assert.equal(snapshot.status, "ready");
+      const modelsBySlug = new Map(snapshot.models.map((model) => [model.slug, model]));
+
+      for (const slug of ["default", "manual-one"]) {
+        const model = modelsBySlug.get(slug);
+        assert.isDefined(model);
+        const descriptor = model!.capabilities?.optionDescriptors?.[0];
+        assert.deepStrictEqual(descriptor, {
+          id: "reasoning",
+          label: "Thinking level",
+          type: "select",
+          options: [
+            { id: "off", label: "Off" },
+            { id: "low", label: "Low" },
+            { id: "medium", label: "Medium", isDefault: true },
+            { id: "high", label: "High" },
+          ],
+          currentValue: "medium",
+        });
+      }
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("attaches reasoning traits to fallback models when ACP exposes no model config", () =>
+    Effect.gen(function* () {
+      const snapshot = yield* checkCustomAcpProviderStatus(
+        makeCustomAcpSettings({
+          env: envText({
+            T3_ACP_EMIT_THOUGHT_LEVEL_CONFIG: "1",
+            T3_ACP_OMIT_MODEL_CONFIG: "1",
+          }),
+        }),
+      );
+      assert.equal(snapshot.status, "ready");
+      const fallbackModel = snapshot.models[0];
+      assert.isDefined(fallbackModel);
+      const descriptor = fallbackModel!.capabilities?.optionDescriptors?.[0];
+      assert.equal(fallbackModel!.slug, "default");
+      assert.equal(descriptor?.id, "reasoning");
+      assert.equal(descriptor?.currentValue, "medium");
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("includes ACP available commands from provider status discovery", () =>
     Effect.gen(function* () {
       const snapshot = yield* checkCustomAcpProviderStatus(
@@ -455,6 +506,93 @@ describe("Custom ACP provider", () => {
             (entry.params as Record<string, unknown> | undefined)?.value === "composer-2",
         ),
       ).toBe(true);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("maps reasoning selections to ACP thought-level config options", () =>
+    Effect.gen(function* () {
+      const requestLog = yield* Effect.promise(() => tempFile("reasoning-switch.jsonl"));
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({
+            T3_ACP_EMIT_THOUGHT_LEVEL_CONFIG: "1",
+            T3_ACP_REQUEST_LOG_PATH: requestLog,
+          }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-reasoning-switch");
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "switch reasoning",
+        attachments: [],
+        modelSelection: {
+          instanceId: customAcpInstanceId,
+          model: "default",
+          options: [{ id: "reasoning", value: "high" }],
+        },
+      });
+      yield* adapter.stopSession(threadId);
+
+      const entries = yield* Effect.promise(() => readJsonLines(requestLog));
+      expect(
+        entries.some(
+          (entry) =>
+            entry.method === "session/set_config_option" &&
+            (entry.params as Record<string, unknown> | undefined)?.configId === "thought_level" &&
+            (entry.params as Record<string, unknown> | undefined)?.value === "high",
+        ),
+      ).toBe(true);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("ignores stale reasoning selections that are not valid ACP option values", () =>
+    Effect.gen(function* () {
+      const requestLog = yield* Effect.promise(() => tempFile("invalid-reasoning-switch.jsonl"));
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({
+            T3_ACP_EMIT_THOUGHT_LEVEL_CONFIG: "1",
+            T3_ACP_REQUEST_LOG_PATH: requestLog,
+          }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-invalid-reasoning-switch");
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "ignore invalid reasoning",
+        attachments: [],
+        modelSelection: {
+          instanceId: customAcpInstanceId,
+          model: "default",
+          options: [{ id: "reasoning", value: "stale" }],
+        },
+      });
+      yield* adapter.stopSession(threadId);
+
+      const entries = yield* Effect.promise(() => readJsonLines(requestLog));
+      expect(
+        entries.some(
+          (entry) =>
+            entry.method === "session/set_config_option" &&
+            (entry.params as Record<string, unknown> | undefined)?.configId === "thought_level",
+        ),
+      ).toBe(false);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 

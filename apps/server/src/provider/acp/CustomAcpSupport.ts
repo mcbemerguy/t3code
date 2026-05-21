@@ -1,5 +1,10 @@
-import type { CustomAcpSettings, ServerProviderModel } from "@t3tools/contracts";
+import type {
+  CustomAcpSettings,
+  ProviderOptionSelection,
+  ServerProviderModel,
+} from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
+import { buildSelectOptionDescriptor } from "../providerSnapshot.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
@@ -280,6 +285,57 @@ export function findCustomAcpModelConfigOption(
   return configOptions?.find((option) => option.category === "model");
 }
 
+export function findCustomAcpThoughtLevelConfigOption(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+): EffectAcpSchema.SessionConfigOption | undefined {
+  return configOptions?.find(
+    (option) => option.category === "thought_level" && option.type === "select",
+  );
+}
+
+export function buildCustomAcpModelCapabilitiesFromConfigOptions(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+) {
+  const thoughtLevelOption = findCustomAcpThoughtLevelConfigOption(configOptions);
+  const choices = flattenCustomAcpSessionConfigSelectOptions(thoughtLevelOption);
+  if (!thoughtLevelOption || choices.length === 0) {
+    return EMPTY_CUSTOM_ACP_MODEL_CAPABILITIES;
+  }
+
+  return createModelCapabilities({
+    optionDescriptors: [
+      buildSelectOptionDescriptor({
+        id: "reasoning",
+        label: thoughtLevelOption.name?.trim() || "Reasoning",
+        options: choices.map((choice) => ({
+          value: choice.value,
+          label: choice.name,
+          isDefault: choice.value === thoughtLevelOption.currentValue,
+        })),
+      }),
+    ],
+  });
+}
+
+export function resolveCustomAcpReasoningConfigUpdate(input: {
+  readonly configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined;
+  readonly selections: ReadonlyArray<ProviderOptionSelection> | null | undefined;
+}): { readonly configId: string; readonly value: string } | undefined {
+  const selectionValue = input.selections?.find((selection) => selection.id === "reasoning")?.value;
+  const requestedValue = typeof selectionValue === "string" ? selectionValue.trim() : undefined;
+  if (!requestedValue) {
+    return undefined;
+  }
+
+  const thoughtLevelOption = findCustomAcpThoughtLevelConfigOption(input.configOptions);
+  const choices = flattenCustomAcpSessionConfigSelectOptions(thoughtLevelOption);
+  if (!thoughtLevelOption || !choices.some((choice) => choice.value === requestedValue)) {
+    return undefined;
+  }
+
+  return { configId: thoughtLevelOption.id, value: requestedValue };
+}
+
 export function discoverCustomAcpModelConfigId(
   configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
 ): string | undefined {
@@ -292,6 +348,7 @@ export function buildCustomAcpDiscoveredModelsFromConfigOptions(
 ): ReadonlyArray<ServerProviderModel> {
   const modelOption = findCustomAcpModelConfigOption(configOptions);
   const modelChoices = flattenCustomAcpSessionConfigSelectOptions(modelOption);
+  const capabilities = buildCustomAcpModelCapabilitiesFromConfigOptions(configOptions);
   const seen = new Set<string>();
   const models: ServerProviderModel[] = [];
 
@@ -304,7 +361,7 @@ export function buildCustomAcpDiscoveredModelsFromConfigOptions(
       slug: choice.value,
       name: choice.name,
       isCustom: false,
-      capabilities: EMPTY_CUSTOM_ACP_MODEL_CAPABILITIES,
+      capabilities,
     });
   }
 
@@ -318,6 +375,7 @@ export function buildCustomAcpProviderModels(input: {
 }): ReadonlyArray<ServerProviderModel> {
   const seen = new Set<string>();
   const models: ServerProviderModel[] = [];
+  const capabilities = buildCustomAcpModelCapabilitiesFromConfigOptions(input.configOptions);
 
   for (const model of buildCustomAcpDiscoveredModelsFromConfigOptions(input.configOptions)) {
     seen.add(model.slug);
@@ -333,7 +391,7 @@ export function buildCustomAcpProviderModels(input: {
       slug,
       name: slug,
       isCustom: true,
-      capabilities: EMPTY_CUSTOM_ACP_MODEL_CAPABILITIES,
+      capabilities,
     });
   }
 
@@ -343,7 +401,7 @@ export function buildCustomAcpProviderModels(input: {
       slug: fallback,
       name: fallback,
       isCustom: true,
-      capabilities: EMPTY_CUSTOM_ACP_MODEL_CAPABILITIES,
+      capabilities,
     });
   }
 

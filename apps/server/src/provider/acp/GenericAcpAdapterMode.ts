@@ -8,6 +8,7 @@ import type * as EffectAcpErrors from "effect-acp/errors";
 
 import type { AcpSessionRuntimeShape } from "./AcpSessionRuntime.ts";
 import type { AcpSessionMode, AcpSessionModeState } from "./AcpRuntimeModel.ts";
+import { resolveCustomAcpReasoningConfigUpdate } from "./CustomAcpSupport.ts";
 
 const ACP_PLAN_MODE_ALIASES = ["plan", "architect"];
 const ACP_IMPLEMENT_MODE_ALIASES = ["code", "agent", "default", "chat", "implement"];
@@ -93,6 +94,21 @@ export function applyGenericAcpSessionConfiguration<E>(input: {
   return Effect.gen(function* () {
     if (input.modelSelection?.model.trim()) {
       yield* input.runtime.setModel(input.modelSelection.model.trim()).pipe(
+        Effect.mapError((cause) =>
+          input.mapError({
+            cause,
+            method: "session/set_config_option",
+          }),
+        ),
+      );
+    }
+
+    const reasoningUpdate = resolveCustomAcpReasoningConfigUpdate({
+      configOptions: yield* input.runtime.getConfigOptions,
+      selections: input.modelSelection?.options,
+    });
+    if (reasoningUpdate) {
+      yield* input.runtime.setConfigOption(reasoningUpdate.configId, reasoningUpdate.value).pipe(
         Effect.mapError((cause) =>
           input.mapError({
             cause,

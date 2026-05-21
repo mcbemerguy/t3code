@@ -23,6 +23,7 @@ const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
 const emitAvailableCommands = process.env.T3_ACP_EMIT_AVAILABLE_COMMANDS === "1";
 const emitAvailableCommandsOnPrompt = process.env.T3_ACP_EMIT_AVAILABLE_COMMANDS_ON_PROMPT === "1";
 const omitModelConfig = process.env.T3_ACP_OMIT_MODEL_CONFIG === "1";
+const emitThoughtLevelConfig = process.env.T3_ACP_EMIT_THOUGHT_LEVEL_CONFIG === "1";
 const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
@@ -177,7 +178,7 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
     }
   }
 
-  return maybeOmitModelConfig([
+  const baseOptions: Array<AcpSchema.SessionConfigOption> = [
     {
       id: "model",
       name: "Model",
@@ -191,6 +192,27 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
         { value: "gpt-5.3-codex[reasoning=medium,fast=false]", name: "Codex 5.3" },
       ],
     },
+  ];
+
+  return maybeOmitModelConfig([
+    ...baseOptions,
+    ...(emitThoughtLevelConfig
+      ? [
+          {
+            id: "thought_level",
+            name: "Thinking level",
+            category: "thought_level",
+            type: "select" as const,
+            currentValue: currentReasoning,
+            options: [
+              { value: "off", name: "Off" },
+              { value: "low", name: "Low" },
+              { value: "medium", name: "Medium" },
+              { value: "high", name: "High" },
+            ],
+          },
+        ]
+      : []),
   ]);
 }
 
@@ -311,7 +333,10 @@ const program = Effect.gen(function* () {
       if (request.configId === "model" && typeof request.value === "string") {
         currentModelId = request.value;
       }
-      if (request.configId === "reasoning" && typeof request.value === "string") {
+      if (
+        (request.configId === "reasoning" || request.configId === "thought_level") &&
+        typeof request.value === "string"
+      ) {
         currentReasoning = request.value;
       }
       if (request.configId === "context" && typeof request.value === "string") {
