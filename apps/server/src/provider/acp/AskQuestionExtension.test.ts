@@ -1,6 +1,13 @@
+import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 
-import { extractAskQuestions, makeAskQuestionResponse } from "./AskQuestionExtension.ts";
+import {
+  AskQuestionRequest,
+  extractAskQuestions,
+  makeAskQuestionResponse,
+} from "./AskQuestionExtension.ts";
+
+const decodeAskQuestionRequest = Schema.decodeUnknownSync(AskQuestionRequest);
 
 describe("AskQuestionExtension", () => {
   it("normalizes Cursor-compatible ask-question requests", () => {
@@ -34,7 +41,95 @@ describe("AskQuestionExtension", () => {
     ]);
   });
 
-  it("uses safe fallbacks for missing option lists and empty strings", () => {
+  it("accepts pi-acp selection payloads for Pi ask_user_questions", () => {
+    const request = decodeAskQuestionRequest({
+      toolCallId: "ui-1",
+      title: "Question 1/1: Pick a fruit",
+      questions: [
+        {
+          id: "selection",
+          prompt: "Question 1/1: Pick a fruit",
+          options: [
+            { id: "0", label: "Apple" },
+            { id: "1", label: "Banana" },
+            { id: "2", label: "Other (type your own answer)" },
+          ],
+          allowMultiple: false,
+        },
+      ],
+    });
+
+    expect(extractAskQuestions(request)).toEqual([
+      {
+        id: "selection",
+        header: "Question",
+        question: "Question 1/1: Pick a fruit",
+        multiSelect: false,
+        options: [
+          { label: "Apple", description: "Apple" },
+          { label: "Banana", description: "Banana" },
+          {
+            label: "Other (type your own answer)",
+            description: "Other (type your own answer)",
+          },
+        ],
+      },
+    ]);
+
+    expect(makeAskQuestionResponse({ selection: "Banana" })).toEqual({
+      answers: { selection: "Banana" },
+    });
+    expect(makeAskQuestionResponse({ selection: "Dragonfruit" })).toEqual({
+      answers: { selection: "Dragonfruit" },
+    });
+  });
+
+  it("accepts pi-acp input and confirmation payloads for Pi RPC dialogs", () => {
+    const inputRequest = decodeAskQuestionRequest({
+      toolCallId: "ui-input",
+      title: "Type custom answer",
+      questions: [{ id: "value", prompt: "Type custom answer", allowMultiple: false }],
+    });
+    const confirmRequest = decodeAskQuestionRequest({
+      toolCallId: "ui-confirm",
+      title: "Continue?",
+      questions: [
+        {
+          id: "confirmed",
+          prompt: "Continue?",
+          options: [
+            { id: "yes", label: "Yes" },
+            { id: "no", label: "No" },
+          ],
+          allowMultiple: false,
+        },
+      ],
+    });
+
+    expect(extractAskQuestions(inputRequest)).toEqual([
+      {
+        id: "value",
+        header: "Question",
+        question: "Type custom answer",
+        multiSelect: false,
+        options: [],
+      },
+    ]);
+    expect(extractAskQuestions(confirmRequest)[0]).toMatchObject({
+      id: "confirmed",
+      question: "Continue?",
+      multiSelect: false,
+      options: [
+        { label: "Yes", description: "Yes" },
+        { label: "No", description: "No" },
+      ],
+    });
+    expect(makeAskQuestionResponse({ value: "Typed answer", confirmed: "yes" })).toEqual({
+      answers: { value: "Typed answer", confirmed: "yes" },
+    });
+  });
+
+  it("uses safe fallbacks for empty ids and prompts without inventing text answers", () => {
     expect(
       extractAskQuestions({
         questions: [{ id: "  ", prompt: "", allowMultiple: false }],
@@ -45,7 +140,7 @@ describe("AskQuestionExtension", () => {
         header: "Question",
         question: "Continue?",
         multiSelect: false,
-        options: [{ label: "OK", description: "Continue" }],
+        options: [],
       },
     ]);
   });

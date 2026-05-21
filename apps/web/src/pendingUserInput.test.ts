@@ -150,6 +150,23 @@ describe("buildPendingUserInputAnswers", () => {
     });
   });
 
+  it("requires typed text for optionless prompts", () => {
+    const textQuestion = {
+      id: "value",
+      header: "Question",
+      question: "Type custom answer",
+      options: [],
+      multiSelect: false,
+    } as const;
+
+    expect(buildPendingUserInputAnswers([textQuestion], {})).toBeNull();
+    expect(
+      buildPendingUserInputAnswers([textQuestion], {
+        value: { customAnswer: "Typed answer" },
+      }),
+    ).toEqual({ value: "Typed answer" });
+  });
+
   it("returns null when any question is unanswered", () => {
     expect(buildPendingUserInputAnswers([singleSelectQuestion], {})).toBeNull();
   });

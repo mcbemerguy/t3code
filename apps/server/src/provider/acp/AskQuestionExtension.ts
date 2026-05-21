@@ -37,19 +37,13 @@ export function extractAskQuestions(params: AskQuestionRequest): ReadonlyArray<U
       header: "Question",
       question: nonEmptyOrFallback(question.prompt, "Continue?"),
       multiSelect: question.allowMultiple === true,
-      options:
-        options.length > 0
-          ? options.map((option) => {
-              const label = nonEmptyOrFallback(
-                option.label,
-                nonEmptyOrFallback(option.id, "Option"),
-              );
-              return {
-                label,
-                description: label,
-              };
-            })
-          : [{ label: "OK", description: "Continue" }],
+      options: options.map((option) => {
+        const label = nonEmptyOrFallback(option.label, nonEmptyOrFallback(option.id, "Option"));
+        return {
+          label,
+          description: label,
+        };
+      }),
     };
   });
 }

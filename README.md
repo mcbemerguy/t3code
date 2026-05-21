@@ -48,6 +48,8 @@ We are not accepting contributions yet.
 
 Observability guide: [docs/observability.md](./docs/observability.md)
 
+Custom ACP provider notes: [docs/providers/custom-acp.md](./docs/providers/custom-acp.md)
+
 ## If you REALLY want to contribute still.... read this first
 
 Before local development, prepare the environment and install dependencies:
