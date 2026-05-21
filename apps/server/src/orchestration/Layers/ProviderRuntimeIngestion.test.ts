@@ -719,6 +719,60 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("renders reasoning deltas as an aggregated work-log activity without assistant text", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning-delta-1"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reasoning"),
+      itemId: asItemId("reasoning-item-1"),
+      payload: {
+        streamKind: "reasoning_text",
+        delta: "Inspecting ",
+      },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning-delta-2"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reasoning"),
+      itemId: asItemId("reasoning-item-1"),
+      payload: {
+        streamKind: "reasoning_text",
+        delta: "state",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "reasoning:thread-1:turn-reasoning:reasoning-item-1" &&
+          typeof activity.payload === "object" &&
+          activity.payload !== null &&
+          "summary" in activity.payload &&
+          activity.payload.summary === "Inspecting state",
+      ),
+    );
+
+    expect(thread.messages).toEqual([]);
+    const reasoningActivities = thread.activities.filter(
+      (activity: ProviderRuntimeTestActivity) => activity.kind === "task.progress",
+    );
+    expect(reasoningActivities).toHaveLength(1);
+    expect(reasoningActivities[0]).toMatchObject({
+      id: "reasoning:thread-1:turn-reasoning:reasoning-item-1",
+      summary: "Reasoning update",
+      turnId: "turn-reasoning",
+    });
+  });
+
   it("uses assistant item completion detail when no assistant deltas were streamed", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
