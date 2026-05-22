@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off
 /**
  * ExternalLauncher - external application launch service interface.
  *
@@ -13,12 +14,12 @@ import {
   type LaunchEditorInput,
 } from "@t3tools/contracts";
 import { isCommandAvailable, type CommandAvailabilityOptions } from "@t3tools/shared/shell";
+import { spawn, type SpawnOptions, type StdioOptions } from "node:child_process";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 // ==============================
 // Definitions
@@ -33,10 +34,19 @@ interface EditorLaunch {
   readonly args: ReadonlyArray<string>;
 }
 
-interface ProcessLaunch {
+export interface ProcessLaunchOptions {
+  readonly detached: boolean;
+  readonly shell?: boolean | string;
+  readonly hideWindow?: boolean;
+  readonly stdin: "ignore";
+  readonly stdout: "ignore";
+  readonly stderr: "ignore";
+}
+
+export interface ProcessLaunch {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
-  readonly options: ChildProcess.CommandOptions;
+  readonly options: ProcessLaunchOptions;
 }
 
 interface TargetPathAndPosition {
@@ -54,12 +64,13 @@ const POWERSHELL_ARGUMENTS_PREFIX = [
   "-EncodedCommand",
 ] as const;
 
-const DETACHED_IGNORE_STDIO_OPTIONS = {
+const DETACHED_HIDDEN_IGNORE_STDIO_OPTIONS = {
   detached: true,
+  hideWindow: true,
   stdin: "ignore",
   stdout: "ignore",
   stderr: "ignore",
-} as const satisfies ChildProcess.CommandOptions;
+} as const satisfies ProcessLaunchOptions;
 
 function parseTargetPathAndPosition(target: string): Option.Option<TargetPathAndPosition> {
   const match = TARGET_WITH_POSITION_PATTERN.exec(target);
@@ -164,11 +175,8 @@ function resolveWindowsBrowserLaunch(target: string, command: string): ProcessLa
     command,
     args: [...POWERSHELL_ARGUMENTS_PREFIX, encodedCommand],
     options: {
-      detached: true,
+      ...DETACHED_HIDDEN_IGNORE_STDIO_OPTIONS,
       shell: false,
-      stdin: "ignore",
-      stdout: "ignore",
-      stderr: "ignore",
     },
   };
 }
@@ -193,7 +201,7 @@ export function resolveBrowserLaunch(
     return {
       command: "open",
       args: [target],
-      options: DETACHED_IGNORE_STDIO_OPTIONS,
+      options: DETACHED_HIDDEN_IGNORE_STDIO_OPTIONS,
     };
   }
 
@@ -208,7 +216,7 @@ export function resolveBrowserLaunch(
   return {
     command: "xdg-open",
     args: [target],
-    options: DETACHED_IGNORE_STDIO_OPTIONS,
+    options: DETACHED_HIDDEN_IGNORE_STDIO_OPTIONS,
   };
 }
 
@@ -256,6 +264,18 @@ export interface ExternalLauncherShape {
 /**
  * ExternalLauncher - Service tag for browser/editor launch operations.
  */
+export interface DetachedProcessSpawnerShape {
+  readonly spawnDetached: (
+    launch: ProcessLaunch,
+    errorMessage: string,
+  ) => Effect.Effect<void, ExternalLauncherError>;
+}
+
+export class DetachedProcessSpawner extends Context.Service<
+  DetachedProcessSpawner,
+  DetachedProcessSpawnerShape
+>()("t3/process/DetachedProcessSpawner") {}
+
 export class ExternalLauncher extends Context.Service<ExternalLauncher, ExternalLauncherShape>()(
   "t3/process/ExternalLauncher",
 ) {}
@@ -297,30 +317,78 @@ export const resolveEditorLaunch = Effect.fn("resolveEditorLaunch")(function* (
   return { command: fileManagerCommandForPlatform(platform), args: [input.cwd] };
 });
 
+function resolveNodeSpawnOptions(options: ProcessLaunchOptions): SpawnOptions {
+  return {
+    detached: options.detached,
+    shell: options.shell,
+    stdio: [options.stdin, options.stdout, options.stderr] satisfies StdioOptions,
+    windowsHide: options.hideWindow,
+  };
+}
+
+const nodeDetachedProcessSpawner = DetachedProcessSpawner.of({
+  spawnDetached: (launch, errorMessage) =>
+    Effect.callback<void, ExternalLauncherError>((resume) => {
+      let childProcess: ReturnType<typeof spawn> | undefined;
+      let settled = false;
+
+      const cleanup = () => {
+        childProcess?.removeListener("error", handleError);
+        childProcess?.removeListener("spawn", handleSpawn);
+      };
+      const settle = (effect: Effect.Effect<void, ExternalLauncherError>) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resume(effect);
+      };
+      const handleError = (cause: Error) => {
+        settle(Effect.fail(new ExternalLauncherError({ message: errorMessage, cause })));
+      };
+      const handleSpawn = () => {
+        childProcess?.unref();
+        settle(Effect.void);
+      };
+
+      try {
+        childProcess = spawn(
+          launch.command,
+          [...launch.args],
+          resolveNodeSpawnOptions(launch.options),
+        );
+      } catch (cause) {
+        settle(Effect.fail(new ExternalLauncherError({ message: errorMessage, cause })));
+        return Effect.void;
+      }
+
+      childProcess.once("error", handleError);
+      childProcess.once("spawn", handleSpawn);
+      return Effect.sync(cleanup);
+    }),
+});
+
+export const detachedProcessSpawnerLayer = Layer.succeed(
+  DetachedProcessSpawner,
+  nodeDetachedProcessSpawner,
+);
+
 const launchAndUnref = Effect.fn("externalLauncher.launchAndUnref")(function* (
   launch: ProcessLaunch,
   errorMessage: string,
-): Effect.fn.Return<void, ExternalLauncherError, ChildProcessSpawner.ChildProcessSpawner> {
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const command = ChildProcess.make(launch.command, launch.args, launch.options);
-
-  yield* spawner.spawn(command).pipe(
-    Effect.flatMap((handle) => handle.unref),
-    Effect.asVoid,
-    Effect.scoped,
-    Effect.mapError((cause) => new ExternalLauncherError({ message: errorMessage, cause })),
-  );
+): Effect.fn.Return<void, ExternalLauncherError, DetachedProcessSpawner> {
+  const spawner = yield* DetachedProcessSpawner;
+  yield* spawner.spawnDetached(launch, errorMessage);
 });
 
 export const launchBrowser = Effect.fn("externalLauncher.launchBrowser")(function* (
   target: string,
-): Effect.fn.Return<void, ExternalLauncherError, ChildProcessSpawner.ChildProcessSpawner> {
+): Effect.fn.Return<void, ExternalLauncherError, DetachedProcessSpawner> {
   return yield* launchAndUnref(resolveBrowserLaunch(target), "Browser auto-open failed");
 });
 
 export const launchEditorProcess = Effect.fn("externalLauncher.launchEditorProcess")(function* (
   launch: EditorLaunch,
-): Effect.fn.Return<void, ExternalLauncherError, ChildProcessSpawner.ChildProcessSpawner> {
+): Effect.fn.Return<void, ExternalLauncherError, DetachedProcessSpawner> {
   if (!isCommandAvailable(launch.command)) {
     return yield* new ExternalLauncherError({
       message: `Editor command not found: ${launch.command}`,
@@ -333,11 +401,8 @@ export const launchEditorProcess = Effect.fn("externalLauncher.launchEditorProce
       command: launch.command,
       args: isWin32 ? launch.args.map((arg) => `"${arg}"`) : [...launch.args],
       options: {
-        detached: true,
+        ...DETACHED_HIDDEN_IGNORE_STDIO_OPTIONS,
         shell: isWin32,
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "ignore",
       },
     },
     "failed to spawn detached process",
@@ -345,20 +410,18 @@ export const launchEditorProcess = Effect.fn("externalLauncher.launchEditorProce
 });
 
 const make = Effect.gen(function* () {
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const spawner = yield* DetachedProcessSpawner;
 
   return {
     launchBrowser: (target) =>
-      launchBrowser(target).pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-      ),
+      launchBrowser(target).pipe(Effect.provideService(DetachedProcessSpawner, spawner)),
     launchEditor: (input) =>
       Effect.flatMap(resolveEditorLaunch(input), (launch) =>
-        launchEditorProcess(launch).pipe(
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        ),
+        launchEditorProcess(launch).pipe(Effect.provideService(DetachedProcessSpawner, spawner)),
       ),
   } satisfies ExternalLauncherShape;
 });
 
-export const layer = Layer.effect(ExternalLauncher, make);
+export const layer = Layer.effect(ExternalLauncher, make).pipe(
+  Layer.provide(detachedProcessSpawnerLayer),
+);

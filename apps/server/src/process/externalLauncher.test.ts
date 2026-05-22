@@ -7,11 +7,9 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Random from "effect/Random";
-import * as Sink from "effect/Sink";
-import * as Stream from "effect/Stream";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-
 import {
+  DetachedProcessSpawner,
+  type ProcessLaunch,
   isCommandAvailable,
   launchBrowser,
   launchEditorProcess,
@@ -30,22 +28,9 @@ function encodeUtf16LeBase64(input: string): string {
   return Encoding.encodeBase64(bytes);
 }
 
-function makeMockDetachedHandle(onUnref: () => void = () => undefined) {
-  return ChildProcessSpawner.makeHandle({
-    pid: ChildProcessSpawner.ProcessId(1),
-    exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
-    isRunning: Effect.succeed(true),
-    kill: () => Effect.void,
-    unref: Effect.sync(() => {
-      onUnref();
-      return Effect.void;
-    }),
-    stdin: Sink.drain,
-    stdout: Stream.empty,
-    stderr: Stream.empty,
-    all: Stream.empty,
-    getInputFd: () => Sink.drain,
-    getOutputFd: () => Stream.empty,
+function makeMockDetachedProcessSpawner(onSpawn: (launch: ProcessLaunch) => void) {
+  return Layer.mock(DetachedProcessSpawner, {
+    spawnDetached: (launch) => Effect.sync(() => onSpawn(launch)),
   });
 }
 
@@ -520,6 +505,7 @@ it("resolveBrowserLaunch maps default browser launchers by platform", () => {
   assert.deepEqual(resolveBrowserLaunch(target, "darwin").args, [target]);
   assert.deepEqual(resolveBrowserLaunch(target, "darwin").options, {
     detached: true,
+    hideWindow: true,
     stdin: "ignore",
     stdout: "ignore",
     stderr: "ignore",
@@ -544,6 +530,7 @@ it("resolveBrowserLaunch maps default browser launchers by platform", () => {
   ]);
   assert.deepEqual(windows.options, {
     detached: true,
+    hideWindow: true,
     shell: false,
     stdin: "ignore",
     stdout: "ignore",
@@ -568,23 +555,11 @@ it("resolveBrowserLaunch keeps xdg-open for WSL over SSH", () => {
 });
 
 it.layer(NodeServices.layer)("launchBrowser", (it) => {
-  it.effect("spawns through the ChildProcessSpawner service and unrefs the handle", () =>
+  it.effect("spawns through the detached process spawner service", () =>
     Effect.gen(function* () {
-      let spawnedCommand: ChildProcess.StandardCommand | undefined;
-      let didUnref = false;
-
-      const spawnerLayer = Layer.mock(ChildProcessSpawner.ChildProcessSpawner, {
-        spawn: (command) =>
-          Effect.sync(() => {
-            assert.equal(ChildProcess.isStandardCommand(command), true);
-            if (!ChildProcess.isStandardCommand(command)) {
-              throw new Error("Expected a standard command");
-            }
-            spawnedCommand = command;
-            return makeMockDetachedHandle(() => {
-              didUnref = true;
-            });
-          }),
+      let spawnedLaunch: ProcessLaunch | undefined;
+      const spawnerLayer = makeMockDetachedProcessSpawner((launch) => {
+        spawnedLaunch = launch;
       });
 
       const result = yield* launchBrowser("https://example.com").pipe(
@@ -593,35 +568,19 @@ it.layer(NodeServices.layer)("launchBrowser", (it) => {
       );
 
       assertSuccess(result, undefined);
-      assert.ok(spawnedCommand);
-      const expectedLaunch = resolveBrowserLaunch("https://example.com");
-      assert.equal(spawnedCommand.command, expectedLaunch.command);
-      assert.deepEqual(spawnedCommand.args, expectedLaunch.args);
-      assert.deepEqual(spawnedCommand.options, expectedLaunch.options);
-      assert.equal(didUnref, true);
+      assert.ok(spawnedLaunch);
+      assert.deepEqual(spawnedLaunch, resolveBrowserLaunch("https://example.com"));
     }),
   );
 });
 
 it.layer(NodeServices.layer)("launchEditorProcess", (it) => {
-  it.effect("spawns through the ChildProcessSpawner service and unrefs the handle", () =>
+  it.effect("spawns through the detached process spawner service", () =>
     Effect.gen(function* () {
-      let spawnedCommand: ChildProcess.StandardCommand | undefined;
-      let didUnref = false;
+      let spawnedLaunch: ProcessLaunch | undefined;
       const expectedArgs = ["-e", "process.exit(0)"];
-
-      const spawnerLayer = Layer.mock(ChildProcessSpawner.ChildProcessSpawner, {
-        spawn: (command) =>
-          Effect.sync(() => {
-            assert.equal(ChildProcess.isStandardCommand(command), true);
-            if (!ChildProcess.isStandardCommand(command)) {
-              throw new Error("Expected a standard command");
-            }
-            spawnedCommand = command;
-            return makeMockDetachedHandle(() => {
-              didUnref = true;
-            });
-          }),
+      const spawnerLayer = makeMockDetachedProcessSpawner((launch) => {
+        spawnedLaunch = launch;
       });
 
       const result = yield* launchEditorProcess({
@@ -630,26 +589,26 @@ it.layer(NodeServices.layer)("launchEditorProcess", (it) => {
       }).pipe(Effect.provide(spawnerLayer), Effect.result);
 
       assertSuccess(result, undefined);
-      assert.ok(spawnedCommand);
-      assert.equal(spawnedCommand.command, process.execPath);
+      assert.ok(spawnedLaunch);
+      assert.equal(spawnedLaunch.command, process.execPath);
       assert.deepEqual(
-        spawnedCommand.args,
+        spawnedLaunch.args,
         process.platform === "win32" ? expectedArgs.map((arg) => `"${arg}"`) : expectedArgs,
       );
-      assert.deepEqual(spawnedCommand.options, {
+      assert.deepEqual(spawnedLaunch.options, {
         detached: true,
+        hideWindow: true,
         shell: process.platform === "win32",
         stdin: "ignore",
         stdout: "ignore",
         stderr: "ignore",
       });
-      assert.equal(didUnref, true);
     }),
   );
 
   it.effect("rejects when command does not exist", () =>
     Effect.gen(function* () {
-      const spawnerLayer = Layer.mock(ChildProcessSpawner.ChildProcessSpawner, {});
+      const spawnerLayer = makeMockDetachedProcessSpawner(() => undefined);
       const result = yield* launchEditorProcess({
         command: `t3code-no-such-command-${yield* Random.nextUUIDv4}`,
         args: [],
