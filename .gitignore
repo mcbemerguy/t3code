@@ -26,3 +26,5 @@ squashfs-root/
 .gstack/
 dist-electron/
 .electron-runtime/
+/.pi-launch-build.stamp
+/.pi-launch-install.stamp
