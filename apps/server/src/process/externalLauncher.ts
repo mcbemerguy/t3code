@@ -346,7 +346,6 @@ const nodeDetachedProcessSpawner = DetachedProcessSpawner.of({
         settle(Effect.fail(new ExternalLauncherError({ message: errorMessage, cause })));
       };
       const handleSpawn = () => {
-        childProcess?.unref();
         settle(Effect.void);
       };
 
@@ -363,6 +362,7 @@ const nodeDetachedProcessSpawner = DetachedProcessSpawner.of({
 
       childProcess.once("error", handleError);
       childProcess.once("spawn", handleSpawn);
+      childProcess.unref();
       return Effect.sync(cleanup);
     }),
 });
