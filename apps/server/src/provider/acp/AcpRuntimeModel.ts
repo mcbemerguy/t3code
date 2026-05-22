@@ -3,10 +3,12 @@ import { deriveToolActivityPresentation } from "@t3tools/shared/toolActivity";
 import type {
   RuntimeContentStreamKind,
   ServerProviderSlashCommand,
+  ThreadTokenUsageSnapshot,
   ToolLifecycleItemType,
 } from "@t3tools/contracts";
 
 import { normalizeAcpAvailableCommandsToSlashCommands } from "./AcpAvailableCommands.ts";
+import { normalizeAcpUsageUpdate } from "./AcpUsage.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -84,6 +86,11 @@ export type AcpParsedSessionEvent =
         "assistant_text" | "reasoning_text" | "reasoning_summary_text"
       >;
       readonly text: string;
+      readonly rawPayload: unknown;
+    }
+  | {
+      readonly _tag: "TokenUsageUpdated";
+      readonly usage: ThreadTokenUsageSnapshot;
       readonly rawPayload: unknown;
     };
 
@@ -498,6 +505,17 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
           streamKind:
             upd.sessionUpdate === "agent_message_chunk" ? "assistant_text" : "reasoning_text",
           text: upd.content.text,
+          rawPayload: params,
+        });
+      }
+      break;
+    }
+    case "usage_update": {
+      const usage = normalizeAcpUsageUpdate(upd);
+      if (usage) {
+        events.push({
+          _tag: "TokenUsageUpdated",
+          usage,
           rawPayload: params,
         });
       }

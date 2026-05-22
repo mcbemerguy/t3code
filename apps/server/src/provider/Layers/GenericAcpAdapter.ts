@@ -52,6 +52,7 @@ import {
 } from "../acp/AcpCoreRuntimeEvents.ts";
 import { makeAcpNativeLoggers } from "../acp/AcpNativeLogging.ts";
 import { parsePermissionRequest } from "../acp/AcpRuntimeModel.ts";
+import { normalizeAcpPromptUsage } from "../acp/AcpUsage.ts";
 import {
   AskQuestionRequest,
   extractAskQuestions,
@@ -597,6 +598,27 @@ export function makeGenericAcpAdapter(
                       }),
                     );
                     return;
+                  case "TokenUsageUpdated":
+                    yield* logNative(
+                      ctx.threadId,
+                      "session/update",
+                      event.rawPayload,
+                      "acp.jsonrpc",
+                    );
+                    yield* offerRuntimeEvent({
+                      type: "thread.token-usage.updated",
+                      ...(yield* makeEventStamp()),
+                      provider,
+                      threadId: ctx.threadId,
+                      turnId: ctx.activeTurnId,
+                      payload: { usage: event.usage },
+                      raw: {
+                        source: "acp.jsonrpc",
+                        method: "session/update",
+                        payload: event.rawPayload,
+                      },
+                    });
+                    return;
                 }
               }),
             ),
@@ -712,6 +734,23 @@ export function makeGenericAcpAdapter(
           );
         ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });
         ctx.session = { ...ctx.session, activeTurnId: turnId, updatedAt: yield* nowIso, model };
+
+        const promptUsage = normalizeAcpPromptUsage(result.usage);
+        if (promptUsage) {
+          yield* offerRuntimeEvent({
+            type: "thread.token-usage.updated",
+            ...(yield* makeEventStamp()),
+            provider,
+            threadId: input.threadId,
+            turnId,
+            payload: { usage: promptUsage },
+            raw: {
+              source: "acp.jsonrpc",
+              method: "session/prompt",
+              payload: result,
+            },
+          });
+        }
 
         yield* offerRuntimeEvent({
           type: "turn.completed",
