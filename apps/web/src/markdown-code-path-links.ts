@@ -2,9 +2,90 @@ import { resolveMarkdownFileLinkMeta, type MarkdownFileLinkMeta } from "./markdo
 
 const MAX_CODE_SPAN_PATH_LENGTH = 300;
 const URL_LIKE_PATTERN = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
-const FILENAME_WITH_TEXT_EXTENSION_PATTERN =
-  /^[A-Za-z0-9._-]+\.[A-Za-z][A-Za-z0-9_-]*(?::\d+){0,2}$/;
-const PATH_SIGNAL_PATTERN = /^(?:~\/|\.{1,2}[\/]|[\/]|[A-Za-z]:[\\/]|\\\\)|[\\/]/;
+const EXPLICIT_PATH_PREFIX_PATTERN = /^(?:~\/|\.{1,2}[\\/]|\/|[A-Za-z]:[\\/]|\\\\)/;
+const POSITION_SUFFIX_PATTERN = /:\d+(?::\d+)?$/;
+const KNOWN_FILE_EXTENSIONS = new Set([
+  "astro",
+  "bash",
+  "bat",
+  "c",
+  "cc",
+  "cmd",
+  "cpp",
+  "cs",
+  "css",
+  "cts",
+  "cxx",
+  "fish",
+  "go",
+  "h",
+  "hpp",
+  "html",
+  "java",
+  "js",
+  "json",
+  "jsonc",
+  "jsx",
+  "kt",
+  "kts",
+  "less",
+  "lock",
+  "lua",
+  "md",
+  "mdx",
+  "mjs",
+  "mts",
+  "php",
+  "ps1",
+  "py",
+  "rb",
+  "rs",
+  "sass",
+  "scss",
+  "sh",
+  "sql",
+  "svelte",
+  "swift",
+  "toml",
+  "ts",
+  "tsx",
+  "vue",
+  "xml",
+  "yaml",
+  "yml",
+  "zsh",
+]);
+const ALLOWED_BARE_FILENAMES = new Set([
+  ".dockerignore",
+  ".editorconfig",
+  ".env",
+  ".env.example",
+  ".eslintrc",
+  ".gitignore",
+  ".npmrc",
+  ".nvmrc",
+  ".prettierrc",
+  "agents.md",
+  "bun.lock",
+  "bunfig.toml",
+  "cargo.lock",
+  "cargo.toml",
+  "claude.md",
+  "dockerfile",
+  "gemini.md",
+  "go.mod",
+  "go.sum",
+  "makefile",
+  "package-lock.json",
+  "package.json",
+  "pnpm-lock.yaml",
+  "pyproject.toml",
+  "readme.md",
+  "requirements.txt",
+  "tsconfig.json",
+  "vite.config.ts",
+  "yarn.lock",
+]);
 
 export function resolveMarkdownCodeSpanPathLinkMeta(
   rawText: string,
@@ -35,5 +116,27 @@ function isGenericOnlySnippet(value: string): boolean {
 }
 
 function hasPathSignal(value: string): boolean {
-  return PATH_SIGNAL_PATTERN.test(value) || FILENAME_WITH_TEXT_EXTENSION_PATTERN.test(value);
+  if (EXPLICIT_PATH_PREFIX_PATTERN.test(value)) return true;
+
+  const pathWithoutPosition = value.replace(POSITION_SUFFIX_PATTERN, "");
+  const basename = basenameOfPathCandidate(pathWithoutPosition);
+  if (!basename) return false;
+
+  if (hasKnownFileExtension(basename)) return true;
+  return isAllowedBareFilename(basename);
+}
+
+function basenameOfPathCandidate(value: string): string {
+  const separatorIndex = Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\"));
+  return separatorIndex >= 0 ? value.slice(separatorIndex + 1) : value;
+}
+
+function isAllowedBareFilename(value: string): boolean {
+  return ALLOWED_BARE_FILENAMES.has(value.toLowerCase());
+}
+
+function hasKnownFileExtension(value: string): boolean {
+  const extensionStart = value.lastIndexOf(".");
+  if (extensionStart <= 0 || extensionStart === value.length - 1) return false;
+  return KNOWN_FILE_EXTENSIONS.has(value.slice(extensionStart + 1).toLowerCase());
 }
