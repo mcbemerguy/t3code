@@ -17,7 +17,7 @@ function nonNegativeInt(value: number | null | undefined): number | undefined {
 export function normalizeAcpUsageUpdate(
   update: AcpUsageUpdate,
 ): ThreadTokenUsageSnapshot | undefined {
-  const usedTokens = positiveInt(update.used);
+  const usedTokens = nonNegativeInt(update.used);
   if (usedTokens === undefined) {
     return undefined;
   }
