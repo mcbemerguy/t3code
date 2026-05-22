@@ -718,6 +718,12 @@ function shouldEmitToolCallUpdate(
 const assistantItemId = (sessionId: string, segmentIndex: number) =>
   `assistant:${sessionId}:segment:${segmentIndex}`;
 
+const assistantItemIdForAcpMessage = (
+  sessionId: string,
+  acpMessageId: string,
+  segmentIndex: number,
+) => `assistant:${sessionId}:message:${encodeURIComponent(acpMessageId)}:segment:${segmentIndex}`;
+
 const ensureActiveAssistantSegment = ({
   queue,
   assistantSegmentRef,
@@ -735,7 +741,11 @@ const ensureActiveAssistantSegment = ({
       if (current.activeItemId) {
         return [{ itemId: current.activeItemId }, current] as const;
       }
-      const itemId = assistantItemId(sessionId, current.nextSegmentIndex);
+      const segmentIndex = current.nextSegmentIndex;
+      // ACP message ids survive session reloads; the local segment counter does not.
+      const itemId = acpMessageId
+        ? assistantItemIdForAcpMessage(sessionId, acpMessageId, segmentIndex)
+        : assistantItemId(sessionId, segmentIndex);
       return [
         {
           itemId,
@@ -745,7 +755,7 @@ const ensureActiveAssistantSegment = ({
           } satisfies Extract<AcpParsedSessionEvent, { readonly _tag: "AssistantItemStarted" }>,
         },
         {
-          nextSegmentIndex: current.nextSegmentIndex + 1,
+          nextSegmentIndex: segmentIndex + 1,
           activeItemId: itemId,
           ...(acpMessageId ? { activeAcpMessageId: acpMessageId } : {}),
         } satisfies AcpAssistantSegmentState,
