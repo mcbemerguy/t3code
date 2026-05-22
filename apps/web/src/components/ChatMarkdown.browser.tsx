@@ -124,6 +124,45 @@ describe("ChatMarkdown", () => {
     }
   });
 
+  it("links inline code path candidates to the preferred editor", async () => {
+    const screen = await render(
+      <ChatMarkdown text="Check `src/components/ChatMarkdown.tsx:42`." cwd="/repo/project" />,
+    );
+
+    try {
+      const link = page.getByRole("link", { name: "src/components/ChatMarkdown.tsx:42" });
+      await expect.element(link).toBeInTheDocument();
+      await expect
+        .element(link)
+        .toHaveAttribute("href", "/repo/project/src/components/ChatMarkdown.tsx:42");
+
+      await link.click();
+
+      await vi.waitFor(() => {
+        expect(openInPreferredEditorMock).toHaveBeenCalledWith(
+          expect.anything(),
+          "/repo/project/src/components/ChatMarkdown.tsx:42",
+        );
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("does not link URL-like inline code", async () => {
+    const screen = await render(
+      <ChatMarkdown text="Open `https://example.com/docs`." cwd="/repo/project" />,
+    );
+
+    try {
+      await expect
+        .element(page.getByRole("link", { name: "https://example.com/docs" }))
+        .not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("keeps normal web links unchanged", async () => {
     const screen = await render(
       <ChatMarkdown text="[OpenAI](https://openai.com/docs)" cwd="/repo/project" />,

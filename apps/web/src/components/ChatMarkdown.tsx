@@ -4,7 +4,7 @@ import type { ServerProviderSkill } from "@t3tools/contracts";
 import React, {
   Children,
   Suspense,
-  type MouseEvent as ReactMouseEvent,
+  cloneElement,
   isValidElement,
   use,
   useCallback,
@@ -19,11 +19,8 @@ import type { Components } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { VscodeEntryIcon } from "./chat/VscodeEntryIcon";
-import { renderSkillInlineMarkdownChildren } from "./chat/SkillInlineText";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
-import { stackedThreadToast, toastManager } from "./ui/toast";
-import { openInPreferredEditor } from "../editorPreferences";
+import { MarkdownFileLink } from "./chat/MarkdownFileLink";
+import { SkillInlineText } from "./chat/SkillInlineText";
 import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
 import { fnv1a32 } from "../lib/diffRendering";
 import { LRUCache } from "../lib/lruCache";
@@ -33,8 +30,7 @@ import {
   resolveMarkdownFileLinkMeta,
   rewriteMarkdownFileUriHref,
 } from "../markdown-links";
-import { readLocalApi } from "../localApi";
-import { cn } from "../lib/utils";
+import { resolveMarkdownCodeSpanPathLinkMeta } from "../markdown-code-path-links";
 
 class CodeHighlightErrorBoundary extends React.Component<
   { fallback: ReactNode; children: ReactNode },
@@ -276,21 +272,7 @@ function UncachedShikiCodeBlock({
   );
 }
 
-interface MarkdownFileLinkProps {
-  href: string;
-  targetPath: string;
-  displayPath: string;
-  filePath: string;
-  label: string;
-  theme: "light" | "dark";
-  className?: string | undefined;
-}
-
 const MARKDOWN_LINK_HREF_PATTERN = /\[[^\]]*]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g;
-const MARKDOWN_FILE_LINK_CLASS_NAME =
-  "chat-markdown-file-link relative top-[2px] max-w-full no-underline";
-const MARKDOWN_FILE_LINK_ICON_CLASS_NAME = "chat-markdown-file-link-icon size-3.5 shrink-0";
-const MARKDOWN_FILE_LINK_LABEL_CLASS_NAME = "chat-markdown-file-link-label truncate";
 
 function pathParentSegments(path: string): string[] {
   const normalized = path.replaceAll("\\", "/");
@@ -367,149 +349,48 @@ function normalizeMarkdownLinkHrefKey(href: string): string {
   return rewriteMarkdownFileUriHref(normalizedHref) ?? normalizedHref;
 }
 
-const MarkdownFileLink = memo(function MarkdownFileLink({
-  href,
-  targetPath,
-  displayPath,
-  filePath,
-  label,
-  theme,
-  className,
-}: MarkdownFileLinkProps) {
-  const handleOpen = useCallback(() => {
-    const api = readLocalApi();
-    if (!api) {
-      toastManager.add({
-        type: "error",
-        title: "Open in editor is unavailable",
-      });
-      return;
+function renderChatInlineMarkdownChildren(
+  children: ReactNode,
+  skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>,
+  cwd: string | undefined,
+  theme: "light" | "dark",
+): ReactNode {
+  return Children.map(children, (child) => {
+    if (typeof child === "string") {
+      return <SkillInlineText text={child} skills={skills} />;
     }
-
-    void openInPreferredEditor(api, targetPath).catch((error) => {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Unable to open file",
-          description: error instanceof Error ? error.message : "An error occurred.",
-        }),
-      );
-    });
-  }, [targetPath]);
-
-  const handleCopy = useCallback((value: string, title: string) => {
-    if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: `Failed to copy ${title.toLowerCase()}`,
-          description: "Clipboard API unavailable.",
-        }),
-      );
-      return;
+    if (!isValidElement<{ children?: ReactNode; className?: string }>(child)) {
+      return child;
     }
-
-    void navigator.clipboard.writeText(value).then(
-      () => {
-        toastManager.add({
-          type: "success",
-          title: `${title} copied`,
-          description: value,
-        });
-      },
-      (error) => {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: `Failed to copy ${title.toLowerCase()}`,
-            description: error instanceof Error ? error.message : "An error occurred.",
-          }),
-        );
-      },
+    if (child.type === "code") {
+      const codeText = nodeToPlainText(child.props.children);
+      const fileLinkMeta = resolveMarkdownCodeSpanPathLinkMeta(codeText, cwd);
+      if (!fileLinkMeta) return child;
+      return (
+        <MarkdownFileLink
+          href={fileLinkMeta.targetPath}
+          targetPath={fileLinkMeta.targetPath}
+          displayPath={fileLinkMeta.displayPath}
+          filePath={fileLinkMeta.filePath}
+          label={codeText}
+          theme={theme}
+          className="chat-markdown-inline-code-path-link"
+          showIcon={false}
+        />
+      );
+    }
+    if (child.type === "a") {
+      return child;
+    }
+    if (!("children" in child.props)) {
+      return child;
+    }
+    return cloneElement(
+      child,
+      undefined,
+      renderChatInlineMarkdownChildren(child.props.children, skills, cwd, theme),
     );
-  }, []);
-
-  const handleContextMenu = useCallback(
-    async (event: ReactMouseEvent<HTMLAnchorElement>) => {
-      event.preventDefault();
-      event.stopPropagation();
-
-      const api = readLocalApi();
-      if (!api) return;
-
-      const clicked = await api.contextMenu.show(
-        [
-          { id: "open", label: "Open in editor" },
-          { id: "copy-relative", label: "Copy relative path" },
-          { id: "copy-full", label: "Copy full path" },
-        ] as const,
-        { x: event.clientX, y: event.clientY },
-      );
-
-      if (clicked === "open") {
-        handleOpen();
-        return;
-      }
-      if (clicked === "copy-relative") {
-        handleCopy(displayPath, "Relative path");
-        return;
-      }
-      if (clicked === "copy-full") {
-        handleCopy(targetPath, "Full path");
-      }
-    },
-    [displayPath, handleCopy, handleOpen, targetPath],
-  );
-
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <a
-            href={href}
-            className={cn(MARKDOWN_FILE_LINK_CLASS_NAME, className)}
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              handleOpen();
-            }}
-            onContextMenu={handleContextMenu}
-          >
-            <VscodeEntryIcon
-              pathValue={filePath}
-              kind="file"
-              theme={theme}
-              className={cn(MARKDOWN_FILE_LINK_ICON_CLASS_NAME, "text-current")}
-            />
-            <span className={MARKDOWN_FILE_LINK_LABEL_CLASS_NAME}>{label}</span>
-          </a>
-        }
-      />
-      <TooltipPopup
-        side="top"
-        className="max-w-[min(40rem,calc(100vw-2rem))] font-mono text-[11px] leading-tight"
-      >
-        <div className="markdown-file-link-tooltip-scroll overflow-x-auto whitespace-nowrap">
-          {displayPath}
-        </div>
-      </TooltipPopup>
-    </Tooltip>
-  );
-}, areMarkdownFileLinkPropsEqual);
-
-function areMarkdownFileLinkPropsEqual(
-  previous: Readonly<MarkdownFileLinkProps>,
-  next: Readonly<MarkdownFileLinkProps>,
-): boolean {
-  return (
-    previous.href === next.href &&
-    previous.targetPath === next.targetPath &&
-    previous.displayPath === next.displayPath &&
-    previous.filePath === next.filePath &&
-    previous.label === next.label &&
-    previous.theme === next.theme &&
-    previous.className === next.className
-  );
+  });
 }
 
 function ChatMarkdown({
@@ -545,10 +426,16 @@ function ChatMarkdown({
   const markdownComponents = useMemo<Components>(
     () => ({
       p({ node: _node, children, ...props }) {
-        return <p {...props}>{renderSkillInlineMarkdownChildren(children, skills)}</p>;
+        return (
+          <p {...props}>{renderChatInlineMarkdownChildren(children, skills, cwd, resolvedTheme)}</p>
+        );
       },
       li({ node: _node, children, ...props }) {
-        return <li {...props}>{renderSkillInlineMarkdownChildren(children, skills)}</li>;
+        return (
+          <li {...props}>
+            {renderChatInlineMarkdownChildren(children, skills, cwd, resolvedTheme)}
+          </li>
+        );
       },
       a({ node: _node, href, ...props }) {
         const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
@@ -603,6 +490,7 @@ function ChatMarkdown({
       },
     }),
     [
+      cwd,
       diffThemeName,
       fileLinkParentSuffixByPath,
       isStreaming,
