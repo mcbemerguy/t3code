@@ -1,4 +1,10 @@
 import type {
+  CustomAcpSessionImportInput,
+  CustomAcpSessionImportResult,
+  CustomAcpSessionListInput,
+  CustomAcpSessionListResult,
+} from "./customAcpSessions.ts";
+import type {
   VcsSwitchRefInput,
   VcsSwitchRefResult,
   VcsCreateRefInput,
@@ -543,6 +549,10 @@ export interface EnvironmentApi {
     preparePullRequestThread: (
       input: GitPreparePullRequestThreadInput,
     ) => Promise<GitPreparePullRequestThreadResult>;
+  };
+  customAcp: {
+    listSessions: (input: CustomAcpSessionListInput) => Promise<CustomAcpSessionListResult>;
+    importSession: (input: CustomAcpSessionImportInput) => Promise<CustomAcpSessionImportResult>;
   };
   orchestration: {
     dispatchCommand: (command: ClientOrchestrationCommand) => Promise<{ sequence: number }>;

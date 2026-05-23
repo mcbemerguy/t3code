@@ -112,6 +112,10 @@ export interface WsRpcClient {
       typeof WS_METHODS.gitPreparePullRequestThread
     >;
   };
+  readonly customAcp: {
+    readonly listSessions: RpcUnaryMethod<typeof WS_METHODS.customAcpListSessions>;
+    readonly importSession: RpcUnaryMethod<typeof WS_METHODS.customAcpImportSession>;
+  };
   readonly server: {
     readonly getConfig: RpcUnaryNoArgMethod<typeof WS_METHODS.serverGetConfig>;
     /**
@@ -245,6 +249,12 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.gitResolvePullRequest](input)),
       preparePullRequestThread: (input) =>
         transport.request((client) => client[WS_METHODS.gitPreparePullRequestThread](input)),
+    },
+    customAcp: {
+      listSessions: (input) =>
+        transport.request((client) => client[WS_METHODS.customAcpListSessions](input)),
+      importSession: (input) =>
+        transport.request((client) => client[WS_METHODS.customAcpImportSession](input)),
     },
     server: {
       getConfig: () => transport.request((client) => client[WS_METHODS.serverGetConfig]({})),

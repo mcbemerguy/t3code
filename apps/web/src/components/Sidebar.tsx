@@ -40,6 +40,7 @@ import {
   type ContextMenuItem,
   type DesktopUpdateState,
   ProjectId,
+  ProviderDriverKind,
   type ScopedThreadRef,
   type SidebarProjectGroupingMode,
   type ThreadEnvMode,
@@ -178,7 +179,7 @@ import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { CommandDialogTrigger } from "./ui/command";
 import { readEnvironmentApi } from "../environmentApi";
 import { useSettings, useUpdateSettings } from "~/hooks/useSettings";
-import { useServerKeybindings } from "../rpc/serverState";
+import { useServerKeybindings, useServerProviders } from "../rpc/serverState";
 import {
   derivePhysicalProjectKey,
   deriveProjectGroupingOverrideKey,
@@ -197,6 +198,7 @@ import {
   type SidebarProjectSnapshot,
 } from "../sidebarProjectGrouping";
 import { SidebarProviderUpdatePill } from "./sidebar/SidebarProviderUpdatePill";
+import { ImportAcpSessionDialog } from "./custom-acp/ImportAcpSessionDialog";
 const SIDEBAR_SORT_LABELS: Record<SidebarProjectSortOrder, string> = {
   updated_at: "Last user message",
   created_at: "Created at",
@@ -942,7 +944,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     (settings) => settings.defaultThreadEnvMode,
   );
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
+  const appSettings = useSettings();
   const { updateSettings } = useUpdateSettings();
+  const serverProviders = useServerProviders();
   const sidebarThreadPreviewCount = useSettings<SidebarThreadPreviewCount>(
     (settings) => settings.sidebarThreadPreviewCount,
   );
@@ -1068,6 +1072,8 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   const [projectGroupingSelection, setProjectGroupingSelection] = useState<
     SidebarProjectGroupingMode | "inherit"
   >("inherit");
+  const [importAcpSessionTarget, setImportAcpSessionTarget] =
+    useState<SidebarProjectGroupMember | null>(null);
   const renamingCommittedRef = useRef(false);
   const renamingInputRef = useRef<HTMLInputElement | null>(null);
   const confirmArchiveButtonRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -1432,8 +1438,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         if (!api) return;
 
         const actionHandlers = new Map<string, () => Promise<void> | void>();
+        type ProjectContextAction = "rename" | "grouping" | "copy-path" | "import-acp" | "delete";
         const makeLeaf = (
-          action: "rename" | "grouping" | "copy-path" | "delete",
+          action: ProjectContextAction,
           member: SidebarProjectGroupMember,
           options?: {
             destructive?: boolean;
@@ -1452,6 +1459,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
               case "copy-path":
                 copyPathToClipboard(member.cwd, { path: member.cwd });
                 return;
+              case "import-acp":
+                setImportAcpSessionTarget(member);
+                return;
               case "delete":
                 return handleRemoveProject(member);
             }
@@ -1466,7 +1476,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         };
 
         const buildTargetedItem = (
-          action: "rename" | "grouping" | "copy-path" | "delete",
+          action: ProjectContextAction,
           label: string,
           options?: {
             destructive?: boolean;
@@ -1501,6 +1511,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
             buildTargetedItem("rename", "Rename project"),
             buildTargetedItem("grouping", "Project grouping…"),
             buildTargetedItem("copy-path", "Copy Project Path"),
+            buildTargetedItem("import-acp", "Import ACP session…"),
             buildTargetedItem("delete", "Remove project", {
               destructive: true,
             }),
@@ -1525,6 +1536,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       openProjectRenameDialog,
       project.groupedProjectCount,
       project.memberProjects,
+      setImportAcpSessionTarget,
       suppressProjectClickForContextMenuRef,
     ],
   );
@@ -1900,6 +1912,21 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     updateSettings,
   ]);
 
+  const preferredCustomAcpProviderInstanceId = useMemo(() => {
+    const currentRouteParams = router.state.matches[router.state.matches.length - 1]?.params ?? {};
+    const currentRouteTarget = resolveThreadRouteTarget(currentRouteParams);
+    if (currentRouteTarget?.kind === "server") {
+      const currentThread = selectThreadByRef(useStore.getState(), currentRouteTarget.threadRef);
+      if (
+        currentThread?.session?.provider === ProviderDriverKind.make("customAcp") &&
+        currentThread.session.providerInstanceId
+      ) {
+        return currentThread.session.providerInstanceId;
+      }
+    }
+    return appSettings.textGenerationModelSelection?.instanceId ?? null;
+  }, [appSettings.textGenerationModelSelection?.instanceId, router.state.matches]);
+
   const handleThreadContextMenu = useCallback(
     async (threadRef: ScopedThreadRef, position: { x: number; y: number }) => {
       const api = readLocalApi();
@@ -2225,6 +2252,34 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           </DialogFooter>
         </DialogPopup>
       </Dialog>
+
+      {importAcpSessionTarget ? (
+        <ImportAcpSessionDialog
+          open={importAcpSessionTarget !== null}
+          onOpenChange={(open) => {
+            if (!open) {
+              setImportAcpSessionTarget(null);
+            }
+          }}
+          api={readEnvironmentApi(importAcpSessionTarget.environmentId) ?? null}
+          projectId={importAcpSessionTarget.id}
+          cwd={importAcpSessionTarget.cwd}
+          providers={serverProviders}
+          settings={appSettings}
+          preferredProviderInstanceId={preferredCustomAcpProviderInstanceId}
+          onImported={(threadId) => {
+            const target = importAcpSessionTarget;
+            setImportAcpSessionTarget(null);
+            if (isMobile) {
+              setOpenMobile(false);
+            }
+            void router.navigate({
+              to: "/$environmentId/$threadId",
+              params: buildThreadRouteParams(scopeThreadRef(target.environmentId, threadId)),
+            });
+          }}
+        />
+      ) : null}
     </>
   );
 });

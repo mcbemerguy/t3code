@@ -82,6 +82,10 @@ const rpcClientMock = {
     resolvePullRequest: vi.fn(),
     preparePullRequestThread: vi.fn(),
   },
+  customAcp: {
+    listSessions: vi.fn(),
+    importSession: vi.fn(),
+  },
   server: {
     getConfig: vi.fn(),
     refreshProviders: vi.fn(),
@@ -444,6 +448,38 @@ describe("wsApi", () => {
     await api.orchestration.dispatchCommand(command);
 
     expect(rpcClientMock.orchestration.dispatchCommand).toHaveBeenCalledWith(command);
+  });
+
+  it("forwards Custom ACP session import RPC calls", async () => {
+    rpcClientMock.customAcp.listSessions.mockResolvedValue({
+      providerInstanceId: ProviderInstanceId.make("custom-one"),
+      sessions: [],
+      nextCursor: null,
+    });
+    rpcClientMock.customAcp.importSession.mockResolvedValue({
+      threadId: ThreadId.make("thread-imported"),
+      sequence: 2,
+    });
+    const { createEnvironmentApi } = await import("./environmentApi");
+
+    const api = createEnvironmentApi(rpcClientMock as never);
+    const listInput = {
+      providerInstanceId: ProviderInstanceId.make("custom-one"),
+      cwd: "/tmp/project",
+    };
+    await api.customAcp.listSessions(listInput);
+    const importInput = {
+      providerInstanceId: ProviderInstanceId.make("custom-one"),
+      projectId: ProjectId.make("project-1"),
+      cwd: "/tmp/project",
+      sessionId: "session-1",
+      modelSelection: { instanceId: ProviderInstanceId.make("custom-one"), model: "model-a" },
+      runtimeMode: "full-access" as const,
+    };
+    await api.customAcp.importSession(importInput);
+
+    expect(rpcClientMock.customAcp.listSessions).toHaveBeenCalledWith(listInput);
+    expect(rpcClientMock.customAcp.importSession).toHaveBeenCalledWith(importInput);
   });
 
   it("forwards workspace file writes to the project RPC", async () => {
