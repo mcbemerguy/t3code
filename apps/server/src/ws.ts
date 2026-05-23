@@ -51,6 +51,10 @@ import {
 } from "./observability/RpcInstrumentation.ts";
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
+import {
+  importCustomAcpExternalSession,
+  listCustomAcpExternalSessions,
+} from "./provider/acp/CustomAcpSessionImport.ts";
 import { ServerLifecycleEvents } from "./serverLifecycleEvents.ts";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
@@ -832,6 +836,18 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               );
             }),
             { "rpc.aggregate": "orchestration" },
+          ),
+        [WS_METHODS.customAcpListSessions]: (input) =>
+          observeRpcEffect(WS_METHODS.customAcpListSessions, listCustomAcpExternalSessions(input), {
+            "rpc.aggregate": "custom-acp",
+          }),
+        [WS_METHODS.customAcpImportSession]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.customAcpImportSession,
+            importCustomAcpExternalSession(input),
+            {
+              "rpc.aggregate": "custom-acp",
+            },
           ),
         [WS_METHODS.serverGetConfig]: (_input) =>
           observeRpcEffect(WS_METHODS.serverGetConfig, loadServerConfig, {

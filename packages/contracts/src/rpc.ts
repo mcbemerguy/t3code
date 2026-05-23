@@ -5,6 +5,13 @@ import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import { ExternalLauncherError, LaunchEditorInput } from "./editor.ts";
 import { AuthAccessStreamEvent } from "./auth.ts";
 import {
+  CustomAcpSessionImportError,
+  CustomAcpSessionImportInput,
+  CustomAcpSessionImportResult,
+  CustomAcpSessionListInput,
+  CustomAcpSessionListResult,
+} from "./customAcpSessions.ts";
+import {
   FilesystemBrowseInput,
   FilesystemBrowseResult,
   FilesystemBrowseError,
@@ -136,6 +143,10 @@ export const WS_METHODS = {
   terminalRestart: "terminal.restart",
   terminalClose: "terminal.close",
 
+  // Custom ACP external session import
+  customAcpListSessions: "customAcp.listSessions",
+  customAcpImportSession: "customAcp.importSession",
+
   // Server meta
   serverGetConfig: "server.getConfig",
   serverRefreshProviders: "server.refreshProviders",
@@ -162,6 +173,18 @@ export const WS_METHODS = {
   subscribeServerLifecycle: "subscribeServerLifecycle",
   subscribeAuthAccess: "subscribeAuthAccess",
 } as const;
+
+export const WsCustomAcpListSessionsRpc = Rpc.make(WS_METHODS.customAcpListSessions, {
+  payload: CustomAcpSessionListInput,
+  success: CustomAcpSessionListResult,
+  error: CustomAcpSessionImportError,
+});
+
+export const WsCustomAcpImportSessionRpc = Rpc.make(WS_METHODS.customAcpImportSession, {
+  payload: CustomAcpSessionImportInput,
+  success: CustomAcpSessionImportResult,
+  error: CustomAcpSessionImportError,
+});
 
 export const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
   payload: ServerUpsertKeybindingInput,
@@ -473,6 +496,8 @@ export const WsSubscribeAuthAccessRpc = Rpc.make(WS_METHODS.subscribeAuthAccess,
 });
 
 export const WsRpcGroup = RpcGroup.make(
+  WsCustomAcpListSessionsRpc,
+  WsCustomAcpImportSessionRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
   WsServerUpdateProviderRpc,

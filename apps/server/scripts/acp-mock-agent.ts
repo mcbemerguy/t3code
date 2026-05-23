@@ -27,6 +27,8 @@ const emitThoughtLevelConfig = process.env.T3_ACP_EMIT_THOUGHT_LEVEL_CONFIG === 
 const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
+const enableSessionList = process.env.T3_ACP_ENABLE_SESSION_LIST === "1";
+const failLoadSession = process.env.T3_ACP_FAIL_LOAD_SESSION === "1";
 const sessionId = "mock-session-1";
 
 let currentModeId = "ask";
@@ -264,7 +266,10 @@ const program = Effect.gen(function* () {
         request.clientCapabilities?._meta?.parameterizedModelPicker === true;
       return {
         protocolVersion: 1,
-        agentCapabilities: { loadSession: true },
+        agentCapabilities: {
+          loadSession: true,
+          ...(enableSessionList ? { sessionCapabilities: { list: {} } } : {}),
+        },
       };
     }),
   );
@@ -294,21 +299,41 @@ const program = Effect.gen(function* () {
     }),
   );
 
-  yield* agent.handleLoadSession((request) =>
-    agent.client
-      .sessionUpdate({
-        sessionId: String(request.sessionId ?? sessionId),
-        update: {
-          sessionUpdate: "user_message_chunk",
-          content: { type: "text", text: "replay" },
+  yield* agent.handleListSessions((request) =>
+    Effect.succeed({
+      sessions: [
+        {
+          sessionId: "external-session-1",
+          cwd: request.cwd ?? process.cwd(),
+          title: "External session",
+          updatedAt: "2026-05-23T00:00:00.000Z",
         },
-      })
-      .pipe(
-        Effect.as({
-          modes: modeState(),
-          configOptions: configOptions(),
-        }),
-      ),
+      ],
+      nextCursor: request.cursor ? null : "next-page",
+    }),
+  );
+
+  yield* agent.handleLoadSession((request) =>
+    failLoadSession
+      ? Effect.fail(
+          AcpError.AcpRequestError.invalidParams("Mock failed session/load", {
+            method: "session/load",
+          }),
+        )
+      : agent.client
+          .sessionUpdate({
+            sessionId: String(request.sessionId ?? sessionId),
+            update: {
+              sessionUpdate: "user_message_chunk",
+              content: { type: "text", text: "replay" },
+            },
+          })
+          .pipe(
+            Effect.as({
+              modes: modeState(),
+              configOptions: configOptions(),
+            }),
+          ),
   );
 
   yield* agent.handleSetSessionConfigOption((request) =>
