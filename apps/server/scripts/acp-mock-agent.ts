@@ -29,6 +29,7 @@ const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
 const enableSessionList = process.env.T3_ACP_ENABLE_SESSION_LIST === "1";
 const failLoadSession = process.env.T3_ACP_FAIL_LOAD_SESSION === "1";
+const listExtraCwd = process.env.T3_ACP_LIST_EXTRA_CWD;
 const sessionId = "mock-session-1";
 
 let currentModeId = "ask";
@@ -308,6 +309,16 @@ const program = Effect.gen(function* () {
           title: "External session",
           updatedAt: "2026-05-23T00:00:00.000Z",
         },
+        ...(listExtraCwd
+          ? [
+              {
+                sessionId: "external-session-outside-cwd",
+                cwd: listExtraCwd,
+                title: "Outside cwd session",
+                updatedAt: "2026-05-22T00:00:00.000Z",
+              },
+            ]
+          : []),
       ],
       nextCursor: request.cursor ? null : "next-page",
     }),

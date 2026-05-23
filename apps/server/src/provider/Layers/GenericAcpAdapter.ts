@@ -114,12 +114,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function parseCustomAcpResume(
   provider: ProviderDriverKind,
   raw: unknown,
-): { sessionId: string } | undefined {
+): { sessionId: string; requireResumeSession: boolean } | undefined {
   if (!isRecord(raw)) return undefined;
   if (raw.schemaVersion !== CUSTOM_ACP_RESUME_VERSION) return undefined;
   if (raw.provider !== provider) return undefined;
   if (typeof raw.sessionId !== "string" || !raw.sessionId.trim()) return undefined;
-  return { sessionId: raw.sessionId.trim() };
+  return { sessionId: raw.sessionId.trim(), requireResumeSession: raw.requireSessionLoad === true };
 }
 
 function settlePendingApprovalsAsCancelled(
@@ -338,7 +338,8 @@ export function makeGenericAcpAdapter(
             });
           }
 
-          const resumeSessionId = parseCustomAcpResume(provider, input.resumeCursor)?.sessionId;
+          const resumeTarget = parseCustomAcpResume(provider, input.resumeCursor);
+          const resumeSessionId = resumeTarget?.sessionId;
           const acpNativeLoggers = makeAcpNativeLoggers({
             nativeEventLogger,
             provider,
@@ -349,7 +350,12 @@ export function makeGenericAcpAdapter(
             ...(options?.environment ? { environment: options.environment } : {}),
             childProcessSpawner,
             cwd,
-            ...(resumeSessionId ? { resumeSessionId } : {}),
+            ...(resumeSessionId
+              ? {
+                  resumeSessionId,
+                  ...(resumeTarget.requireResumeSession ? { requireResumeSession: true } : {}),
+                }
+              : {}),
             clientInfo: { name: "t3-code", version: "0.0.0" },
             ...acpNativeLoggers,
           }).pipe(

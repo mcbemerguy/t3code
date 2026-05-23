@@ -19,6 +19,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import {
   OrchestrationEngineService,
@@ -30,6 +31,7 @@ import {
   listCustomAcpExternalSessions,
   importCustomAcpExternalSession,
 } from "./CustomAcpSessionImport.ts";
+import { makeCustomAcpRuntime } from "./CustomAcpSupport.ts";
 
 const decodeCustomAcpSettings = Schema.decodeSync(CustomAcpSettings);
 const customAcpDriver = ProviderDriverKind.make("customAcp");
@@ -143,6 +145,27 @@ describe("Custom ACP external session import", () => {
     },
   );
 
+  it.effect("filters out listed sessions outside the requested cwd", () => {
+    const outsideCwd = path.join(os.tmpdir(), `custom-acp-outside-${crypto.randomUUID()}`);
+    return Effect.gen(function* () {
+      const result = yield* listCustomAcpExternalSessions({
+        providerInstanceId: customAcpInstanceId,
+        cwd: process.cwd(),
+      });
+
+      expect(result.sessions.map((session) => session.sessionId)).toEqual(["external-session-1"]);
+      assert.equal(result.sessions[0]?.cwd, process.cwd());
+    }).pipe(
+      Effect.provide(
+        discoveryLayer(
+          makeCustomAcpSettings({
+            env: envText({ T3_ACP_ENABLE_SESSION_LIST: "1", T3_ACP_LIST_EXTRA_CWD: outsideCwd }),
+          }),
+        ),
+      ),
+    );
+  });
+
   it.effect("fails clearly when session/list is not advertised", () =>
     Effect.gen(function* () {
       const exit = yield* Effect.exit(
@@ -153,6 +176,42 @@ describe("Custom ACP external session import", () => {
       );
       assert.isTrue(exit._tag === "Failure");
     }).pipe(Effect.provide(discoveryLayer(makeCustomAcpSettings()))),
+  );
+
+  it.effect(
+    "strict Custom ACP resume does not fall back to session/new when session/load fails",
+    () => {
+      const requestLog = path.join(
+        os.tmpdir(),
+        `custom-acp-import-strict-resume-${crypto.randomUUID()}.jsonl`,
+      );
+      return Effect.gen(function* () {
+        const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const exit = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const runtime = yield* makeCustomAcpRuntime({
+              settings: makeCustomAcpSettings({
+                env: envText({
+                  T3_ACP_REQUEST_LOG_PATH: requestLog,
+                  T3_ACP_FAIL_LOAD_SESSION: "1",
+                }),
+              }),
+              childProcessSpawner,
+              cwd: process.cwd(),
+              resumeSessionId: "external-session-1",
+              requireResumeSession: true,
+              clientInfo: { name: "t3-code", version: "0.0.0" },
+            });
+            return yield* Effect.exit(runtime.start());
+          }),
+        );
+
+        assert.isTrue(exit._tag === "Failure");
+        const loggedMethods = methods(yield* Effect.promise(() => readJsonLines(requestLog)));
+        assert.include(loggedMethods, "session/load");
+        assert.notInclude(loggedMethods, "session/new");
+      }).pipe(Effect.provide(NodeServices.layer));
+    },
   );
 
   it.effect(
@@ -222,6 +281,7 @@ describe("Custom ACP external session import", () => {
           schemaVersion: 1,
           provider: "customAcp",
           sessionId: "external-session-1",
+          requireSessionLoad: true,
         });
         expect(commands.map((command) => command.type)).toEqual([
           "thread.create",

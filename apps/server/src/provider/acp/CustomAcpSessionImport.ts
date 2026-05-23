@@ -13,6 +13,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import * as EffectAcpSchema from "effect-acp/schema";
@@ -29,6 +30,7 @@ import {
 } from "./CustomAcpSupport.ts";
 
 const CUSTOM_ACP_DRIVER = ProviderDriverKind.make("customAcp");
+const CUSTOM_ACP_SESSION_LIST_TIMEOUT_MS = 15_000;
 const decodeInitializeResponse = Schema.decodeUnknownEffect(EffectAcpSchema.InitializeResponse);
 const decodeListSessionsResponse = Schema.decodeUnknownEffect(EffectAcpSchema.ListSessionsResponse);
 const decodeCustomAcpSettings = Schema.decodeUnknownEffect(CustomAcpSettings);
@@ -45,6 +47,16 @@ function importError(input: {
 
 function isAbsolutePath(value: string): boolean {
   return value.startsWith("/") || /^[a-zA-Z]:[\\/]/u.test(value) || value.startsWith("\\\\");
+}
+
+function normalizeCwdForScope(value: string): string {
+  const replaced = value.trim().replace(/\\+/gu, "/").replace(/\/+/gu, "/");
+  const withoutTrailing = replaced.length > 1 ? replaced.replace(/\/+$/u, "") : replaced;
+  return withoutTrailing.replace(/^[a-zA-Z]:/u, (drive) => drive.toLowerCase());
+}
+
+function cwdMatchesScope(sessionCwd: string, requestedCwd: string): boolean {
+  return normalizeCwdForScope(sessionCwd) === normalizeCwdForScope(requestedCwd);
 }
 
 function assertAbsoluteCwd(input: {
@@ -170,63 +182,77 @@ export const listCustomAcpExternalSessions = (input: CustomAcpSessionListInput) 
 
     return yield* Effect.scoped(
       Effect.gen(function* () {
-        const runtime = yield* makeCustomAcpRuntime({
-          settings,
-          environment,
-          childProcessSpawner,
-          cwd: input.cwd,
-          clientInfo: { name: "t3-code-custom-acp-session-import", version: "0.0.0" },
-        });
-
-        const initializePayload = {
-          protocolVersion: 1,
-          clientCapabilities: {
-            fs: { readTextFile: false, writeTextFile: false },
-            terminal: false,
-            ...buildCustomAcpClientCapabilities(settings),
-          },
-          clientInfo: { name: "t3-code-custom-acp-session-import", version: "0.0.0" },
-        } satisfies EffectAcpSchema.InitializeRequest;
-        const initializeResult = yield* runtime
-          .request("initialize", initializePayload)
-          .pipe(Effect.flatMap(decodeInitializeResponse));
-
-        const authMethodId = normalizeCustomAcpAuthMethodId(settings.authMethodId);
-        if (authMethodId) {
-          yield* runtime.request("authenticate", { methodId: authMethodId });
-        }
-
-        if (!initializeResult.agentCapabilities?.sessionCapabilities?.list) {
-          return yield* importError({
-            operation: "list",
-            providerInstanceId: input.providerInstanceId,
-            reason: "Custom ACP agent does not support session/list.",
+        const result = yield* Effect.gen(function* () {
+          const runtime = yield* makeCustomAcpRuntime({
+            settings,
+            environment,
+            childProcessSpawner,
+            cwd: input.cwd,
+            clientInfo: { name: "t3-code-custom-acp-session-import", version: "0.0.0" },
           });
-        }
 
-        const response = yield* runtime
-          .request("session/list", { cwd: input.cwd, cursor: input.cursor ?? undefined })
-          .pipe(Effect.flatMap(decodeListSessionsResponse));
+          const initializePayload = {
+            protocolVersion: 1,
+            clientCapabilities: {
+              fs: { readTextFile: false, writeTextFile: false },
+              terminal: false,
+              ...buildCustomAcpClientCapabilities(settings),
+            },
+            clientInfo: { name: "t3-code-custom-acp-session-import", version: "0.0.0" },
+          } satisfies EffectAcpSchema.InitializeRequest;
+          const initializeResult = yield* runtime
+            .request("initialize", initializePayload)
+            .pipe(Effect.flatMap(decodeInitializeResponse));
 
-        return {
-          providerInstanceId: input.providerInstanceId,
-          sessions: response.sessions.flatMap((session) => {
-            const sessionId = session.sessionId.trim();
-            const cwd = session.cwd.trim();
-            if (!sessionId || !cwd) {
-              return [];
-            }
-            return [
-              {
-                sessionId,
-                cwd,
-                title: session.title?.trim() || null,
-                updatedAt: session.updatedAt?.trim() || null,
-              },
-            ];
-          }),
-          nextCursor: response.nextCursor?.trim() || null,
-        } satisfies CustomAcpSessionListResult;
+          const authMethodId = normalizeCustomAcpAuthMethodId(settings.authMethodId);
+          if (authMethodId) {
+            yield* runtime.request("authenticate", { methodId: authMethodId });
+          }
+
+          if (!initializeResult.agentCapabilities?.sessionCapabilities?.list) {
+            return yield* importError({
+              operation: "list",
+              providerInstanceId: input.providerInstanceId,
+              reason: "Custom ACP agent does not support session/list.",
+            });
+          }
+
+          const response = yield* runtime
+            .request("session/list", { cwd: input.cwd, cursor: input.cursor ?? undefined })
+            .pipe(Effect.flatMap(decodeListSessionsResponse));
+
+          return {
+            providerInstanceId: input.providerInstanceId,
+            sessions: response.sessions.flatMap((session) => {
+              const sessionId = session.sessionId.trim();
+              const cwd = session.cwd.trim();
+              if (!sessionId || !cwd || !cwdMatchesScope(cwd, input.cwd)) {
+                return [];
+              }
+              return [
+                {
+                  sessionId,
+                  cwd,
+                  title: session.title?.trim() || null,
+                  updatedAt: session.updatedAt?.trim() || null,
+                },
+              ];
+            }),
+            nextCursor: response.nextCursor?.trim() || null,
+          } satisfies CustomAcpSessionListResult;
+        }).pipe(Effect.timeoutOption(CUSTOM_ACP_SESSION_LIST_TIMEOUT_MS));
+
+        return yield* Option.match(result, {
+          onNone: () =>
+            Effect.fail(
+              importError({
+                operation: "list",
+                providerInstanceId: input.providerInstanceId,
+                reason: "Custom ACP session listing timed out.",
+              }),
+            ),
+          onSome: (value) => Effect.succeed(value),
+        });
       }),
     ).pipe(
       Effect.mapError((cause) =>
@@ -297,6 +323,7 @@ export const importCustomAcpExternalSession = (input: CustomAcpSessionImportInpu
           schemaVersion: 1,
           provider: "customAcp",
           sessionId: input.sessionId,
+          requireSessionLoad: true,
         },
       })
       .pipe(

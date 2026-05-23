@@ -42,6 +42,7 @@ export interface AcpSessionRuntimeOptions {
   readonly spawn: AcpSpawnInput;
   readonly cwd: string;
   readonly resumeSessionId?: string;
+  readonly requireResumeSession?: boolean;
   readonly clientCapabilities?: EffectAcpSchema.InitializeRequest["clientCapabilities"];
   readonly clientInfo: {
     readonly name: string;
@@ -421,6 +422,8 @@ const makeAcpSessionRuntime = (
         if (Exit.isSuccess(resumed)) {
           sessionId = options.resumeSessionId;
           sessionSetupResult = resumed.value;
+        } else if (options.requireResumeSession) {
+          return yield* Effect.failCause(resumed.cause);
         } else {
           const createPayload = {
             cwd: options.cwd,
