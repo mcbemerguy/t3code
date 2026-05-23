@@ -95,6 +95,52 @@ describe("ImportAcpSessionDialog", () => {
     }
   });
 
+  it("loads every paginated session page", async () => {
+    const listSessions = vi
+      .fn()
+      .mockResolvedValueOnce({
+        providerInstanceId: PROVIDER_ID,
+        nextCursor: "cursor-2",
+        sessions: [
+          {
+            sessionId: "session-1",
+            cwd: CWD,
+            title: "Recent work",
+            updatedAt: "2026-05-23T01:02:03.000Z",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        providerInstanceId: PROVIDER_ID,
+        nextCursor: null,
+        sessions: [
+          {
+            sessionId: "session-2",
+            cwd: CWD,
+            title: "Older work",
+            updatedAt: "2026-05-22T01:02:03.000Z",
+          },
+        ],
+      });
+    const mounted = await renderDialog({ environmentApi: api({ listSessions }) });
+
+    try {
+      await expect.element(page.getByRole("button", { name: /Recent work/ })).toBeVisible();
+      await expect.element(page.getByRole("button", { name: /Older work/ })).toBeVisible();
+      expect(listSessions).toHaveBeenNthCalledWith(1, {
+        providerInstanceId: PROVIDER_ID,
+        cwd: CWD,
+      });
+      expect(listSessions).toHaveBeenNthCalledWith(2, {
+        providerInstanceId: PROVIDER_ID,
+        cwd: CWD,
+        cursor: "cursor-2",
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("renders list state and imports then reports the returned thread", async () => {
     const importedThreadId = ThreadId.make("thread-imported");
     const importSession = vi.fn(async () => ({ threadId: importedThreadId, sequence: 7 }));
@@ -133,6 +179,37 @@ describe("ImportAcpSessionDialog", () => {
         );
         expect(onImported).toHaveBeenCalledWith(importedThreadId);
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the session list visible when an import fails", async () => {
+    const mounted = await renderDialog({
+      environmentApi: api({
+        listSessions: vi.fn(async () => ({
+          providerInstanceId: PROVIDER_ID,
+          nextCursor: null,
+          sessions: [
+            {
+              sessionId: "session-1",
+              cwd: CWD,
+              title: "Prior work",
+              updatedAt: "2026-05-23T01:02:03.000Z",
+            },
+          ],
+        })),
+        importSession: vi.fn(async () => Promise.reject(new Error("Import denied"))),
+      }),
+    });
+
+    try {
+      await expect.element(page.getByRole("button", { name: /Prior work/ })).toBeVisible();
+      await page.getByRole("button", { name: /Prior work/ }).click();
+
+      await expect.element(page.getByText("Unable to import ACP session")).toBeVisible();
+      await expect.element(page.getByText("Import denied")).toBeVisible();
+      await expect.element(page.getByRole("button", { name: /Prior work/ })).toBeVisible();
     } finally {
       await mounted.cleanup();
     }

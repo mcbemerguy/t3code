@@ -45,6 +45,34 @@ type LoadState =
   | { readonly kind: "error"; readonly message: string }
   | { readonly kind: "loaded"; readonly sessions: ReadonlyArray<CustomAcpExternalSession> };
 
+async function listAllCustomAcpSessions(input: {
+  readonly api: EnvironmentApi;
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly cwd: string;
+}): Promise<ReadonlyArray<CustomAcpExternalSession>> {
+  const sessions: CustomAcpExternalSession[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | null = null;
+
+  do {
+    const result = await input.api.customAcp.listSessions({
+      providerInstanceId: input.providerInstanceId,
+      cwd: input.cwd,
+      ...(cursor ? { cursor } : {}),
+    });
+    sessions.push(...result.sessions);
+    cursor = result.nextCursor;
+    if (cursor) {
+      if (seenCursors.has(cursor)) {
+        throw new Error("ACP session listing returned a repeated pagination cursor.");
+      }
+      seenCursors.add(cursor);
+    }
+  } while (cursor);
+
+  return sessions;
+}
+
 function sessionTitle(session: CustomAcpExternalSession): string {
   return session.title?.trim() || "Untitled ACP session";
 }
@@ -68,11 +96,13 @@ export function ImportAcpSessionDialog(props: ImportAcpSessionDialogProps) {
   const [selectedProviderId, setSelectedProviderId] = useState<ProviderInstanceId | null>(null);
   const [loadState, setLoadState] = useState<LoadState>({ kind: "idle" });
   const [importingSessionId, setImportingSessionId] = useState<string | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!props.open) {
       setLoadState({ kind: "idle" });
       setImportingSessionId(null);
+      setImportError(null);
       return;
     }
     if (providerResolution.kind === "selected") {
@@ -80,6 +110,8 @@ export function ImportAcpSessionDialog(props: ImportAcpSessionDialogProps) {
       return;
     }
     setSelectedProviderId(null);
+    setLoadState({ kind: "idle" });
+    setImportError(null);
   }, [props.open, providerResolution]);
 
   useEffect(() => {
@@ -89,11 +121,15 @@ export function ImportAcpSessionDialog(props: ImportAcpSessionDialogProps) {
 
     let cancelled = false;
     setLoadState({ kind: "loading" });
-    void props.api.customAcp
-      .listSessions({ providerInstanceId: selectedProviderId, cwd: props.cwd })
-      .then((result) => {
+    setImportError(null);
+    void listAllCustomAcpSessions({
+      api: props.api,
+      providerInstanceId: selectedProviderId,
+      cwd: props.cwd,
+    })
+      .then((sessions) => {
         if (!cancelled) {
-          setLoadState({ kind: "loaded", sessions: result.sessions });
+          setLoadState({ kind: "loaded", sessions });
         }
       })
       .catch((error) => {
@@ -122,6 +158,7 @@ export function ImportAcpSessionDialog(props: ImportAcpSessionDialogProps) {
   const importSession = async (session: CustomAcpExternalSession) => {
     if (!props.api || !selectedProvider) return;
     setImportingSessionId(session.sessionId);
+    setImportError(null);
     try {
       const result = await props.api.customAcp.importSession({
         providerInstanceId: selectedProvider.instanceId,
@@ -140,7 +177,7 @@ export function ImportAcpSessionDialog(props: ImportAcpSessionDialogProps) {
       props.onOpenChange(false);
       props.onImported(result.threadId);
     } catch (error) {
-      setLoadState({ kind: "error", message: formatCustomAcpImportError(error) });
+      setImportError(formatCustomAcpImportError(error));
     } finally {
       setImportingSessionId(null);
     }
@@ -215,6 +252,13 @@ export function ImportAcpSessionDialog(props: ImportAcpSessionDialogProps) {
             <div role="alert" className="rounded-md border border-destructive/30 p-4 text-sm">
               <div className="font-medium text-destructive">Unable to load ACP sessions</div>
               <div className="mt-1 text-muted-foreground">{loadState.message}</div>
+            </div>
+          ) : null}
+
+          {importError ? (
+            <div role="alert" className="rounded-md border border-destructive/30 p-4 text-sm">
+              <div className="font-medium text-destructive">Unable to import ACP session</div>
+              <div className="mt-1 text-muted-foreground">{importError}</div>
             </div>
           ) : null}
 
