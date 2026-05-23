@@ -97,6 +97,10 @@ export function deriveLatestContextWindowSnapshot(
       compactsAutomatically: asBoolean(payload?.compactsAutomatically),
       costAmount: cost.costAmount,
       costCurrency: cost.costCurrency,
+      modelName: asNonEmptyString(payload?.modelName),
+      modelProvider: asNonEmptyString(payload?.modelProvider),
+      reasoningEffort: asNonEmptyString(payload?.reasoningEffort),
+      cacheStatus: asNonEmptyString(payload?.cacheStatus),
       updatedAt: activity.createdAt,
     };
   }

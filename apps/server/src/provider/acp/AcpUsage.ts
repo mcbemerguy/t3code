@@ -6,11 +6,11 @@ type AcpUsageUpdate = Extract<
   { readonly sessionUpdate: "usage_update" }
 >;
 
-function positiveInt(value: number | null | undefined): number | undefined {
+function positiveInt(value: unknown): number | undefined {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
-function nonNegativeInt(value: number | null | undefined): number | undefined {
+function nonNegativeInt(value: unknown): number | undefined {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
@@ -100,6 +100,104 @@ export function normalizeAcpPromptUsage(
     ...(outputTokens !== undefined ? { outputTokens, lastOutputTokens: outputTokens } : {}),
     ...(reasoningOutputTokens !== undefined
       ? { reasoningOutputTokens, lastReasoningOutputTokens: reasoningOutputTokens }
+      : {}),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function booleanValue(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+export const PI_USAGE_UPDATE_METHOD = "_pi/session_usage_update";
+
+export function normalizePiUsageTelemetry(params: unknown): ThreadTokenUsageSnapshot | undefined {
+  if (!isRecord(params) || !isRecord(params.usage)) {
+    return undefined;
+  }
+  const usage = params.usage;
+  const context = isRecord(usage.context) ? usage.context : undefined;
+  const totals = isRecord(usage.totals) ? usage.totals : undefined;
+  const lastRequest = isRecord(usage.lastRequest) ? usage.lastRequest : undefined;
+  const cost = isRecord(usage.cost) ? usage.cost : undefined;
+  const model = isRecord(usage.model) ? usage.model : undefined;
+  const cache = isRecord(usage.cache) ? usage.cache : undefined;
+  const autoCompaction = isRecord(usage.autoCompaction) ? usage.autoCompaction : undefined;
+
+  const usedTokens = nonNegativeInt(context?.usedTokens) ?? positiveInt(totals?.totalTokens);
+  if (usedTokens === undefined) {
+    return undefined;
+  }
+
+  const totalProcessedTokens = positiveInt(totals?.totalTokens);
+  const costAmount =
+    typeof cost?.amount === "number" && Number.isFinite(cost.amount) && cost.amount >= 0
+      ? cost.amount
+      : undefined;
+  const costCurrency = nonEmptyString(cost?.currency);
+
+  return {
+    usedTokens,
+    ...(totalProcessedTokens !== undefined ? { totalProcessedTokens } : {}),
+    ...(positiveInt(context?.maxTokens) !== undefined
+      ? { maxTokens: positiveInt(context?.maxTokens) }
+      : {}),
+    ...(nonNegativeInt(totals?.inputTokens) !== undefined
+      ? { inputTokens: nonNegativeInt(totals?.inputTokens) }
+      : {}),
+    ...(nonNegativeInt(totals?.cachedReadTokens) !== undefined
+      ? { cachedInputTokens: nonNegativeInt(totals?.cachedReadTokens) }
+      : {}),
+    ...(nonNegativeInt(totals?.cachedWriteTokens) !== undefined
+      ? { cachedWriteTokens: nonNegativeInt(totals?.cachedWriteTokens) }
+      : {}),
+    ...(nonNegativeInt(totals?.outputTokens) !== undefined
+      ? { outputTokens: nonNegativeInt(totals?.outputTokens) }
+      : {}),
+    ...(nonNegativeInt(totals?.reasoningTokens) !== undefined
+      ? { reasoningOutputTokens: nonNegativeInt(totals?.reasoningTokens) }
+      : {}),
+    ...(positiveInt(lastRequest?.totalTokens) !== undefined
+      ? { lastUsedTokens: positiveInt(lastRequest?.totalTokens) }
+      : {}),
+    ...(nonNegativeInt(lastRequest?.inputTokens) !== undefined
+      ? { lastInputTokens: nonNegativeInt(lastRequest?.inputTokens) }
+      : {}),
+    ...(nonNegativeInt(lastRequest?.cachedReadTokens) !== undefined
+      ? { lastCachedInputTokens: nonNegativeInt(lastRequest?.cachedReadTokens) }
+      : {}),
+    ...(nonNegativeInt(lastRequest?.cachedWriteTokens) !== undefined
+      ? { lastCachedWriteTokens: nonNegativeInt(lastRequest?.cachedWriteTokens) }
+      : {}),
+    ...(nonNegativeInt(lastRequest?.outputTokens) !== undefined
+      ? { lastOutputTokens: nonNegativeInt(lastRequest?.outputTokens) }
+      : {}),
+    ...(nonNegativeInt(lastRequest?.reasoningTokens) !== undefined
+      ? { lastReasoningOutputTokens: nonNegativeInt(lastRequest?.reasoningTokens) }
+      : {}),
+    ...(booleanValue(autoCompaction?.enabled) !== undefined
+      ? { compactsAutomatically: booleanValue(autoCompaction?.enabled) }
+      : {}),
+    ...(costAmount !== undefined ? { costAmount } : {}),
+    ...(costCurrency !== undefined ? { costCurrency } : {}),
+    ...(nonEmptyString(model?.name) !== undefined
+      ? { modelName: nonEmptyString(model?.name) }
+      : {}),
+    ...(nonEmptyString(model?.provider) !== undefined
+      ? { modelProvider: nonEmptyString(model?.provider) }
+      : {}),
+    ...(nonEmptyString(model?.effort) !== undefined
+      ? { reasoningEffort: nonEmptyString(model?.effort) }
+      : {}),
+    ...(nonEmptyString(cache?.status) !== undefined
+      ? { cacheStatus: nonEmptyString(cache?.status) }
       : {}),
   };
 }

@@ -8,7 +8,11 @@ import type {
 } from "@t3tools/contracts";
 
 import { normalizeAcpAvailableCommandsToSlashCommands } from "./AcpAvailableCommands.ts";
-import { normalizeAcpUsageUpdate } from "./AcpUsage.ts";
+import {
+  normalizeAcpUsageUpdate,
+  normalizePiUsageTelemetry,
+  PI_USAGE_UPDATE_METHOD,
+} from "./AcpUsage.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -426,6 +430,17 @@ export function parsePermissionRequest(
     ...(detail ? { detail } : {}),
     ...(toolCall ? { toolCall } : {}),
   };
+}
+
+export function parsePiUsageTelemetryEvent(
+  method: string,
+  params: unknown,
+): AcpParsedSessionEvent | undefined {
+  if (method !== PI_USAGE_UPDATE_METHOD) {
+    return undefined;
+  }
+  const usage = normalizePiUsageTelemetry(params);
+  return usage ? { _tag: "TokenUsageUpdated", usage, rawPayload: params } : undefined;
 }
 
 export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotification): {

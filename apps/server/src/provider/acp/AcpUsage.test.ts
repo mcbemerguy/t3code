@@ -4,6 +4,7 @@ import {
   mergeAcpTokenUsageSnapshot,
   normalizeAcpPromptUsage,
   normalizeAcpUsageUpdate,
+  normalizePiUsageTelemetry,
 } from "./AcpUsage.ts";
 
 describe("AcpUsage", () => {
@@ -64,5 +65,63 @@ describe("AcpUsage", () => {
       outputTokens: 10_000,
       lastOutputTokens: 10_000,
     });
+  });
+
+  it("normalizes Pi custom usage telemetry without requiring capability metadata", () => {
+    const usage = normalizePiUsageTelemetry({
+      sessionId: "session-1",
+      usage: {
+        context: { usedTokens: 60_000, maxTokens: 200_000 },
+        totals: {
+          totalTokens: 106_000,
+          inputTokens: 50_000,
+          outputTokens: 10_000,
+          reasoningTokens: 1_000,
+          cachedReadTokens: 40_000,
+          cachedWriteTokens: 5_000,
+        },
+        lastRequest: {
+          totalTokens: 16_000,
+          inputTokens: 10_000,
+          outputTokens: 4_000,
+          reasoningTokens: 1_000,
+          cachedReadTokens: 500,
+          cachedWriteTokens: 500,
+        },
+        cost: { amount: 0.42, currency: "USD" },
+        model: { name: "gpt-5", provider: "openai", effort: "high" },
+        cache: { status: "warm" },
+        autoCompaction: { enabled: true },
+      },
+    });
+
+    expect(usage).toEqual({
+      usedTokens: 60_000,
+      maxTokens: 200_000,
+      totalProcessedTokens: 106_000,
+      inputTokens: 50_000,
+      outputTokens: 10_000,
+      reasoningOutputTokens: 1_000,
+      cachedInputTokens: 40_000,
+      cachedWriteTokens: 5_000,
+      lastUsedTokens: 16_000,
+      lastInputTokens: 10_000,
+      lastOutputTokens: 4_000,
+      lastReasoningOutputTokens: 1_000,
+      lastCachedInputTokens: 500,
+      lastCachedWriteTokens: 500,
+      compactsAutomatically: true,
+      costAmount: 0.42,
+      costCurrency: "USD",
+      modelName: "gpt-5",
+      modelProvider: "openai",
+      reasoningEffort: "high",
+      cacheStatus: "warm",
+    });
+  });
+
+  it("ignores malformed Pi custom usage telemetry", () => {
+    expect(normalizePiUsageTelemetry({ usage: { context: { usedTokens: -1 } } })).toBeUndefined();
+    expect(normalizePiUsageTelemetry({ usage: null })).toBeUndefined();
   });
 });

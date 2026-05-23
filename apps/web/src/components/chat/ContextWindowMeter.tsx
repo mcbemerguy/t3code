@@ -176,6 +176,28 @@ export function ContextWindowMeter(props: { usage: ContextWindowSnapshot }) {
             </DetailSection>
           ) : null}
 
+          {usage.modelName !== null ||
+          usage.modelProvider !== null ||
+          usage.reasoningEffort !== null ? (
+            <DetailSection title="Model">
+              {usage.modelName !== null ? (
+                <DetailLine label="Name" value={usage.modelName} />
+              ) : null}
+              {usage.modelProvider !== null ? (
+                <DetailLine label="Provider" value={usage.modelProvider} />
+              ) : null}
+              {usage.reasoningEffort !== null ? (
+                <DetailLine label="Effort" value={usage.reasoningEffort} />
+              ) : null}
+            </DetailSection>
+          ) : null}
+
+          {usage.cacheStatus !== null ? (
+            <DetailSection title="Cache">
+              <DetailLine label="Status" value={usage.cacheStatus} />
+            </DetailSection>
+          ) : null}
+
           {cost !== null ? (
             <DetailSection title="Cost">
               <DetailLine label="Total" value={cost} />
