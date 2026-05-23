@@ -11,7 +11,11 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 
-import { type FilesystemBrowseInput, type ProjectEntry } from "@t3tools/contracts";
+import {
+  type FilesystemBrowseInput,
+  type ProjectEntry,
+  type ProjectSearchEntriesResult,
+} from "@t3tools/contracts";
 import { isExplicitRelativePath, isWindowsAbsolutePath } from "@t3tools/shared/path";
 import {
   insertRankedSearchResult,
@@ -21,6 +25,7 @@ import {
 } from "@t3tools/shared/searchRanking";
 
 import { VcsDriverRegistry } from "../../vcs/VcsDriverRegistry.ts";
+import { searchExplicitScopedWorkspaceEntries } from "../explicitScopedWorkspaceSearch.ts";
 import {
   WorkspaceEntries,
   WorkspaceEntriesBrowseError,
@@ -130,6 +135,35 @@ function scoreEntry(entry: SearchableWorkspaceEntry, query: string): number | nu
   }
 
   return Math.min(...scores);
+}
+
+function rankWorkspaceEntries(input: {
+  readonly entries: Iterable<SearchableWorkspaceEntry>;
+  readonly normalizedQuery: string;
+  readonly limit: number;
+  readonly truncated: boolean;
+}): ProjectSearchEntriesResult {
+  const rankedEntries: RankedWorkspaceEntry[] = [];
+  let matchedEntryCount = 0;
+
+  for (const entry of input.entries) {
+    const score = scoreEntry(entry, input.normalizedQuery);
+    if (score === null) {
+      continue;
+    }
+
+    matchedEntryCount += 1;
+    insertRankedSearchResult(
+      rankedEntries,
+      { item: entry, score, tieBreaker: entry.path },
+      input.limit,
+    );
+  }
+
+  return {
+    entries: rankedEntries.map((candidate) => candidate.item),
+    truncated: input.truncated || matchedEntryCount > input.limit,
+  };
 }
 
 function isPathInIgnoredDirectory(relativePath: string): boolean {
@@ -478,35 +512,40 @@ export const makeWorkspaceEntries = Effect.gen(function* () {
   const search: WorkspaceEntriesShape["search"] = Effect.fn("WorkspaceEntries.search")(
     function* (input) {
       const normalizedCwd = yield* normalizeWorkspaceRoot(input.cwd);
-      return yield* Cache.get(workspaceIndexCache, normalizedCwd).pipe(
-        Effect.map((index) => {
-          const normalizedQuery = normalizeSearchQuery(input.query, {
-            trimLeadingPattern: /^[@./]+/,
-          });
-          const limit = Math.max(0, Math.floor(input.limit));
-          const rankedEntries: RankedWorkspaceEntry[] = [];
-          let matchedEntryCount = 0;
+      const index = yield* Cache.get(workspaceIndexCache, normalizedCwd);
+      const limit = Math.max(0, Math.floor(input.limit));
+      const indexedPaths = new Set(index.entries.map((entry) => entry.path));
+      const explicitScopedEntries = yield* searchExplicitScopedWorkspaceEntries({
+        cwd: normalizedCwd,
+        rawQuery: input.query,
+        indexedPaths,
+        path,
+        ignoredDirectoryNames: IGNORED_DIRECTORY_NAMES,
+        maxEntries: WORKSPACE_INDEX_MAX_ENTRIES,
+        readdirConcurrency: WORKSPACE_SCAN_READDIR_CONCURRENCY,
+      });
 
-          for (const entry of index.entries) {
-            const score = scoreEntry(entry, normalizedQuery);
-            if (score === null) {
-              continue;
-            }
+      if (explicitScopedEntries) {
+        const normalizedScopedQuery = normalizeSearchQuery(explicitScopedEntries.nestedQuery, {
+          trimLeadingPattern: /^[@./]+/,
+        });
+        return rankWorkspaceEntries({
+          entries: explicitScopedEntries.entries.map(toSearchableWorkspaceEntry),
+          normalizedQuery: normalizedScopedQuery,
+          limit,
+          truncated: explicitScopedEntries.truncated,
+        });
+      }
 
-            matchedEntryCount += 1;
-            insertRankedSearchResult(
-              rankedEntries,
-              { item: entry, score, tieBreaker: entry.path },
-              limit,
-            );
-          }
-
-          return {
-            entries: rankedEntries.map((candidate) => candidate.item),
-            truncated: index.truncated || matchedEntryCount > limit,
-          };
-        }),
-      );
+      const normalizedQuery = normalizeSearchQuery(input.query, {
+        trimLeadingPattern: /^[@./]+/,
+      });
+      return rankWorkspaceEntries({
+        entries: index.entries,
+        normalizedQuery,
+        limit,
+        truncated: index.truncated,
+      });
     },
   );
 

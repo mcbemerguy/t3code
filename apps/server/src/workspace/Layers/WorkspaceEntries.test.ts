@@ -186,6 +186,55 @@ it.layer(TestLayer)("WorkspaceEntriesLive", (it) => {
       }),
     );
 
+    it.effect("searches an explicitly typed ignored directory scope", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-explicit-ignored-", git: true });
+        yield* writeTextFile(cwd, ".gitignore", ".local/\n");
+        yield* writeTextFile(cwd, "src/keep.ts", "export {};");
+        yield* writeTextFile(cwd, ".local/t3code/src/ignored-search-target.ts", "export {};");
+        yield* writeTextFile(cwd, ".local/t3code/.git/config", "[core]\n");
+
+        const defaultResult = yield* searchWorkspaceEntries({
+          cwd,
+          query: "ignored-search-target",
+          limit: 100,
+        });
+        const scopedResult = yield* searchWorkspaceEntries({ cwd, query: ".local/", limit: 100 });
+        const scopedPaths = scopedResult.entries.map((entry) => entry.path);
+
+        expect(defaultResult.entries).toHaveLength(0);
+        expect(scopedPaths).toContain(".local/t3code");
+        expect(scopedPaths).toContain(".local/t3code/src/ignored-search-target.ts");
+        expect(scopedPaths.some((entryPath) => entryPath.includes("/.git/"))).toBe(false);
+      }),
+    );
+
+    it.effect("keeps normal indexed path scopes on the gitignored workspace index", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-indexed-scope-", git: true });
+        yield* writeTextFile(cwd, ".gitignore", "src/ignored/\n");
+        yield* writeTextFile(cwd, "src/keep.ts", "export {};");
+        yield* writeTextFile(cwd, "src/ignored/secret.ts", "export {};");
+
+        const indexedScopeResult = yield* searchWorkspaceEntries({
+          cwd,
+          query: "src/",
+          limit: 100,
+        });
+        const ignoredScopeResult = yield* searchWorkspaceEntries({
+          cwd,
+          query: "src/ignored/",
+          limit: 100,
+        });
+        const indexedScopePaths = indexedScopeResult.entries.map((entry) => entry.path);
+        const ignoredScopePaths = ignoredScopeResult.entries.map((entry) => entry.path);
+
+        expect(indexedScopePaths).toContain("src/keep.ts");
+        expect(indexedScopePaths).not.toContain("src/ignored/secret.ts");
+        expect(ignoredScopePaths).toContain("src/ignored/secret.ts");
+      }),
+    );
+
     it.effect("excludes tracked paths that match ignore rules", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTempDir({
