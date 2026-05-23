@@ -209,6 +209,52 @@ it.layer(TestLayer)("WorkspaceEntriesLive", (it) => {
       }),
     );
 
+    it.effect("does not follow an explicit scope symlink outside cwd", () =>
+      Effect.gen(function* () {
+        if (process.platform === "win32") {
+          return;
+        }
+
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-symlink-scope-" });
+        const outside = yield* makeTempDir({ prefix: "t3code-workspace-outside-scope-" });
+        yield* writeTextFile(outside, "outside-secret.ts", "export {};");
+        yield* Effect.promise(() => fsPromises.symlink(outside, path.join(cwd, ".local"), "dir"));
+
+        const result = yield* searchWorkspaceEntries({ cwd, query: ".local/", limit: 100 });
+        const paths = result.entries.map((entry) => entry.path);
+
+        expect(paths).not.toContain(".local/outside-secret.ts");
+      }),
+    );
+
+    it.effect("caches explicit scope scans across nested queries", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-explicit-cache-", git: true });
+        yield* writeTextFile(cwd, ".gitignore", ".local/\n");
+        yield* writeTextFile(cwd, ".local/alpha.ts", "export {};");
+        yield* writeTextFile(cwd, ".local/beta.ts", "export {};");
+
+        const explicitScopePath = path.join(cwd, ".local");
+        let explicitScopeReadCount = 0;
+        const originalReaddir = fsPromises.readdir.bind(fsPromises);
+        vi.spyOn(fsPromises, "readdir").mockImplementation((async (
+          ...args: Parameters<typeof fsPromises.readdir>
+        ) => {
+          if (args[0] === explicitScopePath) {
+            explicitScopeReadCount += 1;
+          }
+          return originalReaddir(...args);
+        }) as typeof fsPromises.readdir);
+
+        yield* searchWorkspaceEntries({ cwd, query: ".local/a", limit: 100 });
+        yield* searchWorkspaceEntries({ cwd, query: ".local/b", limit: 100 });
+
+        expect(explicitScopeReadCount).toBe(1);
+      }),
+    );
+
     it.effect("keeps normal indexed path scopes on the gitignored workspace index", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTempDir({ prefix: "t3code-workspace-indexed-scope-", git: true });

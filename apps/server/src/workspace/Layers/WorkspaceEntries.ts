@@ -25,7 +25,10 @@ import {
 } from "@t3tools/shared/searchRanking";
 
 import { VcsDriverRegistry } from "../../vcs/VcsDriverRegistry.ts";
-import { searchExplicitScopedWorkspaceEntries } from "../explicitScopedWorkspaceSearch.ts";
+import {
+  buildExplicitScopedWorkspaceScopeIndex,
+  parseExplicitScopedWorkspaceQuery,
+} from "../explicitScopedWorkspaceSearch.ts";
 import {
   WorkspaceEntries,
   WorkspaceEntriesBrowseError,
@@ -36,6 +39,7 @@ import { WorkspacePaths } from "../Services/WorkspacePaths.ts";
 
 const WORKSPACE_CACHE_TTL_MS = 15_000;
 const WORKSPACE_CACHE_MAX_KEYS = 4;
+const EXPLICIT_SCOPE_CACHE_MAX_KEYS = 16;
 const WORKSPACE_INDEX_MAX_ENTRIES = 25_000;
 const WORKSPACE_SCAN_READDIR_CONCURRENCY = 32;
 const IGNORED_DIRECTORY_NAMES = new Set([
@@ -91,6 +95,24 @@ function basenameOf(input: string): string {
     return input;
   }
   return input.slice(separatorIndex + 1);
+}
+
+function explicitScopeCacheKey(input: {
+  readonly cwd: string;
+  readonly scopeRelativePath: string;
+}): string {
+  return `${input.cwd}\0${input.scopeRelativePath}`;
+}
+
+function parseExplicitScopeCacheKey(cacheKey: string): {
+  readonly cwd: string;
+  readonly scopeRelativePath: string;
+} {
+  const separatorIndex = cacheKey.indexOf("\0");
+  return {
+    cwd: cacheKey.slice(0, separatorIndex),
+    scopeRelativePath: cacheKey.slice(separatorIndex + 1),
+  };
 }
 
 function toSearchableWorkspaceEntry(entry: ProjectEntry): SearchableWorkspaceEntry {
@@ -441,6 +463,52 @@ export const makeWorkspaceEntries = Effect.gen(function* () {
     },
   );
 
+  const explicitScopeCacheKeysByCwd = new Map<string, Set<string>>();
+  const buildExplicitScopeIndex = Effect.fn("WorkspaceEntries.buildExplicitScopeIndex")(function* (
+    cacheKey: string,
+  ) {
+    const parsedKey = parseExplicitScopeCacheKey(cacheKey);
+    return yield* buildExplicitScopedWorkspaceScopeIndex({
+      cwd: parsedKey.cwd,
+      scopeRelativePath: parsedKey.scopeRelativePath,
+      path,
+      ignoredDirectoryNames: IGNORED_DIRECTORY_NAMES,
+      maxEntries: WORKSPACE_INDEX_MAX_ENTRIES,
+      readdirConcurrency: WORKSPACE_SCAN_READDIR_CONCURRENCY,
+    });
+  });
+  const explicitScopeIndexCache = yield* Cache.makeWith(buildExplicitScopeIndex, {
+    capacity: EXPLICIT_SCOPE_CACHE_MAX_KEYS,
+    timeToLive: () => Duration.millis(WORKSPACE_CACHE_TTL_MS),
+  });
+
+  const getExplicitScopeIndexFromCache = Effect.fn(
+    "WorkspaceEntries.getExplicitScopeIndexFromCache",
+  )(function* (input: { readonly cwd: string; readonly scopeRelativePath: string }) {
+    const cacheKey = explicitScopeCacheKey(input);
+    const keysForCwd = explicitScopeCacheKeysByCwd.get(input.cwd) ?? new Set<string>();
+    keysForCwd.add(cacheKey);
+    explicitScopeCacheKeysByCwd.set(input.cwd, keysForCwd);
+    return yield* Cache.get(explicitScopeIndexCache, cacheKey);
+  });
+
+  const invalidateExplicitScopeCache = Effect.fn("WorkspaceEntries.invalidateExplicitScopeCache")(
+    function* (cwd: string) {
+      const cacheKeys = explicitScopeCacheKeysByCwd.get(cwd);
+      if (!cacheKeys) {
+        return;
+      }
+      yield* Effect.forEach(
+        cacheKeys,
+        (cacheKey) => Cache.invalidate(explicitScopeIndexCache, cacheKey),
+        {
+          discard: true,
+        },
+      );
+      explicitScopeCacheKeysByCwd.delete(cwd);
+    },
+  );
+
   const normalizeWorkspaceRoot = Effect.fn("WorkspaceEntries.normalizeWorkspaceRoot")(function* (
     cwd: string,
   ): Effect.fn.Return<string, WorkspaceEntriesError> {
@@ -463,8 +531,10 @@ export const makeWorkspaceEntries = Effect.gen(function* () {
         Effect.catch(() => Effect.succeed(cwd)),
       );
       yield* Cache.invalidate(workspaceIndexCache, cwd);
+      yield* invalidateExplicitScopeCache(cwd);
       if (normalizedCwd !== cwd) {
         yield* Cache.invalidate(workspaceIndexCache, normalizedCwd);
+        yield* invalidateExplicitScopeCache(normalizedCwd);
       }
     },
   );
@@ -515,26 +585,23 @@ export const makeWorkspaceEntries = Effect.gen(function* () {
       const index = yield* Cache.get(workspaceIndexCache, normalizedCwd);
       const limit = Math.max(0, Math.floor(input.limit));
       const indexedPaths = new Set(index.entries.map((entry) => entry.path));
-      const explicitScopedEntries = yield* searchExplicitScopedWorkspaceEntries({
-        cwd: normalizedCwd,
-        rawQuery: input.query,
-        indexedPaths,
-        path,
-        ignoredDirectoryNames: IGNORED_DIRECTORY_NAMES,
-        maxEntries: WORKSPACE_INDEX_MAX_ENTRIES,
-        readdirConcurrency: WORKSPACE_SCAN_READDIR_CONCURRENCY,
-      });
-
-      if (explicitScopedEntries) {
-        const normalizedScopedQuery = normalizeSearchQuery(explicitScopedEntries.nestedQuery, {
-          trimLeadingPattern: /^[@./]+/,
+      const parsedExplicitQuery = parseExplicitScopedWorkspaceQuery(input.query);
+      if (parsedExplicitQuery && !indexedPaths.has(parsedExplicitQuery.scopeRelativePath)) {
+        const explicitScopeIndex = yield* getExplicitScopeIndexFromCache({
+          cwd: normalizedCwd,
+          scopeRelativePath: parsedExplicitQuery.scopeRelativePath,
         });
-        return rankWorkspaceEntries({
-          entries: explicitScopedEntries.entries.map(toSearchableWorkspaceEntry),
-          normalizedQuery: normalizedScopedQuery,
-          limit,
-          truncated: explicitScopedEntries.truncated,
-        });
+        if (explicitScopeIndex) {
+          const normalizedScopedQuery = normalizeSearchQuery(parsedExplicitQuery.nestedQuery, {
+            trimLeadingPattern: /^[@./]+/,
+          });
+          return rankWorkspaceEntries({
+            entries: explicitScopeIndex.entries.map(toSearchableWorkspaceEntry),
+            normalizedQuery: normalizedScopedQuery,
+            limit,
+            truncated: explicitScopeIndex.truncated,
+          });
+        }
       }
 
       const normalizedQuery = normalizeSearchQuery(input.query, {

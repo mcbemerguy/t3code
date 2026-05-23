@@ -7,25 +7,35 @@ import type * as Path from "effect/Path";
 
 import type { ProjectEntry } from "@t3tools/contracts";
 
-interface ExplicitScopedQuery {
+export interface ExplicitScopedQuery {
   readonly scopeRelativePath: string;
   readonly nestedQuery: string;
 }
 
-export interface ExplicitScopedWorkspaceSearchInput {
+export interface ExplicitScopedWorkspaceScopeIndexInput {
   readonly cwd: string;
-  readonly rawQuery: string;
-  readonly indexedPaths: ReadonlySet<string>;
+  readonly scopeRelativePath: string;
   readonly path: Path.Path;
   readonly ignoredDirectoryNames: ReadonlySet<string>;
   readonly maxEntries: number;
   readonly readdirConcurrency: number;
 }
 
-export interface ExplicitScopedWorkspaceSearchResult {
+export interface ExplicitScopedWorkspaceSearchInput extends Omit<
+  ExplicitScopedWorkspaceScopeIndexInput,
+  "scopeRelativePath"
+> {
+  readonly rawQuery: string;
+  readonly indexedPaths: ReadonlySet<string>;
+}
+
+export interface ExplicitScopedWorkspaceScopeIndex {
   readonly entries: ProjectEntry[];
-  readonly nestedQuery: string;
   readonly truncated: boolean;
+}
+
+export interface ExplicitScopedWorkspaceSearchResult extends ExplicitScopedWorkspaceScopeIndex {
+  readonly nestedQuery: string;
 }
 
 interface PendingDirectory {
@@ -63,7 +73,7 @@ function hasUnsafeRelativeSegment(relativePath: string): boolean {
     .some((segment) => segment.length === 0 || segment === "." || segment === "..");
 }
 
-function parseExplicitScopedQuery(rawQuery: string): ExplicitScopedQuery | null {
+export function parseExplicitScopedWorkspaceQuery(rawQuery: string): ExplicitScopedQuery | null {
   const query = trimComposerPathQuery(rawQuery);
   const separatorIndex = query.lastIndexOf("/");
   if (separatorIndex <= 0) {
@@ -94,12 +104,12 @@ function parentPathOf(input: string): string | undefined {
   return input.slice(0, separatorIndex);
 }
 
-function isSafeResolvedScope(input: {
-  readonly cwd: string;
-  readonly absoluteScope: string;
+function isSafeRealScope(input: {
+  readonly realCwd: string;
+  readonly realScope: string;
   readonly path: Path.Path;
 }): boolean {
-  const relativeFromCwd = toPosixPath(input.path.relative(input.cwd, input.absoluteScope));
+  const relativeFromCwd = toPosixPath(input.path.relative(input.realCwd, input.realScope));
   return (
     relativeFromCwd.length > 0 &&
     relativeFromCwd !== ".." &&
@@ -123,13 +133,24 @@ function shouldSkipDirectory(input: {
   return input.ignoredDirectoryNames.has(input.name);
 }
 
-const safeStatDirectory = (absolutePath: string): Effect.Effect<boolean, never> =>
+const safeResolveDirectoryInsideCwd = (input: {
+  readonly cwd: string;
+  readonly absoluteScope: string;
+  readonly path: Path.Path;
+}): Effect.Effect<string | null, never> =>
   Effect.promise(async () => {
     try {
-      const stats = await fsPromises.stat(absolutePath);
-      return stats.isDirectory();
+      const [realCwd, realScope] = await Promise.all([
+        fsPromises.realpath(input.cwd),
+        fsPromises.realpath(input.absoluteScope),
+      ]);
+      if (!isSafeRealScope({ realCwd, realScope, path: input.path })) {
+        return null;
+      }
+      const stats = await fsPromises.stat(realScope);
+      return stats.isDirectory() ? realScope : null;
     } catch {
-      return false;
+      return null;
     }
   });
 
@@ -145,28 +166,23 @@ const safeReadDirectory = (
     }
   });
 
-export const searchExplicitScopedWorkspaceEntries = Effect.fn(
-  "searchExplicitScopedWorkspaceEntries",
+export const buildExplicitScopedWorkspaceScopeIndex = Effect.fn(
+  "buildExplicitScopedWorkspaceScopeIndex",
 )(function* (
-  input: ExplicitScopedWorkspaceSearchInput,
-): Effect.fn.Return<ExplicitScopedWorkspaceSearchResult | null, never> {
-  const parsedQuery = parseExplicitScopedQuery(input.rawQuery);
-  if (!parsedQuery || input.indexedPaths.has(parsedQuery.scopeRelativePath)) {
-    return null;
-  }
-
-  const absoluteScope = input.path.resolve(input.cwd, parsedQuery.scopeRelativePath);
-  if (!isSafeResolvedScope({ cwd: input.cwd, absoluteScope, path: input.path })) {
-    return null;
-  }
-
-  const scopeExists = yield* safeStatDirectory(absoluteScope);
-  if (!scopeExists) {
+  input: ExplicitScopedWorkspaceScopeIndexInput,
+): Effect.fn.Return<ExplicitScopedWorkspaceScopeIndex | null, never> {
+  const absoluteScope = input.path.resolve(input.cwd, input.scopeRelativePath);
+  const resolvedScope = yield* safeResolveDirectoryInsideCwd({
+    cwd: input.cwd,
+    absoluteScope,
+    path: input.path,
+  });
+  if (!resolvedScope) {
     return null;
   }
 
   const entries: ProjectEntry[] = [];
-  let pendingDirectories: PendingDirectory[] = [{ relativePath: "", absolutePath: absoluteScope }];
+  let pendingDirectories: PendingDirectory[] = [{ relativePath: "", absolutePath: resolvedScope }];
   let truncated = false;
 
   while (pendingDirectories.length > 0 && !truncated) {
@@ -196,10 +212,7 @@ export const searchExplicitScopedWorkspaceEntries = Effect.fn(
             ? input.path.join(readResult.directory.relativePath, dirent.name)
             : dirent.name,
         );
-        const projectRelativePath = scopedEntryPath(
-          parsedQuery.scopeRelativePath,
-          scopedRelativePath,
-        );
+        const projectRelativePath = scopedEntryPath(input.scopeRelativePath, scopedRelativePath);
 
         if (
           dirent.isDirectory() &&
@@ -224,7 +237,7 @@ export const searchExplicitScopedWorkspaceEntries = Effect.fn(
         if (dirent.isDirectory()) {
           pendingDirectories.push({
             relativePath: scopedRelativePath,
-            absolutePath: input.path.join(absoluteScope, scopedRelativePath),
+            absolutePath: input.path.join(resolvedScope, scopedRelativePath),
           });
         }
 
@@ -242,7 +255,34 @@ export const searchExplicitScopedWorkspaceEntries = Effect.fn(
 
   return {
     entries,
-    nestedQuery: parsedQuery.nestedQuery,
     truncated,
+  };
+});
+
+export const searchExplicitScopedWorkspaceEntries = Effect.fn(
+  "searchExplicitScopedWorkspaceEntries",
+)(function* (
+  input: ExplicitScopedWorkspaceSearchInput,
+): Effect.fn.Return<ExplicitScopedWorkspaceSearchResult | null, never> {
+  const parsedQuery = parseExplicitScopedWorkspaceQuery(input.rawQuery);
+  if (!parsedQuery || input.indexedPaths.has(parsedQuery.scopeRelativePath)) {
+    return null;
+  }
+
+  const scopeIndex = yield* buildExplicitScopedWorkspaceScopeIndex({
+    cwd: input.cwd,
+    scopeRelativePath: parsedQuery.scopeRelativePath,
+    path: input.path,
+    ignoredDirectoryNames: input.ignoredDirectoryNames,
+    maxEntries: input.maxEntries,
+    readdirConcurrency: input.readdirConcurrency,
+  });
+  if (!scopeIndex) {
+    return null;
+  }
+
+  return {
+    ...scopeIndex,
+    nestedQuery: parsedQuery.nestedQuery,
   };
 });
