@@ -64,4 +64,35 @@ describe("contextWindow", () => {
     expect(snapshot?.usedTokens).toBe(81_659);
     expect(snapshot?.totalProcessedTokens).toBe(748_126);
   });
+
+  it("retains denominator, percentages, remaining tokens, and breakdown after prompt usage", () => {
+    const snapshot = deriveLatestContextWindowSnapshot([
+      makeActivity("activity-1", "context-window.updated", {
+        usedTokens: 60_000,
+        maxTokens: 200_000,
+      }),
+      makeActivity("activity-2", "context-window.updated", {
+        usedTokens: 60_000,
+        maxTokens: 200_000,
+        totalProcessedTokens: 105_000,
+        lastUsedTokens: 105_000,
+        inputTokens: 50_000,
+        cachedInputTokens: 40_000,
+        outputTokens: 10_000,
+        reasoningOutputTokens: 5_000,
+      }),
+    ]);
+
+    expect(snapshot?.usedTokens).toBe(60_000);
+    expect(snapshot?.maxTokens).toBe(200_000);
+    expect(snapshot?.usedPercentage).toBe(30);
+    expect(snapshot?.remainingTokens).toBe(140_000);
+    expect(snapshot?.remainingPercentage).toBe(70);
+    expect(snapshot?.totalProcessedTokens).toBe(105_000);
+    expect(snapshot?.lastUsedTokens).toBe(105_000);
+    expect(snapshot?.inputTokens).toBe(50_000);
+    expect(snapshot?.cachedInputTokens).toBe(40_000);
+    expect(snapshot?.outputTokens).toBe(10_000);
+    expect(snapshot?.reasoningOutputTokens).toBe(5_000);
+  });
 });

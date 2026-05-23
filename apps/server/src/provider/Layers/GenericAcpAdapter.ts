@@ -9,6 +9,7 @@ import {
   type ProviderSession,
   type ServerProviderSlashCommand,
   type ProviderUserInputAnswers,
+  type ThreadTokenUsageSnapshot,
   RuntimeRequestId,
   type ThreadId,
   TurnId,
@@ -52,7 +53,7 @@ import {
 } from "../acp/AcpCoreRuntimeEvents.ts";
 import { makeAcpNativeLoggers } from "../acp/AcpNativeLogging.ts";
 import { parsePermissionRequest } from "../acp/AcpRuntimeModel.ts";
-import { normalizeAcpPromptUsage } from "../acp/AcpUsage.ts";
+import { mergeAcpTokenUsageSnapshot, normalizeAcpPromptUsage } from "../acp/AcpUsage.ts";
 import {
   AskQuestionRequest,
   extractAskQuestions,
@@ -85,6 +86,7 @@ interface GenericAcpSessionContext {
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
   readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
   readonly turns: Array<{ id: TurnId; items: Array<unknown> }>;
+  latestTokenUsage: ThreadTokenUsageSnapshot | undefined;
   lastPlanFingerprint: string | undefined;
   activeTurnId: TurnId | undefined;
   stopped: boolean;
@@ -511,6 +513,7 @@ export function makeGenericAcpAdapter(
             pendingApprovals,
             pendingUserInputs,
             turns: [],
+            latestTokenUsage: undefined,
             lastPlanFingerprint: undefined,
             activeTurnId: undefined,
             stopped: false,
@@ -611,13 +614,17 @@ export function makeGenericAcpAdapter(
                       event.rawPayload,
                       "acp.jsonrpc",
                     );
+                    ctx.latestTokenUsage = mergeAcpTokenUsageSnapshot(
+                      ctx.latestTokenUsage,
+                      event.usage,
+                    );
                     yield* offerRuntimeEvent({
                       type: "thread.token-usage.updated",
                       ...(yield* makeEventStamp()),
                       provider,
                       threadId: ctx.threadId,
                       turnId: ctx.activeTurnId,
-                      payload: { usage: event.usage },
+                      payload: { usage: ctx.latestTokenUsage },
                       raw: {
                         source: "acp.jsonrpc",
                         method: "session/update",
@@ -743,13 +750,14 @@ export function makeGenericAcpAdapter(
 
         const promptUsage = normalizeAcpPromptUsage(result.usage);
         if (promptUsage) {
+          ctx.latestTokenUsage = mergeAcpTokenUsageSnapshot(ctx.latestTokenUsage, promptUsage);
           yield* offerRuntimeEvent({
             type: "thread.token-usage.updated",
             ...(yield* makeEventStamp()),
             provider,
             threadId: input.threadId,
             turnId,
-            payload: { usage: promptUsage },
+            payload: { usage: ctx.latestTokenUsage },
             raw: {
               source: "acp.jsonrpc",
               method: "session/prompt",

@@ -24,8 +24,38 @@ export function normalizeAcpUsageUpdate(
   const maxTokens = positiveInt(update.size);
   return {
     usedTokens,
-    lastUsedTokens: usedTokens,
     ...(maxTokens !== undefined ? { maxTokens } : {}),
+  };
+}
+
+function hasRequestAccounting(usage: ThreadTokenUsageSnapshot): boolean {
+  return (
+    usage.totalProcessedTokens !== undefined ||
+    usage.lastUsedTokens !== undefined ||
+    usage.lastInputTokens !== undefined ||
+    usage.lastCachedInputTokens !== undefined ||
+    usage.lastOutputTokens !== undefined ||
+    usage.lastReasoningOutputTokens !== undefined
+  );
+}
+
+export function mergeAcpTokenUsageSnapshot(
+  previous: ThreadTokenUsageSnapshot | undefined,
+  next: ThreadTokenUsageSnapshot,
+): ThreadTokenUsageSnapshot {
+  if (!previous) {
+    return next;
+  }
+
+  const shouldPreserveContextWindow =
+    previous.maxTokens !== undefined && next.maxTokens === undefined && hasRequestAccounting(next);
+
+  return {
+    ...previous,
+    ...next,
+    ...(shouldPreserveContextWindow
+      ? { usedTokens: previous.usedTokens, maxTokens: previous.maxTokens }
+      : {}),
   };
 }
 
