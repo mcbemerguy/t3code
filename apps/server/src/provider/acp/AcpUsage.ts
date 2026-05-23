@@ -22,9 +22,19 @@ export function normalizeAcpUsageUpdate(
     return undefined;
   }
   const maxTokens = positiveInt(update.size);
+  const costAmount =
+    typeof update.cost?.amount === "number" && Number.isFinite(update.cost.amount)
+      ? update.cost.amount
+      : undefined;
+  const costCurrency =
+    typeof update.cost?.currency === "string" && update.cost.currency.trim().length > 0
+      ? update.cost.currency.trim()
+      : undefined;
   return {
     usedTokens,
     ...(maxTokens !== undefined ? { maxTokens } : {}),
+    ...(costAmount !== undefined && costAmount >= 0 ? { costAmount } : {}),
+    ...(costCurrency !== undefined ? { costCurrency } : {}),
   };
 }
 
@@ -34,6 +44,7 @@ function hasRequestAccounting(usage: ThreadTokenUsageSnapshot): boolean {
     usage.lastUsedTokens !== undefined ||
     usage.lastInputTokens !== undefined ||
     usage.lastCachedInputTokens !== undefined ||
+    usage.lastCachedWriteTokens !== undefined ||
     usage.lastOutputTokens !== undefined ||
     usage.lastReasoningOutputTokens !== undefined
   );
@@ -71,6 +82,7 @@ export function normalizeAcpPromptUsage(
   }
   const inputTokens = nonNegativeInt(usage.inputTokens);
   const cachedInputTokens = nonNegativeInt(usage.cachedReadTokens);
+  const cachedWriteTokens = nonNegativeInt(usage.cachedWriteTokens);
   const outputTokens = nonNegativeInt(usage.outputTokens);
   const reasoningOutputTokens = nonNegativeInt(usage.thoughtTokens);
 
@@ -81,6 +93,9 @@ export function normalizeAcpPromptUsage(
     ...(inputTokens !== undefined ? { inputTokens, lastInputTokens: inputTokens } : {}),
     ...(cachedInputTokens !== undefined
       ? { cachedInputTokens, lastCachedInputTokens: cachedInputTokens }
+      : {}),
+    ...(cachedWriteTokens !== undefined
+      ? { cachedWriteTokens, lastCachedWriteTokens: cachedWriteTokens }
       : {}),
     ...(outputTokens !== undefined ? { outputTokens, lastOutputTokens: outputTokens } : {}),
     ...(reasoningOutputTokens !== undefined

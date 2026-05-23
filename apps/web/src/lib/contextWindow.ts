@@ -12,8 +12,12 @@ function asBoolean(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
 }
 
+function asNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
 type NullableContextWindowUsage = {
-  readonly [Key in keyof ThreadTokenUsageSnapshot]: undefined extends ThreadTokenUsageSnapshot[Key]
+  readonly [Key in keyof ThreadTokenUsageSnapshot]-?: undefined extends ThreadTokenUsageSnapshot[Key]
     ? Exclude<ThreadTokenUsageSnapshot[Key], undefined> | null
     : ThreadTokenUsageSnapshot[Key];
 };
@@ -25,6 +29,25 @@ export type ContextWindowSnapshot = NullableContextWindowUsage & {
   readonly updatedAt: string;
 };
 
+function deriveCost(payload: Record<string, unknown>): {
+  costAmount: number | null;
+  costCurrency: string | null;
+} {
+  const cost = asRecord(payload.cost);
+  const totalCostUsd = asFiniteNumber(payload.totalCostUsd);
+  const costAmount =
+    asFiniteNumber(cost?.amount) ?? asFiniteNumber(payload.costAmount) ?? totalCostUsd;
+  const costCurrency =
+    asNonEmptyString(cost?.currency) ??
+    asNonEmptyString(payload.costCurrency) ??
+    (totalCostUsd !== null ? "USD" : null);
+
+  return {
+    costAmount: costAmount !== null && costAmount >= 0 ? costAmount : null,
+    costCurrency,
+  };
+}
+
 export function deriveLatestContextWindowSnapshot(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): ContextWindowSnapshot | null {
@@ -35,7 +58,10 @@ export function deriveLatestContextWindowSnapshot(
     }
 
     const payload = asRecord(activity.payload);
-    const usedTokens = asFiniteNumber(payload?.usedTokens);
+    if (payload === null) {
+      continue;
+    }
+    const usedTokens = asFiniteNumber(payload.usedTokens);
     if (usedTokens === null || usedTokens <= 0) {
       continue;
     }
@@ -46,6 +72,7 @@ export function deriveLatestContextWindowSnapshot(
     const remainingTokens =
       maxTokens !== null ? Math.max(0, Math.round(maxTokens - usedTokens)) : null;
     const remainingPercentage = usedPercentage !== null ? Math.max(0, 100 - usedPercentage) : null;
+    const cost = deriveCost(payload);
 
     return {
       usedTokens,
@@ -56,16 +83,20 @@ export function deriveLatestContextWindowSnapshot(
       remainingPercentage,
       inputTokens: asFiniteNumber(payload?.inputTokens),
       cachedInputTokens: asFiniteNumber(payload?.cachedInputTokens),
+      cachedWriteTokens: asFiniteNumber(payload?.cachedWriteTokens),
       outputTokens: asFiniteNumber(payload?.outputTokens),
       reasoningOutputTokens: asFiniteNumber(payload?.reasoningOutputTokens),
       lastUsedTokens: asFiniteNumber(payload?.lastUsedTokens),
       lastInputTokens: asFiniteNumber(payload?.lastInputTokens),
       lastCachedInputTokens: asFiniteNumber(payload?.lastCachedInputTokens),
+      lastCachedWriteTokens: asFiniteNumber(payload?.lastCachedWriteTokens),
       lastOutputTokens: asFiniteNumber(payload?.lastOutputTokens),
       lastReasoningOutputTokens: asFiniteNumber(payload?.lastReasoningOutputTokens),
       toolUses: asFiniteNumber(payload?.toolUses),
       durationMs: asFiniteNumber(payload?.durationMs),
-      compactsAutomatically: asBoolean(payload?.compactsAutomatically) ?? false,
+      compactsAutomatically: asBoolean(payload?.compactsAutomatically),
+      costAmount: cost.costAmount,
+      costCurrency: cost.costCurrency,
       updatedAt: activity.createdAt,
     };
   }
@@ -87,4 +118,34 @@ export function formatContextWindowTokens(value: number | null): string {
     return `${Math.round(value / 1_000)}k`;
   }
   return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}m`;
+}
+
+export function formatContextWindowPercentage(value: number | null): string | null {
+  if (value === null || !Number.isFinite(value)) {
+    return null;
+  }
+  if (value < 10) {
+    return `${value.toFixed(1).replace(/\.0$/, "")}%`;
+  }
+  return `${Math.round(value)}%`;
+}
+
+export function formatContextWindowCost(
+  amount: number | null,
+  currency: string | null,
+): string | null {
+  if (amount === null || !Number.isFinite(amount)) {
+    return null;
+  }
+  const normalizedCurrency = currency?.trim().toUpperCase() || "USD";
+  try {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: normalizedCurrency,
+      minimumFractionDigits: amount < 1 ? 4 : 2,
+      maximumFractionDigits: amount < 1 ? 4 : 2,
+    }).format(amount);
+  } catch {
+    return `${amount.toFixed(amount < 1 ? 4 : 2)} ${normalizedCurrency}`;
+  }
 }

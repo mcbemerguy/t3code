@@ -309,16 +309,20 @@ export const ThreadTokenUsageSnapshot = Schema.Struct({
   maxTokens: Schema.optional(PositiveInt),
   inputTokens: Schema.optional(NonNegativeInt),
   cachedInputTokens: Schema.optional(NonNegativeInt),
+  cachedWriteTokens: Schema.optional(NonNegativeInt),
   outputTokens: Schema.optional(NonNegativeInt),
   reasoningOutputTokens: Schema.optional(NonNegativeInt),
   lastUsedTokens: Schema.optional(NonNegativeInt),
   lastInputTokens: Schema.optional(NonNegativeInt),
   lastCachedInputTokens: Schema.optional(NonNegativeInt),
+  lastCachedWriteTokens: Schema.optional(NonNegativeInt),
   lastOutputTokens: Schema.optional(NonNegativeInt),
   lastReasoningOutputTokens: Schema.optional(NonNegativeInt),
   toolUses: Schema.optional(NonNegativeInt),
   durationMs: Schema.optional(NonNegativeInt),
   compactsAutomatically: Schema.optional(Schema.Boolean),
+  costAmount: Schema.optional(Schema.Number),
+  costCurrency: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type ThreadTokenUsageSnapshot = typeof ThreadTokenUsageSnapshot.Type;
 

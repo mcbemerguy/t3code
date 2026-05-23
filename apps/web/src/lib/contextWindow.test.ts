@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { EventId, type OrchestrationThreadActivity, TurnId } from "@t3tools/contracts";
 
-import { deriveLatestContextWindowSnapshot, formatContextWindowTokens } from "./contextWindow";
+import {
+  deriveLatestContextWindowSnapshot,
+  formatContextWindowCost,
+  formatContextWindowPercentage,
+  formatContextWindowTokens,
+} from "./contextWindow";
 
 function makeActivity(id: string, kind: string, payload: unknown): OrchestrationThreadActivity {
   return {
@@ -51,6 +56,14 @@ describe("contextWindow", () => {
     expect(formatContextWindowTokens(258_000)).toBe("258k");
   });
 
+  it("formats percentages and cost", () => {
+    expect(formatContextWindowPercentage(8.25)).toBe("8.3%");
+    expect(formatContextWindowPercentage(81.6)).toBe("82%");
+    expect(formatContextWindowPercentage(null)).toBeNull();
+    expect(formatContextWindowCost(0.01234, "USD")).toBe("$0.0123");
+    expect(formatContextWindowCost(12.3, "USD")).toBe("$12.30");
+  });
+
   it("includes total processed tokens when available", () => {
     const snapshot = deriveLatestContextWindowSnapshot([
       makeActivity("activity-1", "context-window.updated", {
@@ -78,8 +91,11 @@ describe("contextWindow", () => {
         lastUsedTokens: 105_000,
         inputTokens: 50_000,
         cachedInputTokens: 40_000,
+        cachedWriteTokens: 1000,
         outputTokens: 10_000,
         reasoningOutputTokens: 5_000,
+        costAmount: 0.01234,
+        costCurrency: "USD",
       }),
     ]);
 
@@ -92,7 +108,23 @@ describe("contextWindow", () => {
     expect(snapshot?.lastUsedTokens).toBe(105_000);
     expect(snapshot?.inputTokens).toBe(50_000);
     expect(snapshot?.cachedInputTokens).toBe(40_000);
+    expect(snapshot?.cachedWriteTokens).toBe(1000);
     expect(snapshot?.outputTokens).toBe(10_000);
     expect(snapshot?.reasoningOutputTokens).toBe(5_000);
+    expect(snapshot?.costAmount).toBe(0.01234);
+    expect(snapshot?.costCurrency).toBe("USD");
+  });
+
+  it("derives standard ACP usage update cost objects", () => {
+    const snapshot = deriveLatestContextWindowSnapshot([
+      makeActivity("activity-1", "context-window.updated", {
+        usedTokens: 60_000,
+        maxTokens: 200_000,
+        cost: { amount: 0.25, currency: "USD" },
+      }),
+    ]);
+
+    expect(snapshot?.costAmount).toBe(0.25);
+    expect(snapshot?.costCurrency).toBe("USD");
   });
 });

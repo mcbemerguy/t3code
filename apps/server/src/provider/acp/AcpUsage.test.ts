@@ -12,12 +12,14 @@ describe("AcpUsage", () => {
       sessionUpdate: "usage_update",
       used: 60_000,
       size: 200_000,
+      cost: { amount: 0.25, currency: "USD" },
     });
     const promptUsage = normalizeAcpPromptUsage({
       totalTokens: 105_000,
       inputTokens: 50_000,
       outputTokens: 10_000,
       cachedReadTokens: 40_000,
+      cachedWriteTokens: 1_000,
       thoughtTokens: 5_000,
     });
 
@@ -35,10 +37,14 @@ describe("AcpUsage", () => {
       lastInputTokens: 50_000,
       cachedInputTokens: 40_000,
       lastCachedInputTokens: 40_000,
+      cachedWriteTokens: 1_000,
+      lastCachedWriteTokens: 1_000,
       outputTokens: 10_000,
       lastOutputTokens: 10_000,
       reasoningOutputTokens: 5_000,
       lastReasoningOutputTokens: 5_000,
+      costAmount: 0.25,
+      costCurrency: "USD",
     });
   });
 
