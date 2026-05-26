@@ -91,6 +91,7 @@ interface GenericAcpSessionContext {
   latestTokenUsage: ThreadTokenUsageSnapshot | undefined;
   lastPlanFingerprint: string | undefined;
   activeTurnId: TurnId | undefined;
+  readonly forceCompletedTurnIds: Set<TurnId>;
   stopped: boolean;
 }
 
@@ -518,6 +519,7 @@ export function makeGenericAcpAdapter(
             latestTokenUsage: undefined,
             lastPlanFingerprint: undefined,
             activeTurnId: undefined,
+            forceCompletedTurnIds: new Set(),
             stopped: false,
           };
 
@@ -747,6 +749,10 @@ export function makeGenericAcpAdapter(
               mapAcpToAdapterError(provider, input.threadId, "session/prompt", error),
             ),
           );
+        if (ctx.forceCompletedTurnIds.delete(turnId)) {
+          return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
+        }
+
         ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });
         ctx.session = { ...ctx.session, activeTurnId: turnId, updatedAt: yield* nowIso, model };
 
@@ -801,6 +807,7 @@ export function makeGenericAcpAdapter(
         const interruptedTurnId = ctx.activeTurnId;
         if (interruptedTurnId) {
           ctx.activeTurnId = undefined;
+          ctx.forceCompletedTurnIds.add(interruptedTurnId);
           yield* offerRuntimeEvent({
             type: "turn.completed",
             ...(yield* makeEventStamp()),
