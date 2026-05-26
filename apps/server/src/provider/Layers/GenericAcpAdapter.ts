@@ -69,6 +69,7 @@ const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJ
 const CUSTOM_ACP_PROVIDER = ProviderDriverKind.make("customAcp");
 const CUSTOM_ACP_RESUME_VERSION = 1 as const;
 const ACP_CANCEL_TIMEOUT_MS = 5_000;
+const ACP_CANCEL_WATCHDOG_GRACE_MS = 2_500;
 
 interface PendingApproval {
   readonly decision: Deferred.Deferred<ProviderApprovalDecision>;
@@ -238,6 +239,27 @@ export function makeGenericAcpAdapter(
           },
           threadId,
         );
+      });
+
+    const completeTurnLocally = (
+      ctx: GenericAcpSessionContext,
+      turnId: TurnId,
+      payload: { readonly state: "cancelled"; readonly stopReason: string | null },
+    ) =>
+      Effect.gen(function* () {
+        ctx.activeTurnId = undefined;
+        ctx.forceCompletedTurnIds.add(turnId);
+        const { activeTurnId: _activeTurnId, ...sessionWithoutActiveTurn } = ctx.session;
+        void _activeTurnId;
+        ctx.session = { ...sessionWithoutActiveTurn, updatedAt: yield* nowIso };
+        yield* offerRuntimeEvent({
+          type: "turn.completed",
+          ...(yield* makeEventStamp()),
+          provider,
+          threadId: ctx.threadId,
+          turnId,
+          payload,
+        });
       });
 
     const emitPlanUpdate = (
@@ -753,8 +775,11 @@ export function makeGenericAcpAdapter(
           return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
         }
 
+        ctx.activeTurnId = undefined;
         ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });
-        ctx.session = { ...ctx.session, activeTurnId: turnId, updatedAt: yield* nowIso, model };
+        const { activeTurnId: _activeTurnId, ...sessionWithoutActiveTurn } = ctx.session;
+        void _activeTurnId;
+        ctx.session = { ...sessionWithoutActiveTurn, updatedAt: yield* nowIso, model };
 
         const promptUsage = normalizeAcpPromptUsage(result.usage);
         if (promptUsage) {
@@ -789,11 +814,15 @@ export function makeGenericAcpAdapter(
         return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
       });
 
-    const interruptTurn: ProviderAdapterShape<ProviderAdapterError>["interruptTurn"] = (threadId) =>
+    const interruptTurn: ProviderAdapterShape<ProviderAdapterError>["interruptTurn"] = (
+      threadId,
+      turnId,
+    ) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(threadId);
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
+        const interruptedTurnId = turnId ?? ctx.activeTurnId;
         const cancelResult = yield* Effect.ignore(
           ctx.acp.cancel.pipe(
             Effect.mapError((error) =>
@@ -802,26 +831,30 @@ export function makeGenericAcpAdapter(
           ),
         ).pipe(Effect.timeoutOption(Duration.millis(ACP_CANCEL_TIMEOUT_MS)));
 
-        if (Option.isSome(cancelResult)) return;
-
-        const interruptedTurnId = ctx.activeTurnId;
-        if (interruptedTurnId) {
-          ctx.activeTurnId = undefined;
-          ctx.forceCompletedTurnIds.add(interruptedTurnId);
-          yield* offerRuntimeEvent({
-            type: "turn.completed",
-            ...(yield* makeEventStamp()),
-            provider,
-            threadId,
-            turnId: interruptedTurnId,
-            payload: {
-              state: "cancelled",
-              stopReason: "session/cancel timed out; ACP session was force-stopped",
-            },
+        if (interruptedTurnId && !ctx.forceCompletedTurnIds.has(interruptedTurnId)) {
+          yield* completeTurnLocally(ctx, interruptedTurnId, {
+            state: "cancelled",
+            stopReason: Option.isSome(cancelResult)
+              ? "session/cancel requested"
+              : "session/cancel timed out; ACP session was force-stopped",
           });
         }
 
-        yield* stopSessionInternal(ctx);
+        if (Option.isNone(cancelResult)) {
+          yield* stopSessionInternal(ctx);
+          return;
+        }
+
+        if (interruptedTurnId) {
+          yield* Effect.sleep(Duration.millis(ACP_CANCEL_WATCHDOG_GRACE_MS)).pipe(
+            Effect.flatMap(() =>
+              ctx.stopped || !ctx.forceCompletedTurnIds.has(interruptedTurnId)
+                ? Effect.void
+                : stopSessionInternal(ctx),
+            ),
+            Effect.forkDetach,
+          );
+        }
       });
 
     const respondToRequest: ProviderAdapterShape<ProviderAdapterError>["respondToRequest"] = (

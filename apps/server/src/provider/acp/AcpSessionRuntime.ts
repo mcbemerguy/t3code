@@ -560,7 +560,14 @@ const makeAcpSessionRuntime = (
           }),
         ),
       cancel: getStartedState.pipe(
-        Effect.flatMap((started) => acp.agent.cancel({ sessionId: started.sessionId })),
+        Effect.flatMap((started) => {
+          const requestPayload = { sessionId: started.sessionId };
+          return runLoggedRequest(
+            "session/cancel",
+            requestPayload,
+            acp.agent.cancel(requestPayload),
+          );
+        }),
       ),
       setMode: (modeId) =>
         Ref.get(modeStateRef).pipe(
