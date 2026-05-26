@@ -13,7 +13,7 @@ export interface InlineFilePathTextProps {
   linkClassName?: string | undefined;
 }
 
-const INLINE_FILE_LINK_CLASS_NAME =
+export const INLINE_FILE_LINK_CLASS_NAME =
   "top-0 !border-0 !bg-transparent !p-0 !text-[inherit] !leading-[inherit] hover:!bg-transparent";
 
 export const InlineFilePathText = memo(function InlineFilePathText({

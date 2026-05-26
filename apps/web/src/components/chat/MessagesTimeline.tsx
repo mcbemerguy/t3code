@@ -68,7 +68,7 @@ import {
 import { SkillInlineText } from "./SkillInlineText";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import { resolveMarkdownFileLinkMeta } from "../../markdown-links";
-import { InlineFilePathText } from "./InlineFilePathText";
+import { INLINE_FILE_LINK_CLASS_NAME, InlineFilePathText } from "./InlineFilePathText";
 import { MarkdownFileLink } from "./MarkdownFileLink";
 
 // ---------------------------------------------------------------------------
@@ -1063,6 +1063,43 @@ function workEntryRawCommand(
   return rawCommand === workEntry.command.trim() ? null : rawCommand;
 }
 
+function ChangedFilesPreviewText({
+  changedFiles,
+  workspaceRoot,
+  resolvedTheme,
+}: {
+  changedFiles: ReadonlyArray<string> | undefined;
+  workspaceRoot: string | undefined;
+  resolvedTheme: "light" | "dark";
+}) {
+  const firstPath = changedFiles?.[0];
+  if (!firstPath) return null;
+
+  const displayPath = formatWorkspaceRelativePath(firstPath, workspaceRoot);
+  const fileLinkMeta = resolveMarkdownFileLinkMeta(firstPath, workspaceRoot);
+  const moreCount = Math.max((changedFiles?.length ?? 0) - 1, 0);
+
+  return (
+    <>
+      {fileLinkMeta ? (
+        <MarkdownFileLink
+          href={fileLinkMeta.targetPath}
+          targetPath={fileLinkMeta.targetPath}
+          displayPath={fileLinkMeta.displayPath}
+          filePath={fileLinkMeta.filePath}
+          label={displayPath}
+          theme={resolvedTheme}
+          className={INLINE_FILE_LINK_CLASS_NAME}
+          showIcon={false}
+        />
+      ) : (
+        displayPath
+      )}
+      {moreCount > 0 ? ` +${moreCount} more` : null}
+    </>
+  );
+}
+
 function workEntryIcon(workEntry: TimelineWorkEntry): LucideIcon {
   if (workEntry.requestKind === "command") return TerminalIcon;
   if (workEntry.requestKind === "file-read") return EyeIcon;
@@ -1183,40 +1220,63 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           ) : (
             <Tooltip>
               <TooltipTrigger
-                className="block min-w-0 w-full text-left"
-                title={displayText}
-                aria-label={displayText}
-              >
-                <p
-                  className={cn(
-                    "truncate text-[11px] leading-5",
-                    workToneClass(workEntry.tone),
-                    preview ? "text-muted-foreground/70" : "",
-                  )}
-                >
-                  <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
-                    {heading}
-                  </span>
-                  {preview && (
-                    <span className="text-muted-foreground/55">
-                      {" "}
-                      -{" "}
-                      <InlineFilePathText
-                        text={preview}
-                        cwd={workspaceRoot}
-                        theme={resolvedTheme}
-                      />
-                    </span>
-                  )}
-                </p>
-              </TooltipTrigger>
+                render={
+                  <div
+                    className="block min-w-0 w-full text-left"
+                    title={displayText}
+                    aria-label={displayText}
+                  >
+                    <p
+                      className={cn(
+                        "truncate text-[11px] leading-5",
+                        workToneClass(workEntry.tone),
+                        preview ? "text-muted-foreground/70" : "",
+                      )}
+                    >
+                      <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
+                        {heading}
+                      </span>
+                      {preview && (
+                        <span className="text-muted-foreground/55">
+                          {" "}
+                          -{" "}
+                          {previewIsChangedFiles ? (
+                            <ChangedFilesPreviewText
+                              changedFiles={workEntry.changedFiles}
+                              workspaceRoot={workspaceRoot}
+                              resolvedTheme={resolvedTheme}
+                            />
+                          ) : (
+                            <InlineFilePathText
+                              text={preview}
+                              cwd={workspaceRoot}
+                              theme={resolvedTheme}
+                            />
+                          )}
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                }
+              />
               <TooltipPopup className="max-w-[min(720px,calc(100vw-2rem))]">
                 <p className="whitespace-pre-wrap wrap-break-word text-xs leading-5">
-                  <InlineFilePathText
-                    text={displayText}
-                    cwd={workspaceRoot}
-                    theme={resolvedTheme}
-                  />
+                  {previewIsChangedFiles ? (
+                    <>
+                      {heading} -{" "}
+                      <ChangedFilesPreviewText
+                        changedFiles={workEntry.changedFiles}
+                        workspaceRoot={workspaceRoot}
+                        resolvedTheme={resolvedTheme}
+                      />
+                    </>
+                  ) : (
+                    <InlineFilePathText
+                      text={displayText}
+                      cwd={workspaceRoot}
+                      theme={resolvedTheme}
+                    />
+                  )}
                 </p>
               </TooltipPopup>
             </Tooltip>
