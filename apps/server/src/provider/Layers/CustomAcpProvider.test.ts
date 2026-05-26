@@ -474,6 +474,53 @@ describe("Custom ACP provider", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
+  it.effect("suppresses prompt failures after a locally cancelled turn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({
+            T3_ACP_EMIT_TOOL_CALLS: "1",
+            T3_ACP_FAIL_PROMPT_AFTER_CANCEL: "1",
+          }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-cancelled-prompt-failure");
+      const requested = yield* Deferred.make<ProviderRuntimeEvent>();
+      const completed =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>>();
+
+      yield* Stream.runForEach(adapter.streamEvents, (event) => {
+        if (event.threadId !== threadId) return Effect.void;
+        if (event.type === "request.opened") {
+          return Deferred.succeed(requested, event).pipe(Effect.ignore);
+        }
+        if (event.type === "turn.completed") {
+          return Deferred.succeed(completed, event).pipe(Effect.ignore);
+        }
+        return Effect.void;
+      }).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const turnFiber = yield* adapter
+        .sendTurn({ threadId, input: "needs approval", attachments: [] })
+        .pipe(Effect.forkChild);
+
+      yield* Deferred.await(requested);
+      yield* adapter.interruptTurn(threadId);
+      yield* Fiber.join(turnFiber);
+
+      const completedEvent = yield* Deferred.await(completed);
+      assert.equal(completedEvent.payload.state, "cancelled");
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("switches models through the generic ACP model config option", () =>
     Effect.gen(function* () {
       const requestLog = yield* Effect.promise(() => tempFile("model-switch.jsonl"));

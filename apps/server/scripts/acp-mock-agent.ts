@@ -29,6 +29,7 @@ const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
 const enableSessionList = process.env.T3_ACP_ENABLE_SESSION_LIST === "1";
 const failLoadSession = process.env.T3_ACP_FAIL_LOAD_SESSION === "1";
+const failPromptAfterCancel = process.env.T3_ACP_FAIL_PROMPT_AFTER_CANCEL === "1";
 const listExtraCwd = process.env.T3_ACP_LIST_EXTRA_CWD;
 const sessionId = "mock-session-1";
 
@@ -510,6 +511,13 @@ const program = Effect.gen(function* () {
         const cancelled =
           cancelledSessions.delete(requestedSessionId) ||
           permission.outcome.outcome === "cancelled";
+
+        if (cancelled && failPromptAfterCancel) {
+          return yield* AcpError.AcpRequestError.invalidParams("Mock prompt failed after cancel", {
+            method: "session/prompt",
+            params: request,
+          });
+        }
 
         yield* agent.client.sessionUpdate({
           sessionId: requestedSessionId,

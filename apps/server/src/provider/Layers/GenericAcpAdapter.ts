@@ -764,14 +764,15 @@ export function makeGenericAcpAdapter(
           });
         }
 
-        const result = yield* ctx.acp
-          .prompt({ prompt: promptParts })
-          .pipe(
-            Effect.mapError((error) =>
-              mapAcpToAdapterError(provider, input.threadId, "session/prompt", error),
-            ),
-          );
-        if (ctx.forceCompletedTurnIds.delete(turnId)) {
+        const result = yield* ctx.acp.prompt({ prompt: promptParts }).pipe(
+          Effect.mapError((error) =>
+            mapAcpToAdapterError(provider, input.threadId, "session/prompt", error),
+          ),
+          Effect.catch((error) =>
+            ctx.forceCompletedTurnIds.delete(turnId) ? Effect.void : Effect.fail(error),
+          ),
+        );
+        if (result === undefined || ctx.forceCompletedTurnIds.delete(turnId)) {
           return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
         }
 
