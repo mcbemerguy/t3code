@@ -67,6 +67,9 @@ import {
 } from "./userMessageTerminalContexts";
 import { SkillInlineText } from "./SkillInlineText";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
+import { resolveMarkdownFileLinkMeta } from "../../markdown-links";
+import { InlineFilePathText } from "./InlineFilePathText";
+import { MarkdownFileLink } from "./MarkdownFileLink";
 
 // ---------------------------------------------------------------------------
 // Context — shared state consumed by every row component via Context.
@@ -598,7 +601,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
 }: {
   groupedEntries: Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"];
 }) {
-  const { workspaceRoot } = use(TimelineRowCtx);
+  const { workspaceRoot, resolvedTheme } = use(TimelineRowCtx);
   const [isExpanded, setIsExpanded] = useState(false);
   const hasOverflow = groupedEntries.length > MAX_VISIBLE_WORK_LOG_ENTRIES;
   const visibleEntries =
@@ -634,6 +637,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
             key={`work-row:${workEntry.id}`}
             workEntry={workEntry}
             workspaceRoot={workspaceRoot}
+            resolvedTheme={resolvedTheme}
           />
         ))}
       </div>
@@ -1102,8 +1106,9 @@ function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
+  resolvedTheme: "light" | "dark";
 }) {
-  const { workEntry, workspaceRoot } = props;
+  const { workEntry, workspaceRoot, resolvedTheme } = props;
   const iconConfig = workToneIcon(workEntry.tone);
   const EntryIcon = workEntryIcon(workEntry);
   const heading = toolWorkEntryHeading(workEntry);
@@ -1149,7 +1154,12 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                       render={
                         <span className="max-w-full cursor-default text-muted-foreground/55 transition-colors hover:text-muted-foreground/75 focus-visible:text-muted-foreground/75">
                           {" "}
-                          - {preview}
+                          -{" "}
+                          <InlineFilePathText
+                            text={preview}
+                            cwd={workspaceRoot}
+                            theme={resolvedTheme}
+                          />
                         </span>
                       }
                     />
@@ -1159,7 +1169,11 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                       side="top"
                     >
                       <div className="max-w-[min(56rem,calc(100vw-2rem))] overflow-x-auto px-1.5 py-1 font-mono text-[11px] leading-4 whitespace-nowrap">
-                        {rawCommand}
+                        <InlineFilePathText
+                          text={rawCommand}
+                          cwd={workspaceRoot}
+                          theme={resolvedTheme}
+                        />
                       </div>
                     </TooltipPopup>
                   </Tooltip>
@@ -1183,12 +1197,26 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                   <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
                     {heading}
                   </span>
-                  {preview && <span className="text-muted-foreground/55"> - {preview}</span>}
+                  {preview && (
+                    <span className="text-muted-foreground/55">
+                      {" "}
+                      -{" "}
+                      <InlineFilePathText
+                        text={preview}
+                        cwd={workspaceRoot}
+                        theme={resolvedTheme}
+                      />
+                    </span>
+                  )}
                 </p>
               </TooltipTrigger>
               <TooltipPopup className="max-w-[min(720px,calc(100vw-2rem))]">
                 <p className="whitespace-pre-wrap wrap-break-word text-xs leading-5">
-                  {displayText}
+                  <InlineFilePathText
+                    text={displayText}
+                    cwd={workspaceRoot}
+                    theme={resolvedTheme}
+                  />
                 </p>
               </TooltipPopup>
             </Tooltip>
@@ -1199,14 +1227,30 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
         <div className="mt-1 flex flex-wrap gap-1 pl-6">
           {workEntry.changedFiles?.slice(0, 4).map((filePath) => {
             const displayPath = formatWorkspaceRelativePath(filePath, workspaceRoot);
+            const fileLinkMeta = resolveMarkdownFileLinkMeta(filePath, workspaceRoot);
+            if (!fileLinkMeta) {
+              return (
+                <span
+                  key={`${workEntry.id}:${filePath}`}
+                  className="rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/75"
+                  title={displayPath}
+                >
+                  {displayPath}
+                </span>
+              );
+            }
             return (
-              <span
+              <MarkdownFileLink
                 key={`${workEntry.id}:${filePath}`}
-                className="rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/75"
-                title={displayPath}
-              >
-                {displayPath}
-              </span>
+                href={fileLinkMeta.targetPath}
+                targetPath={fileLinkMeta.targetPath}
+                displayPath={fileLinkMeta.displayPath}
+                filePath={fileLinkMeta.filePath}
+                label={displayPath}
+                theme={resolvedTheme}
+                className="!bg-background/75 !px-1.5 !py-0.5 !text-[10px] !leading-tight text-muted-foreground/75"
+                showIcon={false}
+              />
             );
           })}
           {(workEntry.changedFiles?.length ?? 0) > 4 && (
