@@ -16,6 +16,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -67,6 +68,7 @@ import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogg
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
 const CUSTOM_ACP_PROVIDER = ProviderDriverKind.make("customAcp");
 const CUSTOM_ACP_RESUME_VERSION = 1 as const;
+const ACP_CANCEL_TIMEOUT_MS = 5_000;
 
 interface PendingApproval {
   readonly decision: Deferred.Deferred<ProviderApprovalDecision>;
@@ -786,13 +788,33 @@ export function makeGenericAcpAdapter(
         const ctx = yield* requireSession(threadId);
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
-        yield* Effect.ignore(
+        const cancelResult = yield* Effect.ignore(
           ctx.acp.cancel.pipe(
             Effect.mapError((error) =>
               mapAcpToAdapterError(provider, threadId, "session/cancel", error),
             ),
           ),
-        );
+        ).pipe(Effect.timeoutOption(Duration.millis(ACP_CANCEL_TIMEOUT_MS)));
+
+        if (Option.isSome(cancelResult)) return;
+
+        const interruptedTurnId = ctx.activeTurnId;
+        if (interruptedTurnId) {
+          ctx.activeTurnId = undefined;
+          yield* offerRuntimeEvent({
+            type: "turn.completed",
+            ...(yield* makeEventStamp()),
+            provider,
+            threadId,
+            turnId: interruptedTurnId,
+            payload: {
+              state: "cancelled",
+              stopReason: "session/cancel timed out; ACP session was force-stopped",
+            },
+          });
+        }
+
+        yield* stopSessionInternal(ctx);
       });
 
     const respondToRequest: ProviderAdapterShape<ProviderAdapterError>["respondToRequest"] = (
