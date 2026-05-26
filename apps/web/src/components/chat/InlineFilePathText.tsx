@@ -1,4 +1,4 @@
-import { memo, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { resolveMarkdownFileLinkMeta, type MarkdownFileLinkMeta } from "../../markdown-links";
 import { extractTerminalLinks } from "../../terminal-links";
@@ -11,6 +11,7 @@ export interface InlineFilePathTextProps {
   theme: "light" | "dark";
   className?: string | undefined;
   linkClassName?: string | undefined;
+  deferred?: boolean | undefined;
 }
 
 export const INLINE_FILE_LINK_CLASS_NAME =
@@ -22,10 +23,62 @@ export const InlineFilePathText = memo(function InlineFilePathText({
   theme,
   className,
   linkClassName,
+  deferred = false,
 }: InlineFilePathTextProps) {
-  const parts = renderInlineFilePathParts(text, cwd, theme, linkClassName);
+  const shouldResolve = useDeferredInlineResolution(text, cwd, deferred);
+  const parts = useMemo(
+    () => (shouldResolve ? renderInlineFilePathParts(text, cwd, theme, linkClassName) : text),
+    [cwd, linkClassName, shouldResolve, text, theme],
+  );
   return <>{className ? <span className={className}>{parts}</span> : parts}</>;
 });
+
+function useDeferredInlineResolution(
+  text: string,
+  cwd: string | undefined,
+  deferred: boolean,
+): boolean {
+  const canLink = mayContainFilePath(text, cwd);
+  const resolutionKey = `${cwd ?? ""}\n${text}`;
+  const [readyKey, setReadyKey] = useState<string | null>(
+    !deferred || !canLink ? resolutionKey : null,
+  );
+
+  useEffect(() => {
+    if (!deferred || !canLink) {
+      setReadyKey(resolutionKey);
+      return;
+    }
+
+    setReadyKey(null);
+    const windowWithIdle = window as Window & {
+      requestIdleCallback?: (callback: () => void) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    const handle = windowWithIdle.requestIdleCallback
+      ? windowWithIdle.requestIdleCallback(() => setReadyKey(resolutionKey))
+      : window.setTimeout(() => setReadyKey(resolutionKey), 0);
+    return () => {
+      if (windowWithIdle.cancelIdleCallback) {
+        windowWithIdle.cancelIdleCallback(handle);
+      } else {
+        window.clearTimeout(handle);
+      }
+    };
+  }, [canLink, deferred, resolutionKey]);
+
+  return readyKey === resolutionKey;
+}
+
+export function mayContainFilePath(text: string, cwd?: string): boolean {
+  if (text.length === 0) return false;
+  if (/[\\/]/.test(text)) return true;
+  if (/[A-Za-z]:[\\/]/.test(text)) return true;
+  if (cwd && /(?:^|\s)[A-Za-z0-9._-]+\.[A-Za-z0-9_-]+(?::\d+){0,2}(?=$|\s|[),.;!?])/.test(text)) {
+    return true;
+  }
+  return false;
+}
 
 export function renderInlineFilePathParts(
   text: string,
@@ -33,6 +86,8 @@ export function renderInlineFilePathParts(
   theme: "light" | "dark",
   linkClassName?: string | undefined,
 ): ReactNode {
+  if (!mayContainFilePath(text, cwd)) return text;
+
   const matches = extractTerminalLinks(text).filter((match) => match.kind === "path");
   if (matches.length === 0) return text;
 

@@ -1196,6 +1196,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                             text={preview}
                             cwd={workspaceRoot}
                             theme={resolvedTheme}
+                            deferred
                           />
                         </span>
                       }
@@ -1210,6 +1211,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                           text={rawCommand}
                           cwd={workspaceRoot}
                           theme={resolvedTheme}
+                          deferred
                         />
                       </div>
                     </TooltipPopup>
@@ -1251,6 +1253,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                               text={preview}
                               cwd={workspaceRoot}
                               theme={resolvedTheme}
+                              deferred
                             />
                           )}
                         </span>
@@ -1275,6 +1278,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                       text={displayText}
                       cwd={workspaceRoot}
                       theme={resolvedTheme}
+                      deferred
                     />
                   )}
                 </p>
