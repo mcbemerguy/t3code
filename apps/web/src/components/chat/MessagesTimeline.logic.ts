@@ -167,6 +167,7 @@ export function deriveMessagesTimelineRows(input: {
       while (cursor < input.timelineEntries.length) {
         const nextEntry = input.timelineEntries[cursor];
         if (!nextEntry || nextEntry.kind !== "work") break;
+        if (!workEntriesBelongToSameTurn(timelineEntry.entry, nextEntry.entry)) break;
         groupedEntries.push(nextEntry.entry);
         cursor += 1;
       }
@@ -234,6 +235,10 @@ export function deriveMessagesTimelineRows(input: {
   }
 
   return nextRows;
+}
+
+function workEntriesBelongToSameTurn(left: WorkLogEntry, right: WorkLogEntry): boolean {
+  return (left.turnId ?? null) === (right.turnId ?? null);
 }
 
 export function computeStableMessagesTimelineRows(

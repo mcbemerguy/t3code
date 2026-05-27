@@ -50,6 +50,7 @@ export const PROVIDER_OPTIONS: Array<{
 export interface WorkLogEntry {
   id: string;
   createdAt: string;
+  turnId: TurnId | null;
   label: string;
   detail?: string;
   command?: string;
@@ -543,6 +544,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const entry: DerivedWorkLogEntry = {
     id: activity.id,
     createdAt: activity.createdAt,
+    turnId: activity.turnId,
     label: taskLabel || activity.summary,
     tone:
       activity.kind === "task.progress"
@@ -608,6 +610,9 @@ function shouldCollapseToolLifecycleEntries(
     return false;
   }
   if (next.activityKind !== "tool.updated" && next.activityKind !== "tool.completed") {
+    return false;
+  }
+  if (previous.turnId !== next.turnId) {
     return false;
   }
   if (previous.activityKind === "tool.completed") {

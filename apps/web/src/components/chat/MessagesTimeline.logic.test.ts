@@ -1,3 +1,4 @@
+import { TurnId } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 import {
   computeStableMessagesTimelineRows,
@@ -351,6 +352,45 @@ describe("deriveMessagesTimelineRows", () => {
     expect(assistantRows[1]?.completionSummary).toBe("done");
   });
 
+  it("does not group adjacent work entries from different turns", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "entry-work-1",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "work-1",
+            createdAt: "2026-01-01T00:00:01Z",
+            turnId: TurnId.make("turn-1"),
+            label: "Read file",
+            tone: "tool",
+          },
+        },
+        {
+          id: "entry-work-2",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:02Z",
+          entry: {
+            id: "work-2",
+            createdAt: "2026-01-01T00:00:02Z",
+            turnId: TurnId.make("turn-2"),
+            label: "Ran command",
+            tone: "tool",
+          },
+        },
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.id)).toEqual(["entry-work-1", "entry-work-2"]);
+  });
+
   it("projects assistant diff summaries and user revert counts onto the affected rows", () => {
     const assistantTurnDiffSummary = {
       turnId: "turn-1" as never,
@@ -512,6 +552,7 @@ describe("computeStableMessagesTimelineRows", () => {
     const firstWorkEntry = {
       id: "work-1",
       createdAt: "2026-01-01T00:00:00Z",
+      turnId: TurnId.make("turn-1"),
       label: "thinking",
       detail: "Inspecting repository state",
       tone: "thinking" as const,
@@ -519,6 +560,7 @@ describe("computeStableMessagesTimelineRows", () => {
     const secondWorkEntry = {
       id: "work-2",
       createdAt: "2026-01-01T00:00:01Z",
+      turnId: TurnId.make("turn-1"),
       label: "read",
       detail: "Reading package.json",
       tone: "tool" as const,

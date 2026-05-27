@@ -669,6 +669,29 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.map((entry) => entry.id)).toEqual(["turn-2"]);
   });
 
+  it("keeps each work entry tied to its owning turn", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "turn-1-tool",
+        turnId: "turn-1",
+        summary: "Tool call complete",
+        kind: "tool.completed",
+      }),
+      makeActivity({
+        id: "turn-2-tool",
+        turnId: "turn-2",
+        summary: "Tool call complete",
+        kind: "tool.completed",
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined);
+    expect(entries.map((entry) => [entry.id, entry.turnId])).toEqual([
+      ["turn-1-tool", TurnId.make("turn-1")],
+      ["turn-2-tool", TurnId.make("turn-2")],
+    ]);
+  });
+
   it("omits checkpoint captured info entries", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -1293,6 +1316,7 @@ describe("deriveTimelineEntries", () => {
         {
           id: "work-1",
           createdAt: "2026-02-23T00:00:03.000Z",
+          turnId: TurnId.make("turn-1"),
           label: "Ran tests",
           tone: "tool",
         },

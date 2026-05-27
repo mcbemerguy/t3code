@@ -116,6 +116,7 @@ describe("MessagesTimeline", () => {
             entry: {
               id: "work-1",
               createdAt: "2026-04-13T12:00:00.000Z",
+              turnId: null,
               label: "thinking",
               detail: "Inspecting repository state",
               tone: "thinking",
@@ -163,6 +164,7 @@ describe("MessagesTimeline", () => {
               entry: {
                 id: "work-1",
                 createdAt: "2026-04-13T12:00:00.000Z",
+                turnId: null,
                 label: "thinking",
                 detail: "Inspecting repository state",
                 tone: "thinking",

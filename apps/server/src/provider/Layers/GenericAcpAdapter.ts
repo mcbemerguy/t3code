@@ -94,6 +94,7 @@ interface GenericAcpSessionContext {
   latestTokenUsage: ThreadTokenUsageSnapshot | undefined;
   lastPlanFingerprint: string | undefined;
   activeTurnId: TurnId | undefined;
+  runtimeEventTurnId: TurnId | undefined;
   piSteeringMethod: string | undefined;
   readonly completedTurnIds: Set<TurnId>;
   readonly cancellingTurnIds: Set<TurnId>;
@@ -151,6 +152,10 @@ function requiresStrictPiAcpResume(raw: unknown, piSteeringMethod: string | unde
 
 function hasPiAcpMetadataRecord(meta: unknown): boolean {
   return isRecord(meta) && isRecord(meta.piAcp);
+}
+
+function currentRuntimeEventTurnId(ctx: GenericAcpSessionContext): TurnId | undefined {
+  return ctx.activeTurnId ?? ctx.runtimeEventTurnId;
 }
 
 function settlePendingApprovalsAsCancelled(
@@ -311,7 +316,8 @@ export function makeGenericAcpAdapter(
       method: string,
     ) =>
       Effect.gen(function* () {
-        const fingerprint = `${ctx.activeTurnId ?? "no-turn"}:${encodeJsonStringForDiagnostics(payload) ?? "[unserializable payload]"}`;
+        const eventTurnId = currentRuntimeEventTurnId(ctx);
+        const fingerprint = `${eventTurnId ?? "no-turn"}:${encodeJsonStringForDiagnostics(payload) ?? "[unserializable payload]"}`;
         if (ctx.lastPlanFingerprint === fingerprint) return;
         ctx.lastPlanFingerprint = fingerprint;
         yield* offerRuntimeEvent(
@@ -319,7 +325,7 @@ export function makeGenericAcpAdapter(
             stamp: yield* makeEventStamp(),
             provider,
             threadId: ctx.threadId,
-            turnId: ctx.activeTurnId,
+            turnId: eventTurnId,
             payload,
             source: "acp.jsonrpc",
             method,
@@ -506,7 +512,7 @@ export function makeGenericAcpAdapter(
                   const requestId = ApprovalRequestId.make(crypto.randomUUID());
                   const runtimeRequestId = RuntimeRequestId.make(requestId);
                   const answers = yield* Deferred.make<ProviderUserInputAnswers>();
-                  const requestTurnId = ctx?.activeTurnId;
+                  const requestTurnId = ctx ? currentRuntimeEventTurnId(ctx) : undefined;
                   pendingUserInputs.set(requestId, { answers });
                   yield* offerRuntimeEvent({
                     type: "user-input.requested",
@@ -554,7 +560,7 @@ export function makeGenericAcpAdapter(
                 const requestId = ApprovalRequestId.make(crypto.randomUUID());
                 const runtimeRequestId = RuntimeRequestId.make(requestId);
                 const decision = yield* Deferred.make<ProviderApprovalDecision>();
-                const requestTurnId = ctx?.activeTurnId;
+                const requestTurnId = ctx ? currentRuntimeEventTurnId(ctx) : undefined;
                 pendingApprovals.set(requestId, { decision, kind: permissionRequest.kind });
                 yield* offerRuntimeEvent(
                   makeAcpRequestOpenedEvent({
@@ -649,6 +655,7 @@ export function makeGenericAcpAdapter(
             latestTokenUsage: undefined,
             lastPlanFingerprint: undefined,
             activeTurnId: undefined,
+            runtimeEventTurnId: undefined,
             piSteeringMethod: started.piSteeringMethod,
             completedTurnIds: new Set(),
             cancellingTurnIds: new Set(),
@@ -662,6 +669,7 @@ export function makeGenericAcpAdapter(
           const nf = yield* Stream.runDrain(
             Stream.mapEffect(acp.getEvents(), (event) =>
               Effect.gen(function* () {
+                const eventTurnId = currentRuntimeEventTurnId(ctx);
                 switch (event._tag) {
                   case "ModeChanged":
                     return;
@@ -682,7 +690,7 @@ export function makeGenericAcpAdapter(
                         stamp: yield* makeEventStamp(),
                         provider,
                         threadId: ctx.threadId,
-                        turnId: ctx.activeTurnId,
+                        turnId: eventTurnId,
                         itemId: event.itemId,
                         lifecycle: "item.started",
                       }),
@@ -694,7 +702,7 @@ export function makeGenericAcpAdapter(
                         stamp: yield* makeEventStamp(),
                         provider,
                         threadId: ctx.threadId,
-                        turnId: ctx.activeTurnId,
+                        turnId: eventTurnId,
                         itemId: event.itemId,
                         lifecycle: "item.completed",
                       }),
@@ -721,7 +729,7 @@ export function makeGenericAcpAdapter(
                         stamp: yield* makeEventStamp(),
                         provider,
                         threadId: ctx.threadId,
-                        turnId: ctx.activeTurnId,
+                        turnId: eventTurnId,
                         toolCall: event.toolCall,
                         rawPayload: event.rawPayload,
                       }),
@@ -739,7 +747,7 @@ export function makeGenericAcpAdapter(
                         stamp: yield* makeEventStamp(),
                         provider,
                         threadId: ctx.threadId,
-                        turnId: ctx.activeTurnId,
+                        turnId: eventTurnId,
                         ...(event.itemId ? { itemId: event.itemId } : {}),
                         streamKind: event.streamKind,
                         text: event.text,
@@ -763,7 +771,7 @@ export function makeGenericAcpAdapter(
                       ...(yield* makeEventStamp()),
                       provider,
                       threadId: ctx.threadId,
-                      turnId: ctx.activeTurnId,
+                      turnId: eventTurnId,
                       payload: { usage: ctx.latestTokenUsage },
                       raw: {
                         source: "acp.jsonrpc",
@@ -841,6 +849,7 @@ export function makeGenericAcpAdapter(
             const signal = yield* Deferred.make<void>();
             ctx.turnCancelSignals.set(turnId, signal);
             ctx.activeTurnId = turnId;
+            ctx.runtimeEventTurnId = turnId;
             ctx.lastPlanFingerprint = undefined;
             ctx.session = { ...ctx.session, activeTurnId: turnId, updatedAt: yield* nowIso };
             return signal;
