@@ -97,7 +97,15 @@ function readJsonLines(filePath: string): Array<Record<string, unknown>> {
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
-    .map((line) => JSON.parse(line) as Record<string, unknown>);
+    .map((line, index) => {
+      try {
+        return JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        throw new Error(
+          `Failed to parse JSON at line ${index + 1} in ${filePath}: ${line.slice(0, 200)}`,
+        );
+      }
+    });
 }
 
 function jsonRpcMethods(entries: ReadonlyArray<Record<string, unknown>>): ReadonlyArray<string> {

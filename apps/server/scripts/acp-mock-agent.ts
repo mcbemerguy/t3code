@@ -30,7 +30,10 @@ const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
 const enableSessionList = process.env.T3_ACP_ENABLE_SESSION_LIST === "1";
 const enablePiSteering = process.env.T3_ACP_ENABLE_PI_STEERING === "1";
 const failLoadSession = process.env.T3_ACP_FAIL_LOAD_SESSION === "1";
-const failCreateSessionCount = parseNonNegativeInt(process.env.T3_ACP_FAIL_CREATE_SESSION_COUNT);
+const failCreateSessionCount = parseNonNegativeIntOrZero(
+  process.env.T3_ACP_FAIL_CREATE_SESSION_COUNT,
+);
+let statelessFailCreateSessionAttempts = 0;
 const failCreateSessionStatePath = process.env.T3_ACP_FAIL_CREATE_SESSION_STATE_PATH;
 const failCreateSessionDetail =
   process.env.T3_ACP_FAIL_CREATE_SESSION_DETAIL ?? "Mock failed session/new during startup";
@@ -50,10 +53,10 @@ let currentContext = "272k";
 let currentFast = false;
 const cancelledSessions = new Set<string>();
 
-function parseNonNegativeInt(value: string | undefined): number {
+function parseNonNegativeIntOrZero(value: string | undefined): number {
   if (value === undefined) return 0;
   const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 }
 
 function readCreateSessionFailureAttempts(): number {
@@ -65,7 +68,10 @@ function readCreateSessionFailureAttempts(): number {
 
 function shouldFailCreateSession(): boolean {
   if (failCreateSessionCount <= 0) return false;
-  if (!failCreateSessionStatePath) return true;
+  if (!failCreateSessionStatePath) {
+    statelessFailCreateSessionAttempts++;
+    return statelessFailCreateSessionAttempts <= failCreateSessionCount;
+  }
   const attempts = readCreateSessionFailureAttempts();
   writeFileSync(failCreateSessionStatePath, String(attempts + 1), "utf8");
   return attempts < failCreateSessionCount;
