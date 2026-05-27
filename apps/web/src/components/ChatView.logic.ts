@@ -180,10 +180,31 @@ export function cloneComposerImageForRetry(
   }
 }
 
+export function findFirstUndeliveredUserMessage(
+  messages: ReadonlyArray<ChatMessage>,
+): ChatMessage | null {
+  return (
+    messages.find(
+      (message) =>
+        message.role === "user" &&
+        message.providerDelivery !== undefined &&
+        message.providerDelivery.status !== "delivered",
+    ) ?? null
+  );
+}
+
+export function buildUndeliveredMessageBlockReason(message: ChatMessage): string {
+  if (message.providerDelivery?.status === "pending") {
+    return `Message ${message.id} is still being delivered to the provider. Wait for it to finish before sending another message.`;
+  }
+  return `Message ${message.id} was not delivered to the provider. Retry it before sending another message.`;
+}
+
 export function deriveComposerSendState(options: {
   prompt: string;
   imageCount: number;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
+  blockedReason?: string | null;
 }): {
   trimmedPrompt: string;
   sendableTerminalContexts: TerminalContextDraft[];
@@ -199,7 +220,8 @@ export function deriveComposerSendState(options: {
     sendableTerminalContexts,
     expiredTerminalContextCount,
     hasSendableContent:
-      trimmedPrompt.length > 0 || options.imageCount > 0 || sendableTerminalContexts.length > 0,
+      !options.blockedReason &&
+      (trimmedPrompt.length > 0 || options.imageCount > 0 || sendableTerminalContexts.length > 0),
   };
 }
 

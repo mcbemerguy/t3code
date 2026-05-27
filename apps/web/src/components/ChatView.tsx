@@ -157,9 +157,11 @@ import {
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   buildExpiredTerminalContextToastCopy,
   buildLocalDraftThread,
+  buildUndeliveredMessageBlockReason,
   collectUserMessageBlobPreviewUrls,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
+  findFirstUndeliveredUserMessage,
   hasServerAcknowledgedLocalDispatch,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
   LastInvokedScriptByProjectSchema,
@@ -698,6 +700,8 @@ export default function ChatView(props: ChatViewProps) {
   const [respondingUserInputRequestIds, setRespondingUserInputRequestIds] = useState<
     ApprovalRequestId[]
   >([]);
+  const [retryingUserMessageIds, setRetryingUserMessageIds] = useState<MessageId[]>([]);
+  const retryingUserMessageIdsRef = useRef<Set<MessageId>>(new Set());
   const [pendingUserInputAnswersByRequestId, setPendingUserInputAnswersByRequestId] = useState<
     Record<string, Record<string, PendingUserInputDraftAnswer>>
   >({});
@@ -807,6 +811,17 @@ export default function ChatView(props: ChatViewProps) {
   );
   const isServerThread = routeKind === "server" && serverThread !== undefined;
   const activeThread = isServerThread ? serverThread : localDraftThread;
+  const firstUndeliveredUserMessage = useMemo(
+    () => findFirstUndeliveredUserMessage(activeThread?.messages ?? []),
+    [activeThread?.messages],
+  );
+  const undeliveredMessageBlockReason = firstUndeliveredUserMessage
+    ? buildUndeliveredMessageBlockReason(firstUndeliveredUserMessage)
+    : null;
+  const retryingUserMessageIdSet = useMemo(
+    () => new Set<MessageId>(retryingUserMessageIds),
+    [retryingUserMessageIds],
+  );
   const runtimeMode = composerRuntimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
   const interactionMode =
     composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
@@ -1178,6 +1193,42 @@ export default function ChatView(props: ChatViewProps) {
     savedEnvironmentRuntimeById,
     serverConfig?.environment.label,
   ]);
+  const onRetryUserMessageDelivery = useCallback(
+    async (messageId: MessageId) => {
+      const api = readEnvironmentApi(environmentId);
+      if (!api || !activeThread || retryingUserMessageIdsRef.current.has(messageId)) {
+        return;
+      }
+      retryingUserMessageIdsRef.current.add(messageId);
+      setRetryingUserMessageIds((existing) =>
+        existing.includes(messageId) ? existing : [...existing, messageId],
+      );
+      try {
+        await api.orchestration.dispatchCommand({
+          type: "thread.message.user.retry-delivery",
+          commandId: newCommandId(),
+          threadId: activeThread.id,
+          messageId,
+          modelSelection: activeThread.modelSelection,
+          interactionMode,
+          createdAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not retry message delivery",
+            description: err instanceof Error ? err.message : "An unexpected error occurred.",
+          }),
+        );
+      } finally {
+        retryingUserMessageIdsRef.current.delete(messageId);
+        setRetryingUserMessageIds((existing) => existing.filter((id) => id !== messageId));
+      }
+    },
+    [activeThread, environmentId, interactionMode],
+  );
+
   const composerBannerItems = useMemo<ComposerBannerStackItem[]>(() => {
     const items: ComposerBannerStackItem[] = [];
     if (activeEnvironmentUnavailableState) {
@@ -1226,6 +1277,30 @@ export default function ChatView(props: ChatViewProps) {
         ),
       });
     }
+    if (firstUndeliveredUserMessage) {
+      const delivery = firstUndeliveredUserMessage.providerDelivery;
+      const deliveryFailed = delivery?.status === "failed";
+      items.push({
+        id: `message-undelivered:${firstUndeliveredUserMessage.id}`,
+        variant: deliveryFailed ? "error" : "warning",
+        icon: <TriangleAlertIcon />,
+        title: deliveryFailed ? "Message not delivered to provider" : "Message delivery pending",
+        description: deliveryFailed
+          ? delivery.detail
+          : "Wait for this message to finish delivery before sending another message.",
+        actions: deliveryFailed ? (
+          <Button
+            size="xs"
+            disabled={retryingUserMessageIds.includes(firstUndeliveredUserMessage.id)}
+            onClick={() => void onRetryUserMessageDelivery(firstUndeliveredUserMessage.id)}
+          >
+            {retryingUserMessageIds.includes(firstUndeliveredUserMessage.id)
+              ? "Retrying..."
+              : "Retry delivery"}
+          </Button>
+        ) : undefined,
+      });
+    }
     if (showVersionMismatchBanner && versionMismatch && versionMismatchDismissKey) {
       items.push({
         id: `version-mismatch:${versionMismatchDismissKey}`,
@@ -1248,9 +1323,12 @@ export default function ChatView(props: ChatViewProps) {
     return items;
   }, [
     activeEnvironmentUnavailableState,
+    firstUndeliveredUserMessage,
     handleReconnectActiveEnvironment,
     navigate,
+    onRetryUserMessageDelivery,
     reconnectingEnvironmentId,
+    retryingUserMessageIds,
     showVersionMismatchBanner,
     versionMismatch,
     versionMismatchDismissKey,
@@ -2645,7 +2723,18 @@ export default function ChatView(props: ChatViewProps) {
       prompt: promptForSend,
       imageCount: composerImages.length,
       terminalContexts: composerTerminalContexts,
+      blockedReason: undeliveredMessageBlockReason,
     });
+    if (undeliveredMessageBlockReason) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "warning",
+          title: "Resolve message delivery first",
+          description: undeliveredMessageBlockReason,
+        }),
+      );
+      return;
+    }
     if (showPlanFollowUpPrompt && activeProposedPlan) {
       const followUp = resolvePlanFollowUpSubmission({
         draftText: trimmed,
@@ -3100,7 +3189,8 @@ export default function ChatView(props: ChatViewProps) {
         !isServerThread ||
         isSendBusy ||
         isConnecting ||
-        sendInFlightRef.current
+        sendInFlightRef.current ||
+        undeliveredMessageBlockReason
       ) {
         return;
       }
@@ -3228,6 +3318,7 @@ export default function ChatView(props: ChatViewProps) {
       setThreadError,
       autoOpenPlanSidebar,
       environmentId,
+      undeliveredMessageBlockReason,
     ],
   );
 
@@ -3242,7 +3333,8 @@ export default function ChatView(props: ChatViewProps) {
       isSendBusy ||
       isConnecting ||
       activeEnvironmentUnavailable ||
-      sendInFlightRef.current
+      sendInFlightRef.current ||
+      undeliveredMessageBlockReason
     ) {
       return;
     }
@@ -3365,6 +3457,7 @@ export default function ChatView(props: ChatViewProps) {
     runtimeMode,
     autoOpenPlanSidebar,
     environmentId,
+    undeliveredMessageBlockReason,
   ]);
 
   const onProviderModelSelect = useCallback(
@@ -3570,6 +3663,8 @@ export default function ChatView(props: ChatViewProps) {
               onOpenTurnDiff={onOpenTurnDiff}
               revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
               onRevertUserMessage={onRevertUserMessage}
+              onRetryUserMessageDelivery={onRetryUserMessageDelivery}
+              retryingUserMessageIds={retryingUserMessageIdSet}
               isRevertingCheckpoint={isRevertingCheckpoint}
               onImageExpand={onExpandTimelineImage}
               markdownCwd={gitCwd ?? undefined}
@@ -3623,6 +3718,7 @@ export default function ChatView(props: ChatViewProps) {
                   isConnecting={isConnecting}
                   isSendBusy={isSendBusy}
                   isPreparingWorktree={isPreparingWorktree}
+                  sendBlockedReason={undeliveredMessageBlockReason}
                   environmentUnavailable={activeEnvironmentUnavailableState}
                   activePendingApproval={activePendingApproval}
                   pendingApprovals={pendingApprovals}

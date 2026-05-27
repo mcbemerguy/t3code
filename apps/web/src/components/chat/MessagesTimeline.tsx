@@ -25,6 +25,7 @@ import {
   CheckIcon,
   CircleAlertIcon,
   EyeIcon,
+  RotateCcwIcon,
   GlobeIcon,
   HammerIcon,
   type LucideIcon,
@@ -87,6 +88,8 @@ interface TimelineRowSharedState {
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   activeThreadEnvironmentId: EnvironmentId;
   onRevertUserMessage: (messageId: MessageId) => void;
+  onRetryUserMessageDelivery: (messageId: MessageId) => void;
+  retryingUserMessageIds: ReadonlySet<MessageId>;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
 }
@@ -120,6 +123,8 @@ interface MessagesTimelineProps {
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
   onRevertUserMessage: (messageId: MessageId) => void;
+  onRetryUserMessageDelivery: (messageId: MessageId) => void;
+  retryingUserMessageIds: ReadonlySet<MessageId>;
   isRevertingCheckpoint: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   activeThreadEnvironmentId: EnvironmentId;
@@ -149,6 +154,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onOpenTurnDiff,
   revertTurnCountByUserMessageId,
   onRevertUserMessage,
+  onRetryUserMessageDelivery,
+  retryingUserMessageIds,
   isRevertingCheckpoint,
   onImageExpand,
   activeThreadEnvironmentId,
@@ -221,6 +228,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       onRevertUserMessage,
+      onRetryUserMessageDelivery,
+      retryingUserMessageIds,
       onImageExpand,
       onOpenTurnDiff,
     }),
@@ -233,6 +242,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       onRevertUserMessage,
+      onRetryUserMessageDelivery,
+      retryingUserMessageIds,
       onImageExpand,
       onOpenTurnDiff,
     ],
@@ -330,6 +341,9 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   const userImages = row.message.attachments ?? [];
   const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
   const terminalContexts = displayedUserMessage.contexts;
+  const deliveryState = row.userDeliveryState;
+  const deliveryFailed = deliveryState.status === "failed";
+  const deliveryPending = deliveryState.status === "pending";
   const canRevertAgentWork = typeof row.revertTurnCount === "number";
 
   return (
@@ -380,12 +394,55 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                 )}
                 {canRevertAgentWork && <RevertUserMessageButton messageId={row.message.id} />}
               </div>
-              <p className="text-right text-xs text-muted-foreground/50">
-                {formatTimestamp(row.message.createdAt, ctx.timestampFormat)}
-              </p>
+              <div className="flex min-w-0 items-center justify-end gap-2 text-right text-xs text-muted-foreground/50">
+                {deliveryPending ? <span>Delivering to provider...</span> : null}
+                <span>{formatTimestamp(row.message.createdAt, ctx.timestampFormat)}</span>
+              </div>
             </>
           }
         />
+        {deliveryFailed ? (
+          <UserMessageDeliveryFailure messageId={row.message.id} state={deliveryState} />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function UserMessageDeliveryFailure({
+  messageId,
+  state,
+}: {
+  messageId: MessageId;
+  state: Extract<
+    Extract<MessagesTimelineRow, { kind: "message" }>["userDeliveryState"],
+    { status: "failed" }
+  >;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const activity = use(TimelineRowActivityCtx);
+  const retrying = ctx.retryingUserMessageIds.has(messageId);
+
+  return (
+    <div className="mt-2 rounded-xl border border-destructive/30 bg-destructive/8 px-3 py-2 text-left">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="flex items-center gap-1.5 font-medium text-[11px] text-destructive">
+            <CircleAlertIcon className="size-3.5 shrink-0" />
+            Not delivered to provider
+          </p>
+          <p className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground/80">{state.detail}</p>
+        </div>
+        <Button
+          type="button"
+          size="xs"
+          variant="outline"
+          disabled={activity.isWorking || retrying}
+          onClick={() => ctx.onRetryUserMessageDelivery(messageId)}
+        >
+          <RotateCcwIcon className="size-3" />
+          {retrying ? "Retrying..." : "Retry"}
+        </Button>
       </div>
     </div>
   );

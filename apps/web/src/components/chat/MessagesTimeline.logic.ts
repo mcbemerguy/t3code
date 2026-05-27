@@ -12,6 +12,33 @@ export interface TimelineDurationMessage {
   completedAt?: string | undefined;
 }
 
+export type UserMessageDeliveryState =
+  | { status: "none" }
+  | { status: "pending"; attempt: number }
+  | { status: "failed"; attempt: number; detail: string; provider: string; method?: string }
+  | { status: "delivered"; attempt: number };
+
+export function deriveUserMessageDeliveryState(message: ChatMessage): UserMessageDeliveryState {
+  if (message.role !== "user" || message.providerDelivery === undefined) {
+    return { status: "none" };
+  }
+
+  const delivery = message.providerDelivery;
+  if (delivery.status === "failed") {
+    return {
+      status: "failed",
+      attempt: delivery.attempt,
+      detail: delivery.detail,
+      provider: delivery.provider,
+      ...(delivery.method !== undefined ? { method: delivery.method } : {}),
+    };
+  }
+  if (delivery.status === "pending") {
+    return { status: "pending", attempt: delivery.attempt };
+  }
+  return { status: "delivered", attempt: delivery.attempt };
+}
+
 export type MessagesTimelineRow =
   | {
       kind: "work";
@@ -31,6 +58,7 @@ export type MessagesTimelineRow =
       assistantCopyStreaming: boolean;
       assistantTurnDiffSummary?: TurnDiffSummary | undefined;
       revertTurnCount?: number | undefined;
+      userDeliveryState: UserMessageDeliveryState;
     }
   | {
       kind: "proposed-plan";
@@ -193,6 +221,7 @@ export function deriveMessagesTimelineRows(input: {
         timelineEntry.message.role === "user"
           ? input.revertTurnCountByUserMessageId.get(timelineEntry.message.id)
           : undefined,
+      userDeliveryState: deriveUserMessageDeliveryState(timelineEntry.message),
     });
   }
 
@@ -251,7 +280,8 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.showAssistantCopyButton === bm.showAssistantCopyButton &&
         a.assistantCopyStreaming === bm.assistantCopyStreaming &&
         a.assistantTurnDiffSummary === bm.assistantTurnDiffSummary &&
-        a.revertTurnCount === bm.revertTurnCount
+        a.revertTurnCount === bm.revertTurnCount &&
+        Equal.equals(a.userDeliveryState, bm.userDeliveryState)
       );
     }
   }

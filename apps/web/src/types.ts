@@ -6,6 +6,7 @@ import type {
   RepositoryIdentity,
   OrchestrationSessionStatus,
   OrchestrationThreadActivity,
+  OrchestrationMessageProviderDelivery,
   ProjectScript as ContractProjectScript,
   ThreadId,
   ProjectId,
@@ -49,6 +50,7 @@ export interface ChatMessage {
   text: string;
   attachments?: ChatAttachment[];
   turnId?: TurnId | null;
+  providerDelivery?: OrchestrationMessageProviderDelivery;
   createdAt: string;
   completedAt?: string | undefined;
   streaming: boolean;

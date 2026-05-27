@@ -863,6 +863,105 @@ describe("incremental orchestration updates", () => {
     );
   });
 
+  it("updates user provider delivery state from turn request, failure, and delivery events", () => {
+    const userMessageId = MessageId.make("user-1");
+    const state = makeState(
+      makeThread({
+        messages: [
+          {
+            id: userMessageId,
+            role: "user",
+            text: "hello",
+            turnId: null,
+            createdAt: "2026-02-27T00:00:00.000Z",
+            completedAt: "2026-02-27T00:00:00.000Z",
+            streaming: false,
+          },
+        ],
+      }),
+    );
+
+    const pending = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.turn-start-requested", {
+        threadId: ThreadId.make("thread-1"),
+        messageId: userMessageId,
+        runtimeMode: DEFAULT_RUNTIME_MODE,
+        interactionMode: DEFAULT_INTERACTION_MODE,
+        deliveryKind: "new-turn",
+        createdAt: "2026-02-27T00:00:01.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(pending)[0]?.messages[0]?.providerDelivery).toEqual({
+      status: "pending",
+      attempt: 1,
+      updatedAt: "2026-02-27T00:00:01.000Z",
+    });
+
+    const failed = applyOrchestrationEvent(
+      pending,
+      makeEvent("thread.message-user-delivery-failed", {
+        threadId: ThreadId.make("thread-1"),
+        messageId: userMessageId,
+        provider: "pi",
+        method: "session/new",
+        detail: "Pi RPC process exited during startup",
+        failedAt: "2026-02-27T00:00:02.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(failed)[0]?.messages[0]?.providerDelivery).toMatchObject({
+      status: "failed",
+      attempt: 1,
+      provider: "pi",
+      method: "session/new",
+    });
+
+    const retryPending = applyOrchestrationEvent(
+      failed,
+      makeEvent("thread.turn-start-requested", {
+        threadId: ThreadId.make("thread-1"),
+        messageId: userMessageId,
+        runtimeMode: DEFAULT_RUNTIME_MODE,
+        interactionMode: DEFAULT_INTERACTION_MODE,
+        deliveryKind: "delivery-retry",
+        createdAt: "2026-02-27T00:00:03.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(retryPending)[0]?.messages[0]?.providerDelivery).toEqual({
+      status: "pending",
+      attempt: 2,
+      updatedAt: "2026-02-27T00:00:03.000Z",
+    });
+
+    const delivered = applyOrchestrationEvent(
+      retryPending,
+      makeEvent("thread.message-sent", {
+        threadId: ThreadId.make("thread-1"),
+        messageId: userMessageId,
+        role: "user",
+        text: "hello",
+        turnId: TurnId.make("turn-1"),
+        streaming: false,
+        createdAt: "2026-02-27T00:00:00.000Z",
+        updatedAt: "2026-02-27T00:00:04.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(delivered)[0]?.messages[0]?.providerDelivery).toEqual({
+      status: "delivered",
+      attempt: 2,
+      turnId: TurnId.make("turn-1"),
+      deliveredAt: "2026-02-27T00:00:04.000Z",
+    });
+  });
+
   it("reverts messages, plans, activities, and checkpoints by retained turns", () => {
     const state = makeState(
       makeThread({

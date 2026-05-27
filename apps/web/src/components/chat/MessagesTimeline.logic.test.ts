@@ -3,6 +3,7 @@ import {
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
+  deriveUserMessageDeliveryState,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
 } from "./MessagesTimeline.logic";
@@ -204,6 +205,35 @@ describe("resolveAssistantMessageCopyState", () => {
   });
 });
 
+describe("deriveUserMessageDeliveryState", () => {
+  it("derives failed provider delivery details from structured message state", () => {
+    expect(
+      deriveUserMessageDeliveryState({
+        id: "message-1" as never,
+        role: "user",
+        text: "hello",
+        turnId: null,
+        providerDelivery: {
+          status: "failed",
+          attempt: 3,
+          provider: "pi",
+          method: "session/new",
+          detail: "Pi RPC process exited during startup",
+          failedAt: "2026-01-01T00:00:00Z",
+        },
+        createdAt: "2026-01-01T00:00:00Z",
+        streaming: false,
+      }),
+    ).toEqual({
+      status: "failed",
+      attempt: 3,
+      provider: "pi",
+      method: "session/new",
+      detail: "Pi RPC process exited during startup",
+    });
+  });
+});
+
 describe("deriveMessagesTimelineRows", () => {
   it("only enables assistant copy for the terminal assistant message in a turn", () => {
     const rows = deriveMessagesTimelineRows({
@@ -379,7 +409,50 @@ describe("deriveMessagesTimelineRows", () => {
     );
 
     expect(userRow?.revertTurnCount).toBe(1);
+    expect(userRow?.userDeliveryState).toEqual({ status: "none" });
     expect(assistantRow?.assistantTurnDiffSummary).toBe(assistantTurnDiffSummary);
+  });
+
+  it("projects failed user delivery state onto user rows", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "user-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:00Z",
+          message: {
+            id: "user-1" as never,
+            role: "user",
+            text: "Do the thing",
+            turnId: null,
+            providerDelivery: {
+              status: "failed",
+              attempt: 1,
+              provider: "pi",
+              detail: "startup failed",
+              failedAt: "2026-01-01T00:00:01Z",
+            },
+            createdAt: "2026-01-01T00:00:00Z",
+            streaming: false,
+          },
+        },
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows[0]).toMatchObject({
+      kind: "message",
+      userDeliveryState: {
+        status: "failed",
+        attempt: 1,
+        provider: "pi",
+        detail: "startup failed",
+      },
+    });
   });
 });
 

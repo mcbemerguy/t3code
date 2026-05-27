@@ -1,6 +1,7 @@
 import { scopeThreadRef } from "@t3tools/client-runtime";
 import {
   EnvironmentId,
+  MessageId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -14,8 +15,10 @@ import { type Thread } from "../types";
 import {
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   buildExpiredTerminalContextToastCopy,
+  buildUndeliveredMessageBlockReason,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
+  findFirstUndeliveredUserMessage,
   hasServerAcknowledgedLocalDispatch,
   reconcileMountedTerminalThreadIds,
   resolveSendEnvMode,
@@ -71,6 +74,70 @@ describe("deriveComposerSendState", () => {
     expect(state.trimmedPrompt).toBe("yoo  waddup");
     expect(state.expiredTerminalContextCount).toBe(1);
     expect(state.hasSendableContent).toBe(true);
+  });
+});
+
+describe("undelivered message send blocking", () => {
+  it("finds the first unresolved user delivery and blocks sendable content", () => {
+    const messages = [
+      {
+        id: MessageId.make("message-delivered"),
+        role: "user" as const,
+        text: "ok",
+        turnId: TurnId.make("turn-1"),
+        providerDelivery: {
+          status: "delivered" as const,
+          attempt: 1,
+          turnId: TurnId.make("turn-1"),
+          deliveredAt: "2026-03-17T12:00:00.000Z",
+        },
+        createdAt: "2026-03-17T12:00:00.000Z",
+        streaming: false,
+      },
+      {
+        id: MessageId.make("message-pending"),
+        role: "user" as const,
+        text: "retrying",
+        turnId: null,
+        providerDelivery: {
+          status: "pending" as const,
+          attempt: 2,
+          updatedAt: "2026-03-17T12:00:01.000Z",
+        },
+        createdAt: "2026-03-17T12:00:01.000Z",
+        streaming: false,
+      },
+      {
+        id: MessageId.make("message-failed"),
+        role: "user" as const,
+        text: "lost",
+        turnId: null,
+        providerDelivery: {
+          status: "failed" as const,
+          attempt: 2,
+          provider: "pi",
+          method: "session/new",
+          detail: "Pi RPC process exited during startup",
+          failedAt: "2026-03-17T12:00:02.000Z",
+        },
+        createdAt: "2026-03-17T12:00:02.000Z",
+        streaming: false,
+      },
+    ];
+
+    const undelivered = findFirstUndeliveredUserMessage(messages);
+    const blockedReason = undelivered ? buildUndeliveredMessageBlockReason(undelivered) : null;
+
+    expect(undelivered?.id).toBe(MessageId.make("message-pending"));
+    expect(blockedReason).toContain("message-pending");
+    expect(
+      deriveComposerSendState({
+        prompt: "new unrelated message",
+        imageCount: 0,
+        terminalContexts: [],
+        blockedReason,
+      }).hasSendableContent,
+    ).toBe(false);
   });
 });
 

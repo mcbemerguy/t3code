@@ -23,6 +23,7 @@ interface ComposerPrimaryActionsProps {
   isEnvironmentUnavailable: boolean;
   isPreparingWorktree: boolean;
   hasSendableContent: boolean;
+  sendBlockedReason?: string | null;
   preserveComposerFocusOnPointerDown?: boolean;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
@@ -62,6 +63,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   isEnvironmentUnavailable,
   isPreparingWorktree,
   hasSendableContent,
+  sendBlockedReason = null,
   preserveComposerFocusOnPointerDown = false,
   onPreviousPendingQuestion,
   onInterrupt,
@@ -146,7 +148,9 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           size="sm"
           className={cn("rounded-full", compact ? "h-9 px-3 sm:h-8" : "h-9 px-4 sm:h-8")}
           {...pointerFocusProps}
-          disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
+          disabled={
+            isSendBusy || isConnecting || isEnvironmentUnavailable || sendBlockedReason !== null
+          }
         >
           {isConnecting || isSendBusy ? "Sending..." : "Refine"}
         </Button>
@@ -160,7 +164,9 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           size="sm"
           className="h-9 rounded-l-full rounded-r-none px-4 sm:h-8"
           {...pointerFocusProps}
-          disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
+          disabled={
+            isSendBusy || isConnecting || isEnvironmentUnavailable || sendBlockedReason !== null
+          }
         >
           {isConnecting || isSendBusy ? "Sending..." : "Implement"}
         </Button>
@@ -173,7 +179,12 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
                 className="h-9 rounded-l-none rounded-r-full border-l-white/12 px-2 sm:h-8"
                 aria-label="Implementation actions"
                 {...pointerFocusProps}
-                disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
+                disabled={
+                  isSendBusy ||
+                  isConnecting ||
+                  isEnvironmentUnavailable ||
+                  sendBlockedReason !== null
+                }
               />
             }
           >
@@ -181,7 +192,9 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           </MenuTrigger>
           <MenuPopup align="end" side="top">
             <MenuItem
-              disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
+              disabled={
+                isSendBusy || isConnecting || isEnvironmentUnavailable || sendBlockedReason !== null
+              }
               onClick={() => void onImplementPlanInNewThread()}
             >
               Implement in a new thread
@@ -197,9 +210,16 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
       type="submit"
       className="flex h-9 w-9 enabled:cursor-pointer items-center justify-center rounded-full bg-primary/90 text-primary-foreground transition-all duration-150 hover:bg-primary hover:scale-105 disabled:pointer-events-none disabled:opacity-30 disabled:hover:scale-100 sm:h-8 sm:w-8"
       {...pointerFocusProps}
-      disabled={isSendBusy || isConnecting || isEnvironmentUnavailable || !hasSendableContent}
+      disabled={
+        isSendBusy ||
+        isConnecting ||
+        isEnvironmentUnavailable ||
+        sendBlockedReason !== null ||
+        !hasSendableContent
+      }
       aria-label={
-        isEnvironmentUnavailable
+        sendBlockedReason ??
+        (isEnvironmentUnavailable
           ? "Environment disconnected"
           : isConnecting
             ? "Connecting"
@@ -207,7 +227,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
               ? "Preparing worktree"
               : isSendBusy
                 ? "Sending"
-                : "Send message"
+                : "Send message")
       }
     >
       {isConnecting || isSendBusy ? (

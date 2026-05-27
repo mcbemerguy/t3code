@@ -85,6 +85,8 @@ function buildProps() {
     onOpenTurnDiff: () => {},
     revertTurnCountByUserMessageId: new Map(),
     onRevertUserMessage: () => {},
+    onRetryUserMessageDelivery: () => {},
+    retryingUserMessageIds: new Set<MessageId>(),
     isRevertingCheckpoint: false,
     onImageExpand: () => {},
     activeThreadEnvironmentId: ACTIVE_THREAD_ENVIRONMENT_ID,
@@ -187,6 +189,35 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('data-user-message-footer="true"');
   });
 
+  it("renders undelivered user message state and retry action", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            ...buildUserTimelineEntry("Lost prompt."),
+            message: {
+              ...buildUserTimelineEntry("Lost prompt.").message,
+              providerDelivery: {
+                status: "failed",
+                attempt: 1,
+                provider: "pi",
+                method: "session/new",
+                detail: "Pi RPC process exited during startup",
+                failedAt: "2026-03-17T19:12:30.000Z",
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Not delivered to provider");
+    expect(markup).toContain("Pi RPC process exited during startup");
+    expect(markup).toContain("Retry");
+  });
+
   it("renders context compaction entries in the normal work log", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(
@@ -236,6 +267,8 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("t3code/apps/web/src/session-logic.ts");
-    expect(markup).not.toContain("C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts");
+    expect(markup).not.toContain(
+      'chat-markdown-file-link-label truncate">C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts',
+    );
   });
 });

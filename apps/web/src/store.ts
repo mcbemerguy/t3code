@@ -181,6 +181,9 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
     createdAt: message.createdAt,
     streaming: message.streaming,
     ...(message.streaming ? {} : { completedAt: message.updatedAt }),
+    ...(message.providerDelivery !== undefined
+      ? { providerDelivery: message.providerDelivery }
+      : {}),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
   };
 }
@@ -1321,16 +1324,33 @@ function applyEnvironmentOrchestrationEvent(
       }));
 
     case "thread.turn-start-requested":
-      return updateThreadState(state, event.payload.threadId, (thread) => ({
-        ...thread,
-        ...(event.payload.modelSelection !== undefined
-          ? { modelSelection: normalizeModelSelection(event.payload.modelSelection) }
-          : {}),
-        runtimeMode: event.payload.runtimeMode,
-        interactionMode: event.payload.interactionMode,
-        pendingSourceProposedPlan: event.payload.sourceProposedPlan,
-        updatedAt: event.occurredAt,
-      }));
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        const messages = thread.messages.map((message) => {
+          if (message.id !== event.payload.messageId || message.role !== "user") {
+            return message;
+          }
+          return {
+            ...message,
+            providerDelivery: {
+              status: "pending" as const,
+              attempt: (message.providerDelivery?.attempt ?? 0) + 1,
+              updatedAt: event.payload.createdAt,
+            },
+            completedAt: event.payload.createdAt,
+          };
+        });
+        return {
+          ...thread,
+          ...(event.payload.modelSelection !== undefined
+            ? { modelSelection: normalizeModelSelection(event.payload.modelSelection) }
+            : {}),
+          runtimeMode: event.payload.runtimeMode,
+          interactionMode: event.payload.interactionMode,
+          pendingSourceProposedPlan: event.payload.sourceProposedPlan,
+          messages,
+          updatedAt: event.occurredAt,
+        };
+      });
 
     case "thread.turn-interrupt-requested": {
       if (event.payload.turnId === undefined) {
@@ -1373,30 +1393,39 @@ function applyEnvironmentOrchestrationEvent(
         });
         const existingMessage = thread.messages.find((entry) => entry.id === message.id);
         const messages = existingMessage
-          ? thread.messages.map((entry) =>
-              entry.id !== message.id
-                ? entry
-                : {
-                    ...entry,
-                    text: message.streaming
-                      ? `${entry.text}${message.text}`
-                      : message.text.length > 0
-                        ? message.text
-                        : entry.text,
-                    streaming: message.streaming,
-                    ...(message.turnId !== undefined ? { turnId: message.turnId } : {}),
-                    ...(message.streaming
-                      ? entry.completedAt !== undefined
-                        ? { completedAt: entry.completedAt }
-                        : {}
-                      : message.completedAt !== undefined
-                        ? { completedAt: message.completedAt }
-                        : {}),
-                    ...(message.attachments !== undefined
-                      ? { attachments: message.attachments }
-                      : {}),
-                  },
-            )
+          ? thread.messages.map((entry) => {
+              if (entry.id !== message.id) {
+                return entry;
+              }
+              const providerDelivery =
+                entry.role === "user" && message.turnId != null
+                  ? {
+                      status: "delivered" as const,
+                      attempt: entry.providerDelivery?.attempt ?? 1,
+                      turnId: message.turnId,
+                      deliveredAt: message.completedAt ?? event.payload.updatedAt,
+                    }
+                  : entry.providerDelivery;
+              return {
+                ...entry,
+                text: message.streaming
+                  ? `${entry.text}${message.text}`
+                  : message.text.length > 0
+                    ? message.text
+                    : entry.text,
+                streaming: message.streaming,
+                ...(message.turnId !== undefined ? { turnId: message.turnId } : {}),
+                ...(providerDelivery !== undefined ? { providerDelivery } : {}),
+                ...(message.streaming
+                  ? entry.completedAt !== undefined
+                    ? { completedAt: entry.completedAt }
+                    : {}
+                  : message.completedAt !== undefined
+                    ? { completedAt: message.completedAt }
+                    : {}),
+                ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+              };
+            })
           : [...thread.messages, message];
         const cappedMessages = messages.slice(-MAX_THREAD_MESSAGES);
         const turnDiffSummaries =
@@ -1443,6 +1472,32 @@ function applyEnvironmentOrchestrationEvent(
           messages: cappedMessages,
           turnDiffSummaries,
           latestTurn,
+          updatedAt: event.occurredAt,
+        };
+      });
+
+    case "thread.message-user-delivery-failed":
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        const messages = thread.messages.map((message) => {
+          if (message.id !== event.payload.messageId || message.role !== "user") {
+            return message;
+          }
+          return {
+            ...message,
+            providerDelivery: {
+              status: "failed" as const,
+              attempt: message.providerDelivery?.attempt ?? 1,
+              provider: event.payload.provider,
+              ...(event.payload.method !== undefined ? { method: event.payload.method } : {}),
+              detail: event.payload.detail,
+              failedAt: event.payload.failedAt,
+            },
+            completedAt: event.payload.failedAt,
+          };
+        });
+        return {
+          ...thread,
+          messages,
           updatedAt: event.occurredAt,
         };
       });
