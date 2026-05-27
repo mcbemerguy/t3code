@@ -132,6 +132,19 @@ function parseCustomAcpResume(
   return { sessionId: raw.sessionId.trim(), requireResumeSession: raw.requireSessionLoad === true };
 }
 
+function hasPiAcpMetadata(raw: unknown): boolean {
+  if (!isRecord(raw)) return false;
+  const agentCapabilities = raw.agentCapabilities;
+  return (
+    hasPiAcpMetadataRecord(raw._meta) ||
+    (isRecord(agentCapabilities) && hasPiAcpMetadataRecord(agentCapabilities._meta))
+  );
+}
+
+function hasPiAcpMetadataRecord(meta: unknown): boolean {
+  return isRecord(meta) && isRecord(meta.piAcp);
+}
+
 function settlePendingApprovalsAsCancelled(
   pendingApprovals: ReadonlyMap<ApprovalRequestId, PendingApproval>,
 ): Effect.Effect<void> {
@@ -572,6 +585,7 @@ export function makeGenericAcpAdapter(
               schemaVersion: CUSTOM_ACP_RESUME_VERSION,
               provider,
               sessionId: started.sessionId,
+              ...(hasPiAcpMetadata(started.initializeResult) ? { requireSessionLoad: true } : {}),
             },
             createdAt: now,
             updatedAt: now,
@@ -796,6 +810,7 @@ export function makeGenericAcpAdapter(
           ),
         );
         if (result === undefined || ctx.completedTurnIds.has(turnId)) {
+          ctx.forceCompletedTurnIds.delete(turnId);
           return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
         }
 

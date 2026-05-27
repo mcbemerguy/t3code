@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+// @effect-diagnostics globalTimers:off
 import * as os from "node:os";
 import * as path from "node:path";
 import { mkdtemp, readFile } from "node:fs/promises";
@@ -521,6 +522,146 @@ describe("Custom ACP provider", () => {
       assert.equal(completedEvent.payload.state, "cancelled");
       yield* Effect.yieldNow;
       assert.equal(completedCount, 1);
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "preserves strict pi ACP resume cursor across interrupted turns and resumes with session/load",
+    () =>
+      Effect.gen(function* () {
+        const requestLog = yield* Effect.promise(() => tempFile("interrupted-resume.jsonl"));
+        const adapter = yield* makeGenericAcpAdapter(
+          makeCustomAcpSettings({
+            env: envText({
+              T3_ACP_ENABLE_PI_STEERING: "1",
+              T3_ACP_EMIT_TOOL_CALLS: "1",
+              T3_ACP_REQUEST_LOG_PATH: requestLog,
+            }),
+          }),
+          { instanceId: customAcpInstanceId },
+        );
+        const threadId = ThreadId.make("custom-acp-interrupted-strict-resume");
+        const requested = yield* Deferred.make<ProviderRuntimeEvent>();
+
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          event.threadId === threadId && event.type === "request.opened"
+            ? Deferred.succeed(requested, event).pipe(Effect.ignore)
+            : Effect.void,
+        ).pipe(Effect.forkChild);
+
+        const session = yield* adapter.startSession({
+          threadId,
+          provider: customAcpDriver,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+        assert.deepStrictEqual(session.resumeCursor, {
+          schemaVersion: 1,
+          provider: customAcpDriver,
+          sessionId: "mock-session-1",
+          requireSessionLoad: true,
+        });
+
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "needs approval", attachments: [] })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(requested);
+        yield* adapter.interruptTurn(threadId);
+        const turnResult = yield* Fiber.join(turnFiber);
+        assert.deepStrictEqual(turnResult.resumeCursor, session.resumeCursor);
+
+        yield* adapter.stopSession(threadId);
+        const resumed = yield* adapter.startSession({
+          threadId,
+          provider: customAcpDriver,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+          resumeCursor: turnResult.resumeCursor,
+        });
+        assert.deepStrictEqual(resumed.resumeCursor, session.resumeCursor);
+        yield* adapter.stopSession(threadId);
+
+        const methods = jsonRpcMethods(yield* Effect.promise(() => readJsonLines(requestLog)));
+        assert.equal(methods.filter((method) => method === "session/new").length, 1);
+        assert.include(methods, "session/load");
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("fails strict custom ACP resume visibly instead of falling back to session/new", () =>
+    Effect.gen(function* () {
+      const requestLog = yield* Effect.promise(() => tempFile("strict-resume-failure.jsonl"));
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({
+            T3_ACP_FAIL_LOAD_SESSION: "1",
+            T3_ACP_REQUEST_LOG_PATH: requestLog,
+          }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+
+      const failed = yield* adapter
+        .startSession({
+          threadId: ThreadId.make("custom-acp-strict-resume-failure"),
+          provider: customAcpDriver,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          resumeCursor: {
+            schemaVersion: 1,
+            provider: customAcpDriver,
+            sessionId: "missing-session",
+            requireSessionLoad: true,
+          },
+        })
+        .pipe(Effect.exit);
+
+      assert.isTrue(Exit.isFailure(failed));
+      if (Exit.isFailure(failed)) {
+        assert.match(Cause.pretty(failed.cause), /Mock failed session\/load/);
+      }
+      const methods = jsonRpcMethods(yield* Effect.promise(() => readJsonLines(requestLog)));
+      assert.include(methods, "session/load");
+      assert.notInclude(methods, "session/new");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps a healthy ACP session alive after cancel and prompt settlement", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({
+            T3_ACP_EMIT_TOOL_CALLS: "1",
+            T3_ACP_FAIL_PROMPT_AFTER_CANCEL: "1",
+          }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-cancel-watchdog-settled");
+      const requested = yield* Deferred.make<ProviderRuntimeEvent>();
+
+      yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        event.threadId === threadId && event.type === "request.opened"
+          ? Deferred.succeed(requested, event).pipe(Effect.ignore)
+          : Effect.void,
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const turnFiber = yield* adapter
+        .sendTurn({ threadId, input: "needs approval", attachments: [] })
+        .pipe(Effect.forkChild);
+
+      yield* Deferred.await(requested);
+      yield* adapter.interruptTurn(threadId);
+      yield* Fiber.join(turnFiber);
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 2_800)));
+
+      assert.equal(yield* adapter.hasSession(threadId), true);
       yield* adapter.stopSession(threadId);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
