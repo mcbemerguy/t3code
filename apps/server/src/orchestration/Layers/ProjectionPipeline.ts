@@ -687,6 +687,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.message-sent":
+        case "thread.message-user-delivery-failed":
+        case "thread.turn-start-requested":
         case "thread.proposed-plan-upserted":
         case "thread.activity-appended":
         case "thread.approval-response-requested":
@@ -807,6 +809,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                   attachments: event.payload.attachments,
                 })
               : previousMessage?.attachments;
+          const providerDelivery =
+            event.payload.role === "user" && event.payload.turnId !== null
+              ? {
+                  status: "delivered" as const,
+                  attempt: previousMessage?.providerDelivery?.attempt ?? 1,
+                  turnId: event.payload.turnId,
+                  deliveredAt: event.payload.updatedAt,
+                }
+              : previousMessage?.providerDelivery;
           yield* projectionThreadMessageRepository.upsert({
             messageId: event.payload.messageId,
             threadId: event.payload.threadId,
@@ -814,9 +825,51 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             role: event.payload.role,
             text: nextText,
             ...(nextAttachments !== undefined ? { attachments: [...nextAttachments] } : {}),
+            ...(providerDelivery !== undefined ? { providerDelivery } : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.turn-start-requested": {
+          const existingMessage = yield* projectionThreadMessageRepository.getByMessageId({
+            messageId: event.payload.messageId,
+          });
+          if (Option.isNone(existingMessage) || existingMessage.value.role !== "user") {
+            return;
+          }
+          yield* projectionThreadMessageRepository.upsert({
+            ...existingMessage.value,
+            providerDelivery: {
+              status: "pending",
+              attempt: (existingMessage.value.providerDelivery?.attempt ?? 0) + 1,
+              updatedAt: event.payload.createdAt,
+            },
+            updatedAt: event.payload.createdAt,
+          });
+          return;
+        }
+
+        case "thread.message-user-delivery-failed": {
+          const existingMessage = yield* projectionThreadMessageRepository.getByMessageId({
+            messageId: event.payload.messageId,
+          });
+          if (Option.isNone(existingMessage) || existingMessage.value.role !== "user") {
+            return;
+          }
+          yield* projectionThreadMessageRepository.upsert({
+            ...existingMessage.value,
+            providerDelivery: {
+              status: "failed",
+              attempt: existingMessage.value.providerDelivery?.attempt ?? 1,
+              provider: event.payload.provider,
+              ...(event.payload.method !== undefined ? { method: event.payload.method } : {}),
+              detail: event.payload.detail,
+              failedAt: event.payload.failedAt,
+            },
+            updatedAt: event.payload.failedAt,
           });
           return;
         }
@@ -991,6 +1044,13 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             sourceProposedPlanThreadId: event.payload.sourceProposedPlan?.threadId ?? null,
             sourceProposedPlanId: event.payload.sourceProposedPlan?.planId ?? null,
             requestedAt: event.payload.createdAt,
+          });
+          return;
+        }
+
+        case "thread.message-user-delivery-failed": {
+          yield* projectionTurnRepository.deletePendingTurnStartByThreadId({
+            threadId: event.payload.threadId,
           });
           return;
         }

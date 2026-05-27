@@ -2,6 +2,7 @@ import {
   type ChatAttachment,
   CommandId,
   EventId,
+  MessageId,
   type ModelSelection,
   type OrchestrationEvent,
   ProviderDriverKind,
@@ -26,7 +27,11 @@ import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
-import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
+import {
+  ProviderAdapterProcessError,
+  ProviderAdapterRequestError,
+  ProviderValidationError,
+} from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
@@ -39,7 +44,9 @@ import {
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
+const isProviderAdapterProcessError = Schema.is(ProviderAdapterProcessError);
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
+const isProviderValidationError = Schema.is(ProviderValidationError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 
 type ProviderIntentEvent = Extract<
@@ -88,6 +95,7 @@ const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const DEFAULT_THREAD_TITLE = "New thread";
+const TURN_START_DELIVERY_MAX_ATTEMPTS = 3;
 
 export function providerErrorLabel(value: string | undefined): string {
   const normalized = value?.trim();
@@ -116,11 +124,55 @@ function canReplaceThreadTitle(currentTitle: string, titleSeed?: string): boolea
     : false;
 }
 
+function findFailError(cause: Cause.Cause<unknown>): unknown {
+  return cause.reasons.find(Cause.isFailReason)?.error;
+}
+
 function findProviderAdapterRequestError(
   cause: Cause.Cause<ProviderServiceError>,
 ): ProviderAdapterRequestError | undefined {
-  const failReason = cause.reasons.find(Cause.isFailReason);
-  return isProviderAdapterRequestError(failReason?.error) ? failReason.error : undefined;
+  const error = findFailError(cause);
+  return isProviderAdapterRequestError(error) ? error : undefined;
+}
+
+function providerFailureDiagnostics(cause: Cause.Cause<unknown>): {
+  readonly provider: string;
+  readonly method?: string;
+  readonly detail: string;
+} {
+  const error = findFailError(cause);
+  if (isProviderAdapterRequestError(error)) {
+    return { provider: error.provider, method: error.method, detail: error.detail };
+  }
+  if (isProviderAdapterProcessError(error)) {
+    return { provider: error.provider, detail: error.detail };
+  }
+  if (isProviderValidationError(error)) {
+    return { provider: "unknown", detail: error.issue };
+  }
+  return { provider: "unknown", detail: Cause.pretty(cause) };
+}
+
+function isTransientCustomAcpStartupOrRoutingFailure(cause: Cause.Cause<unknown>): boolean {
+  const error = findFailError(cause);
+  if (isProviderAdapterProcessError(error)) {
+    return error.provider === "customAcp";
+  }
+  if (isProviderAdapterRequestError(error)) {
+    return (
+      error.provider === "customAcp" &&
+      (error.method === "session/start" ||
+        error.method === "session/new" ||
+        error.method === "session/load" ||
+        error.method === "initialize" ||
+        error.detail.toLowerCase().includes("startup"))
+    );
+  }
+  if (isProviderValidationError(error)) {
+    const issue = error.issue.toLowerCase();
+    return issue.includes("cannot route thread") || issue.includes("no persisted provider binding");
+  }
+  return false;
 }
 
 function isUnknownPendingApprovalRequestError(cause: Cause.Cause<ProviderServiceError>): boolean {
@@ -213,6 +265,9 @@ const make = Effect.gen(function* () {
     readonly turnId: TurnId | null;
     readonly createdAt: string;
     readonly requestId?: string;
+    readonly messageId?: string;
+    readonly provider?: string;
+    readonly method?: string;
   }) =>
     orchestrationEngine.dispatch({
       type: "thread.activity.append",
@@ -226,23 +281,15 @@ const make = Effect.gen(function* () {
         payload: {
           detail: input.detail,
           ...(input.requestId ? { requestId: input.requestId } : {}),
+          ...(input.messageId ? { messageId: input.messageId } : {}),
+          ...(input.provider ? { provider: input.provider } : {}),
+          ...(input.method ? { method: input.method } : {}),
         },
         turnId: input.turnId,
         createdAt: input.createdAt,
       },
       createdAt: input.createdAt,
     });
-
-  const formatFailureDetail = (cause: Cause.Cause<unknown>): string => {
-    const failReason = cause.reasons.find(Cause.isFailReason);
-    const providerError = isProviderAdapterRequestError(failReason?.error)
-      ? failReason.error
-      : undefined;
-    if (providerError) {
-      return providerError.detail;
-    }
-    return Cause.pretty(cause);
-  };
 
   const setThreadSession = (input: {
     readonly threadId: ThreadId;
@@ -279,6 +326,26 @@ const make = Effect.gen(function* () {
       createdAt: input.createdAt,
     });
   });
+
+  const markUserMessageDeliveryFailed = (input: {
+    readonly threadId: ThreadId;
+    readonly messageId: string;
+    readonly provider: string;
+    readonly method?: string;
+    readonly detail: string;
+    readonly failedAt: string;
+  }) =>
+    orchestrationEngine.dispatch({
+      type: "thread.message.user.delivery-failed",
+      commandId: serverCommandId("user-message-delivery-failed"),
+      threadId: input.threadId,
+      messageId: MessageId.make(input.messageId),
+      provider: input.provider,
+      ...(input.method !== undefined ? { method: input.method } : {}),
+      detail: input.detail,
+      failedAt: input.failedAt,
+      createdAt: input.failedAt,
+    });
 
   const resolveProject = Effect.fnUntraced(function* (projectId: ProjectId) {
     return yield* projectionSnapshotQuery
@@ -751,28 +818,42 @@ const make = Effect.gen(function* () {
       }
     }
 
-    const handleTurnStartFailure = (cause: Cause.Cause<unknown>) => {
+    const handleTurnStartFailure = (
+      cause: Cause.Cause<unknown>,
+      options?: { readonly deliveryDefinitelyNotStarted?: boolean },
+    ) => {
       if (Cause.hasInterruptsOnly(cause)) {
         return Effect.void;
       }
-      const detail = formatFailureDetail(cause);
-      return setThreadSessionErrorOnTurnStartFailure({
-        threadId: event.payload.threadId,
-        detail,
-        createdAt: event.payload.createdAt,
-      }).pipe(
-        Effect.flatMap(() =>
-          appendProviderFailureActivity({
+      const diagnostics = providerFailureDiagnostics(cause);
+      return Effect.gen(function* () {
+        yield* setThreadSessionErrorOnTurnStartFailure({
+          threadId: event.payload.threadId,
+          detail: diagnostics.detail,
+          createdAt: event.payload.createdAt,
+        });
+        if (options?.deliveryDefinitelyNotStarted === true) {
+          yield* markUserMessageDeliveryFailed({
             threadId: event.payload.threadId,
-            kind: "provider.turn.start.failed",
-            summary: "Provider turn start failed",
-            detail,
-            turnId: null,
-            createdAt: event.payload.createdAt,
-          }),
-        ),
-        Effect.asVoid,
-      );
+            messageId: event.payload.messageId,
+            provider: diagnostics.provider,
+            ...(diagnostics.method !== undefined ? { method: diagnostics.method } : {}),
+            detail: diagnostics.detail,
+            failedAt: event.payload.createdAt,
+          });
+        }
+        yield* appendProviderFailureActivity({
+          threadId: event.payload.threadId,
+          kind: "provider.turn.start.failed",
+          summary: "Provider turn start failed",
+          detail: diagnostics.detail,
+          turnId: null,
+          createdAt: event.payload.createdAt,
+          messageId: event.payload.messageId,
+          provider: diagnostics.provider,
+          ...(diagnostics.method !== undefined ? { method: diagnostics.method } : {}),
+        });
+      });
     };
 
     const recoverTurnStartFailure = (cause: Cause.Cause<unknown>) =>
@@ -787,27 +868,63 @@ const make = Effect.gen(function* () {
         ),
       );
 
-    const sendTurnRequest = yield* buildSendTurnRequestForThread({
-      threadId: event.payload.threadId,
-      messageText: message.text,
-      ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
-      ...(event.payload.modelSelection !== undefined
-        ? { modelSelection: event.payload.modelSelection }
-        : {}),
-      interactionMode: event.payload.interactionMode,
-      createdAt: event.payload.createdAt,
-    }).pipe(
+    const buildSendTurnRequestWithStartupRetry = (
+      attempt: number,
+    ): ReturnType<typeof buildSendTurnRequestForThread> =>
+      buildSendTurnRequestForThread({
+        threadId: event.payload.threadId,
+        messageText: message.text,
+        ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+        ...(event.payload.modelSelection !== undefined
+          ? { modelSelection: event.payload.modelSelection }
+          : {}),
+        interactionMode: event.payload.interactionMode,
+        createdAt: event.payload.createdAt,
+      }).pipe(
+        Effect.catchCause((cause) => {
+          if (
+            attempt < TURN_START_DELIVERY_MAX_ATTEMPTS &&
+            isTransientCustomAcpStartupOrRoutingFailure(cause)
+          ) {
+            return Effect.logWarning("provider command reactor retrying provider startup", {
+              threadId: event.payload.threadId,
+              messageId: event.payload.messageId,
+              attempt,
+              maxAttempts: TURN_START_DELIVERY_MAX_ATTEMPTS,
+              cause: Cause.pretty(cause),
+            }).pipe(Effect.andThen(buildSendTurnRequestWithStartupRetry(attempt + 1)));
+          }
+          return Effect.failCause(cause);
+        }),
+      );
+
+    const sendTurnRequest = yield* buildSendTurnRequestWithStartupRetry(1).pipe(
       Effect.map(Option.some),
-      Effect.catchCause((cause) => handleTurnStartFailure(cause).pipe(Effect.as(Option.none()))),
+      Effect.catchCause((cause) =>
+        handleTurnStartFailure(cause, { deliveryDefinitelyNotStarted: true }).pipe(
+          Effect.as(Option.none()),
+        ),
+      ),
     );
 
     if (Option.isNone(sendTurnRequest)) {
       return;
     }
 
-    yield* providerService
-      .sendTurn(sendTurnRequest.value)
-      .pipe(Effect.catchCause(recoverTurnStartFailure), Effect.forkScoped);
+    yield* providerService.sendTurn(sendTurnRequest.value).pipe(
+      Effect.tap((turn) =>
+        orchestrationEngine.dispatch({
+          type: "thread.message.user.attach-to-turn",
+          commandId: serverCommandId("user-message-provider-turn-bind"),
+          threadId: event.payload.threadId,
+          messageId: event.payload.messageId,
+          turnId: turn.turnId,
+          createdAt: event.payload.createdAt,
+        }),
+      ),
+      Effect.catchCause(recoverTurnStartFailure),
+      Effect.forkScoped,
+    );
   });
 
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (

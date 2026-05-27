@@ -395,6 +395,19 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Proposed plan '${sourceProposedPlan?.planId}' belongs to thread '${sourceThread.id}' in a different project.`,
         });
       }
+      const blockingUndeliveredMessage = targetThread.messages.find(
+        (entry) =>
+          entry.role === "user" &&
+          entry.providerDelivery !== undefined &&
+          entry.providerDelivery.status === "failed",
+      );
+      if (blockingUndeliveredMessage) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `User message '${blockingUndeliveredMessage.id}' has not been delivered to the provider. Retry or resolve it before sending another message.`,
+        });
+      }
+
       const userMessageEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...withEventBase({
           aggregateKind: "thread",
@@ -440,6 +453,52 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       return [userMessageEvent, turnStartRequestedEvent];
     }
 
+    case "thread.message.user.retry-delivery": {
+      const targetThread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const message = targetThread.messages.find((entry) => entry.id === command.messageId);
+      if (!message || message.role !== "user") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `User message '${command.messageId}' was not found on thread '${command.threadId}'.`,
+        });
+      }
+      if (message.providerDelivery?.status === "delivered" || message.turnId !== null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `User message '${command.messageId}' has already been delivered to the provider.`,
+        });
+      }
+      if (message.providerDelivery?.status !== "failed") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `User message '${command.messageId}' is not in a failed provider delivery state.`,
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.turn-start-requested",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.messageId,
+          ...(command.modelSelection !== undefined
+            ? { modelSelection: command.modelSelection }
+            : {}),
+          runtimeMode: targetThread.runtimeMode,
+          interactionMode: command.interactionMode,
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.message.user.attach-to-turn": {
       yield* requireThread({
         readModel,
@@ -463,6 +522,31 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           streaming: false,
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.message.user.delivery-failed": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.failedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.message-user-delivery-failed",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.messageId,
+          provider: command.provider,
+          ...(command.method !== undefined ? { method: command.method } : {}),
+          detail: command.detail,
+          failedAt: command.failedAt,
         },
       };
     }

@@ -205,6 +205,168 @@ describe("orchestration projector", () => {
     expect(unarchived.threads[0]?.archivedAt).toBeNull();
   });
 
+  it("tracks provider delivery state on user messages", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const afterCreate = await Effect.runPromise(
+      projectEvent(
+        createEmptyReadModel(now),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: now,
+          commandId: "cmd-thread-create",
+          payload: {
+            threadId: "thread-1",
+            projectId: "project-1",
+            title: "demo",
+            modelSelection: {
+              provider: ProviderDriverKind.make("customAcp"),
+              model: "pi-local",
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      ),
+    );
+    const afterMessage = await Effect.runPromise(
+      projectEvent(
+        afterCreate,
+        makeEvent({
+          sequence: 2,
+          type: "thread.message-sent",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: now,
+          commandId: "cmd-message",
+          payload: {
+            threadId: "thread-1",
+            messageId: "message-1",
+            role: "user",
+            text: "hello",
+            attachments: [],
+            turnId: null,
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      ),
+    );
+    const afterRequested = await Effect.runPromise(
+      projectEvent(
+        afterMessage,
+        makeEvent({
+          sequence: 3,
+          type: "thread.turn-start-requested",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: now,
+          commandId: "cmd-turn",
+          payload: {
+            threadId: "thread-1",
+            messageId: "message-1",
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdAt: now,
+          },
+        }),
+      ),
+    );
+    expect(afterRequested.threads[0]?.messages[0]?.providerDelivery).toMatchObject({
+      status: "pending",
+      attempt: 1,
+    });
+
+    const afterFailed = await Effect.runPromise(
+      projectEvent(
+        afterRequested,
+        makeEvent({
+          sequence: 4,
+          type: "thread.message-user-delivery-failed",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: now,
+          commandId: "cmd-delivery-failed",
+          payload: {
+            threadId: "thread-1",
+            messageId: "message-1",
+            provider: "customAcp",
+            method: "session/start",
+            detail: "Pi child exited",
+            failedAt: now,
+          },
+        }),
+      ),
+    );
+    expect(afterFailed.threads[0]?.messages[0]?.providerDelivery).toMatchObject({
+      status: "failed",
+      attempt: 1,
+      provider: "customAcp",
+      method: "session/start",
+    });
+
+    const afterRetry = await Effect.runPromise(
+      projectEvent(
+        afterFailed,
+        makeEvent({
+          sequence: 5,
+          type: "thread.turn-start-requested",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: now,
+          commandId: "cmd-retry",
+          payload: {
+            threadId: "thread-1",
+            messageId: "message-1",
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdAt: now,
+          },
+        }),
+      ),
+    );
+    expect(afterRetry.threads[0]?.messages[0]?.providerDelivery).toMatchObject({
+      status: "pending",
+      attempt: 2,
+    });
+
+    const afterDelivered = await Effect.runPromise(
+      projectEvent(
+        afterRetry,
+        makeEvent({
+          sequence: 6,
+          type: "thread.message-sent",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: now,
+          commandId: "cmd-attach",
+          payload: {
+            threadId: "thread-1",
+            messageId: "message-1",
+            role: "user",
+            text: "",
+            turnId: "turn-1",
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      ),
+    );
+    expect(afterDelivered.threads[0]?.messages[0]?.providerDelivery).toMatchObject({
+      status: "delivered",
+      attempt: 2,
+      turnId: "turn-1",
+    });
+  });
+
   it("keeps projector forward-compatible for unhandled event types", async () => {
     const now = "2026-01-01T00:00:00.000Z";
     const model = createEmptyReadModel(now);

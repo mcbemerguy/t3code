@@ -32,7 +32,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { deriveServerPaths, ServerConfig } from "../../config.ts";
 import { TextGenerationError } from "@t3tools/contracts";
-import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
+import { ProviderAdapterProcessError, ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -63,6 +63,12 @@ const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asApprovalRequestId = (value: string): ApprovalRequestId => ApprovalRequestId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
+const customAcpStartupFailure = (detail = "Pi RPC process exited during startup") =>
+  new ProviderAdapterProcessError({
+    provider: "customAcp",
+    threadId: "thread-1",
+    detail,
+  });
 
 const deriveServerPathsSync = (baseDir: string, devUrl: URL | undefined) =>
   Effect.runSync(deriveServerPaths(baseDir, devUrl).pipe(Effect.provide(NodeServices.layer)));
@@ -456,6 +462,344 @@ describe("ProviderCommandReactor", () => {
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
+  });
+
+  it("retries transient Custom ACP startup failures before marking delivery failed", async () => {
+    const harness = await createHarness({
+      threadModelSelection: {
+        instanceId: ProviderInstanceId.make("customAcp"),
+        model: "pi-local",
+      },
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.startSession
+      .mockImplementationOnce(() => Effect.fail(customAcpStartupFailure()) as never)
+      .mockImplementationOnce(() => Effect.fail(customAcpStartupFailure()) as never);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-custom-acp-retry"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-custom-acp-retry"),
+          role: "user",
+          text: "hello pi",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 3);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      const message = thread?.messages.find(
+        (entry) => entry.id === asMessageId("user-message-custom-acp-retry"),
+      );
+      return message?.providerDelivery?.status === "delivered";
+    });
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    const message = thread?.messages.find(
+      (entry) => entry.id === asMessageId("user-message-custom-acp-retry"),
+    );
+    expect(message?.providerDelivery).toMatchObject({ status: "delivered", attempt: 1 });
+    expect(
+      thread?.activities.find((activity) => activity.kind === "provider.turn.start.failed"),
+    ).toBeUndefined();
+  });
+
+  it("marks the original message undelivered after bounded Custom ACP startup failures", async () => {
+    const harness = await createHarness({
+      threadModelSelection: {
+        instanceId: ProviderInstanceId.make("customAcp"),
+        model: "pi-local",
+      },
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.startSession.mockImplementation(
+      () => Effect.fail(customAcpStartupFailure("Pi child exited before session/new")) as never,
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-custom-acp-fail"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-custom-acp-fail"),
+          role: "user",
+          text: "please inspect this image",
+          attachments: [
+            {
+              type: "image",
+              id: "image_1",
+              name: "screenshot.png",
+              mimeType: "image/png",
+              sizeBytes: 12,
+            },
+          ],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      const message = thread?.messages.find(
+        (entry) => entry.id === asMessageId("user-message-custom-acp-fail"),
+      );
+      return message?.providerDelivery?.status === "failed";
+    });
+
+    expect(harness.startSession.mock.calls.length).toBe(3);
+    expect(harness.sendTurn.mock.calls.length).toBe(0);
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    const message = thread?.messages.find(
+      (entry) => entry.id === asMessageId("user-message-custom-acp-fail"),
+    );
+    expect(message?.providerDelivery).toMatchObject({
+      status: "failed",
+      attempt: 1,
+      provider: "customAcp",
+      detail: "Pi child exited before session/new",
+    });
+    expect(message?.attachments).toEqual([
+      {
+        type: "image",
+        id: "image_1",
+        name: "screenshot.png",
+        mimeType: "image/png",
+        sizeBytes: 12,
+      },
+    ]);
+    expect(
+      thread?.activities.find((activity) => activity.kind === "provider.turn.start.failed"),
+    ).toMatchObject({
+      payload: {
+        messageId: "user-message-custom-acp-fail",
+        provider: "customAcp",
+        detail: "Pi child exited before session/new",
+      },
+    });
+  });
+
+  it("does not retry or mark retriable delivery failure after prompt-level ambiguity", async () => {
+    const harness = await createHarness({
+      threadModelSelection: {
+        instanceId: ProviderInstanceId.make("customAcp"),
+        model: "pi-local",
+      },
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.sendTurn.mockImplementationOnce(
+      () =>
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: "customAcp",
+            method: "session/prompt",
+            detail: "session/prompt timed out",
+          }),
+        ) as never,
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-custom-acp-prompt-ambiguous"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-custom-acp-prompt-ambiguous"),
+          role: "user",
+          text: "hello pi",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      return (
+        thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed") ??
+        false
+      );
+    });
+
+    expect(harness.startSession.mock.calls.length).toBe(1);
+    expect(harness.sendTurn.mock.calls.length).toBe(1);
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    const message = thread?.messages.find(
+      (entry) => entry.id === asMessageId("user-message-custom-acp-prompt-ambiguous"),
+    );
+    expect(message?.providerDelivery).toMatchObject({ status: "pending", attempt: 1 });
+    expect(
+      thread?.activities.find((activity) => activity.kind === "provider.turn.start.failed"),
+    ).toMatchObject({
+      payload: {
+        messageId: "user-message-custom-acp-prompt-ambiguous",
+        provider: "customAcp",
+        method: "session/prompt",
+        detail: "session/prompt timed out",
+      },
+    });
+  });
+
+  it("retries the same undelivered user message and attachments without duplicating it", async () => {
+    const harness = await createHarness({
+      threadModelSelection: {
+        instanceId: ProviderInstanceId.make("customAcp"),
+        model: "pi-local",
+      },
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.startSession
+      .mockImplementationOnce(() => Effect.fail(customAcpStartupFailure()) as never)
+      .mockImplementationOnce(() => Effect.fail(customAcpStartupFailure()) as never)
+      .mockImplementationOnce(() => Effect.fail(customAcpStartupFailure()) as never);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-custom-acp-retry-source"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-custom-acp-retry-source"),
+          role: "user",
+          text: "retry my screenshot",
+          attachments: [
+            {
+              type: "image",
+              id: "retry_image_1",
+              name: "retry.png",
+              mimeType: "image/png",
+              sizeBytes: 34,
+            },
+          ],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      const message = thread?.messages.find(
+        (entry) => entry.id === asMessageId("user-message-custom-acp-retry-source"),
+      );
+      return message?.providerDelivery?.status === "failed";
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.user.retry-delivery",
+        commandId: CommandId.make("cmd-retry-custom-acp-source"),
+        threadId: ThreadId.make("thread-1"),
+        messageId: asMessageId("user-message-custom-acp-retry-source"),
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      return thread?.messages[0]?.providerDelivery?.status === "delivered";
+    });
+    const sendTurnInput = harness.sendTurn.mock.calls[0]?.[0];
+    expect(sendTurnInput).toMatchObject({
+      threadId: ThreadId.make("thread-1"),
+      input: "retry my screenshot",
+      attachments: [
+        {
+          type: "image",
+          id: "retry_image_1",
+          name: "retry.png",
+          mimeType: "image/png",
+          sizeBytes: 34,
+        },
+      ],
+    });
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.messages.filter((entry) => entry.role === "user")).toHaveLength(1);
+    expect(thread?.messages[0]?.providerDelivery).toMatchObject({
+      status: "delivered",
+      attempt: 2,
+      turnId: asTurnId("turn-1"),
+    });
+  });
+
+  it("blocks a new unrelated send while an older user message is undelivered", async () => {
+    const harness = await createHarness({
+      threadModelSelection: {
+        instanceId: ProviderInstanceId.make("customAcp"),
+        model: "pi-local",
+      },
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.startSession.mockImplementation(
+      () => Effect.fail(customAcpStartupFailure("Pi child exited before prompt delivery")) as never,
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-custom-acp-block-source"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-custom-acp-block-source"),
+          role: "user",
+          text: "first message",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      return thread?.messages[0]?.providerDelivery?.status === "failed";
+    });
+
+    await expect(
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-custom-acp-block-later"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("user-message-custom-acp-block-later"),
+            role: "user",
+            text: "go",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      ),
+    ).rejects.toThrow("has not been delivered to the provider");
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.messages.filter((entry) => entry.role === "user")).toHaveLength(1);
   });
 
   it("routes mid-turn input to active-turn provider input without starting a new turn", async () => {

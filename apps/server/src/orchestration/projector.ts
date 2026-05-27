@@ -11,6 +11,7 @@ import * as Schema from "effect/Schema";
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
 import {
   MessageSentPayloadSchema,
+  ThreadMessageUserDeliveryFailedPayload,
   ProjectCreatedPayload,
   ProjectDeletedPayload,
   ProjectMetaUpdatedPayload,
@@ -26,6 +27,7 @@ import {
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
   ThreadTurnDiffCompletedPayload,
+  ThreadTurnStartRequestedPayload,
 } from "./Schemas.ts";
 
 type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
@@ -357,6 +359,41 @@ export function projectEvent(
         })),
       );
 
+    case "thread.turn-start-requested":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadTurnStartRequestedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread) {
+          return nextBase;
+        }
+        const messages = thread.messages.map((message) => {
+          if (message.id !== payload.messageId || message.role !== "user") {
+            return message;
+          }
+          const previousAttempt = message.providerDelivery?.attempt ?? 0;
+          return Object.assign({}, message, {
+            providerDelivery: {
+              status: "pending" as const,
+              attempt: previousAttempt + 1,
+              updatedAt: payload.createdAt,
+            },
+            updatedAt: payload.createdAt,
+          });
+        });
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            messages,
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
     case "thread.message-sent":
       return Effect.gen(function* () {
         const payload = yield* decodeForEvent(
@@ -388,24 +425,33 @@ export function projectEvent(
 
         const existingMessage = thread.messages.find((entry) => entry.id === message.id);
         const messages = existingMessage
-          ? thread.messages.map((entry) =>
-              entry.id === message.id
-                ? {
-                    ...entry,
-                    text: message.streaming
-                      ? `${entry.text}${message.text}`
-                      : message.text.length > 0
-                        ? message.text
-                        : entry.text,
-                    streaming: message.streaming,
-                    updatedAt: message.updatedAt,
-                    turnId: message.turnId,
-                    ...(message.attachments !== undefined
-                      ? { attachments: message.attachments }
-                      : {}),
-                  }
-                : entry,
-            )
+          ? thread.messages.map((entry) => {
+              if (entry.id !== message.id) {
+                return entry;
+              }
+              const providerDelivery =
+                entry.role === "user" && message.turnId !== null
+                  ? {
+                      status: "delivered" as const,
+                      attempt: entry.providerDelivery?.attempt ?? 1,
+                      turnId: message.turnId,
+                      deliveredAt: message.updatedAt,
+                    }
+                  : entry.providerDelivery;
+              return {
+                ...entry,
+                text: message.streaming
+                  ? `${entry.text}${message.text}`
+                  : message.text.length > 0
+                    ? message.text
+                    : entry.text,
+                streaming: message.streaming,
+                updatedAt: message.updatedAt,
+                turnId: message.turnId,
+                ...(providerDelivery !== undefined ? { providerDelivery } : {}),
+                ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+              };
+            })
           : [...thread.messages, message];
         const cappedMessages = messages.slice(-MAX_THREAD_MESSAGES);
 
@@ -413,6 +459,43 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             messages: cappedMessages,
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
+    case "thread.message-user-delivery-failed":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadMessageUserDeliveryFailedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread) {
+          return nextBase;
+        }
+        const messages = thread.messages.map((message) => {
+          if (message.id !== payload.messageId || message.role !== "user") {
+            return message;
+          }
+          return Object.assign({}, message, {
+            providerDelivery: {
+              status: "failed" as const,
+              attempt: message.providerDelivery?.attempt ?? 1,
+              provider: payload.provider,
+              ...(payload.method !== undefined ? { method: payload.method } : {}),
+              detail: payload.detail,
+              failedAt: payload.failedAt,
+            },
+            updatedAt: payload.failedAt,
+          });
+        });
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            messages,
             updatedAt: event.occurredAt,
           }),
         };

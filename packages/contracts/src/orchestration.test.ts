@@ -325,6 +325,49 @@ it.effect("decodes thread.meta-updated payloads with explicit provider", () =>
   }),
 );
 
+it.effect("decodes user message delivery retry command", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationCommand({
+      type: "thread.message.user.retry-delivery",
+      commandId: "cmd-retry-delivery",
+      threadId: "thread-1",
+      messageId: "message-1",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.strictEqual(parsed.type, "thread.message.user.retry-delivery");
+    assert.strictEqual(parsed.interactionMode, DEFAULT_PROVIDER_INTERACTION_MODE);
+  }),
+);
+
+it.effect("decodes user message delivery failure events", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationEvent({
+      sequence: 1,
+      eventId: "event-delivery-failed-1",
+      aggregateKind: "thread",
+      aggregateId: "thread-1",
+      type: "thread.message-user-delivery-failed",
+      occurredAt: "2026-01-01T00:00:00.000Z",
+      commandId: "cmd-delivery-failed-1",
+      causationEventId: null,
+      correlationId: "cmd-delivery-failed-1",
+      metadata: {},
+      payload: {
+        threadId: "thread-1",
+        messageId: "message-1",
+        provider: "customAcp",
+        method: "session/start",
+        detail: "Pi RPC process exited during startup",
+        failedAt: "2026-01-01T00:00:00.000Z",
+      },
+    });
+
+    assert.strictEqual(parsed.type, "thread.message-user-delivery-failed");
+    assert.strictEqual(parsed.payload.messageId, "message-1");
+  }),
+);
+
 it.effect("decodes thread archive and unarchive commands", () =>
   Effect.gen(function* () {
     const archive = yield* decodeOrchestrationCommand({

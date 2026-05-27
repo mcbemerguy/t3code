@@ -1409,6 +1409,10 @@ const make = Effect.gen(function* () {
             return true;
         }
       })();
+      const pendingTurnStartForAcceptedTurnStart =
+        event.type === "turn.started" && shouldApplyThreadLifecycle
+          ? yield* projectionTurnRepository.getPendingTurnStartByThreadId({ threadId: thread.id })
+          : Option.none();
       const acceptedTurnStartedSourcePlan =
         event.type === "turn.started" && shouldApplyThreadLifecycle
           ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(thread.id, eventTurnId)
@@ -1496,6 +1500,20 @@ const make = Effect.gen(function* () {
             },
             createdAt: now,
           });
+          if (
+            event.type === "turn.started" &&
+            eventTurnId !== undefined &&
+            Option.isSome(pendingTurnStartForAcceptedTurnStart)
+          ) {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.message.user.attach-to-turn",
+              commandId: providerCommandId(event, "user-message-attach-to-turn"),
+              threadId: thread.id,
+              messageId: pendingTurnStartForAcceptedTurnStart.value.messageId,
+              turnId: eventTurnId,
+              createdAt: now,
+            });
+          }
         }
       }
 

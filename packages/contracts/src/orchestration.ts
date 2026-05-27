@@ -213,12 +213,36 @@ export type OrchestrationProject = typeof OrchestrationProject.Type;
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
 
+export const OrchestrationMessageProviderDelivery = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("pending"),
+    attempt: NonNegativeInt,
+    updatedAt: IsoDateTime,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("delivered"),
+    attempt: NonNegativeInt,
+    turnId: TurnId,
+    deliveredAt: IsoDateTime,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("failed"),
+    attempt: NonNegativeInt,
+    provider: TrimmedNonEmptyString,
+    method: Schema.optional(TrimmedNonEmptyString),
+    detail: TrimmedNonEmptyString,
+    failedAt: IsoDateTime,
+  }),
+]);
+export type OrchestrationMessageProviderDelivery = typeof OrchestrationMessageProviderDelivery.Type;
+
 export const OrchestrationMessage = Schema.Struct({
   id: MessageId,
   role: OrchestrationMessageRole,
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.NullOr(TurnId),
+  providerDelivery: Schema.optional(OrchestrationMessageProviderDelivery),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -604,6 +628,18 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadMessageUserRetryDeliveryCommand = Schema.Struct({
+  type: Schema.Literal("thread.message.user.retry-delivery"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  modelSelection: Schema.optional(ModelSelection),
+  interactionMode: ProviderInteractionMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
+  ),
+  createdAt: IsoDateTime,
+});
+
 const ThreadTurnInterruptCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.interrupt"),
   commandId: CommandId,
@@ -657,6 +693,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
+  ThreadMessageUserRetryDeliveryCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -678,6 +715,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
+  ThreadMessageUserRetryDeliveryCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -700,6 +738,18 @@ const ThreadMessageUserAttachToTurnCommand = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
   turnId: TurnId,
+  createdAt: IsoDateTime,
+});
+
+const ThreadMessageUserDeliveryFailedCommand = Schema.Struct({
+  type: Schema.Literal("thread.message.user.delivery-failed"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  provider: TrimmedNonEmptyString,
+  method: Schema.optional(TrimmedNonEmptyString),
+  detail: TrimmedNonEmptyString,
+  failedAt: IsoDateTime,
   createdAt: IsoDateTime,
 });
 
@@ -763,6 +813,7 @@ const ThreadRevertCompleteCommand = Schema.Struct({
 const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
   ThreadMessageUserAttachToTurnCommand,
+  ThreadMessageUserDeliveryFailedCommand,
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
   ThreadProposedPlanUpsertCommand,
@@ -790,6 +841,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.runtime-mode-set",
   "thread.interaction-mode-set",
   "thread.message-sent",
+  "thread.message-user-delivery-failed",
   "thread.turn-start-requested",
   "thread.turn-interrupt-requested",
   "thread.approval-response-requested",
@@ -898,6 +950,15 @@ export const ThreadMessageSentPayload = Schema.Struct({
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
+});
+
+export const ThreadMessageUserDeliveryFailedPayload = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+  provider: TrimmedNonEmptyString,
+  method: Schema.optional(TrimmedNonEmptyString),
+  detail: TrimmedNonEmptyString,
+  failedAt: IsoDateTime,
 });
 
 export const ThreadTurnStartRequestedPayload = Schema.Struct({
@@ -1051,6 +1112,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.message-sent"),
     payload: ThreadMessageSentPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.message-user-delivery-failed"),
+    payload: ThreadMessageUserDeliveryFailedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
