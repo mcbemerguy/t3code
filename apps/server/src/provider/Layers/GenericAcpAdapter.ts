@@ -913,6 +913,13 @@ export function makeGenericAcpAdapter(
           ),
           Effect.exit,
           Effect.timeoutOption(Duration.millis(ACP_CANCEL_WATCHDOG_GRACE_MS)),
+          Effect.flatMap((cancelExit) =>
+            cancelExit._tag === "Some" && Exit.isSuccess(cancelExit.value) && interruptedTurnId
+              ? Effect.sync(() => {
+                  ctx.forceCompletedTurnIds.delete(interruptedTurnId);
+                })
+              : Effect.void,
+          ),
           Effect.forkDetach,
         );
 
