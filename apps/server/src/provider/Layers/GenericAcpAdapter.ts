@@ -95,7 +95,7 @@ interface GenericAcpSessionContext {
   activeTurnId: TurnId | undefined;
   piSteeringMethod: string | undefined;
   readonly completedTurnIds: Set<TurnId>;
-  readonly forceCompletedTurnIds: Set<TurnId>;
+  readonly cancellingTurnIds: Set<TurnId>;
   stopped: boolean;
 }
 
@@ -267,7 +267,7 @@ export function makeGenericAcpAdapter(
         if (ctx.completedTurnIds.has(turnId)) return;
         ctx.activeTurnId = undefined;
         ctx.completedTurnIds.add(turnId);
-        ctx.forceCompletedTurnIds.add(turnId);
+        ctx.cancellingTurnIds.delete(turnId);
         const { activeTurnId: _activeTurnId, ...sessionWithoutActiveTurn } = ctx.session;
         void _activeTurnId;
         ctx.session = { ...sessionWithoutActiveTurn, updatedAt: yield* nowIso };
@@ -610,7 +610,7 @@ export function makeGenericAcpAdapter(
             activeTurnId: undefined,
             piSteeringMethod: started.piSteeringMethod,
             completedTurnIds: new Set(),
-            forceCompletedTurnIds: new Set(),
+            cancellingTurnIds: new Set(),
             stopped: false,
           };
 
@@ -809,15 +809,22 @@ export function makeGenericAcpAdapter(
           Effect.mapError((error) =>
             mapAcpToAdapterError(provider, input.threadId, "session/prompt", error),
           ),
-          Effect.catch((error) =>
-            ctx.completedTurnIds.has(turnId) ? Effect.void : Effect.fail(error),
-          ),
+          Effect.catch((error) => {
+            if (ctx.completedTurnIds.has(turnId)) return Effect.void;
+            if (ctx.cancellingTurnIds.has(turnId)) {
+              return completeTurnLocally(ctx, turnId, {
+                state: "cancelled",
+                stopReason: "session/cancel requested",
+              }).pipe(Effect.asVoid);
+            }
+            return Effect.fail(error);
+          }),
         );
         if (result === undefined || ctx.completedTurnIds.has(turnId)) {
-          ctx.forceCompletedTurnIds.delete(turnId);
           return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
         }
 
+        const wasCancelling = ctx.cancellingTurnIds.delete(turnId);
         ctx.activeTurnId = undefined;
         ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });
         const { activeTurnId: _activeTurnId, ...sessionWithoutActiveTurn } = ctx.session;
@@ -850,8 +857,11 @@ export function makeGenericAcpAdapter(
           threadId: input.threadId,
           turnId,
           payload: {
-            state: result.stopReason === "cancelled" ? "cancelled" : "completed",
-            stopReason: result.stopReason ?? null,
+            state: wasCancelling || result.stopReason === "cancelled" ? "cancelled" : "completed",
+            stopReason:
+              wasCancelling && result.stopReason !== "cancelled"
+                ? "session/cancel requested"
+                : (result.stopReason ?? null),
           },
         });
 
@@ -900,10 +910,7 @@ export function makeGenericAcpAdapter(
         const ctx = yield* requireSession(threadId);
         const interruptedTurnId = turnId ?? ctx.activeTurnId;
         if (interruptedTurnId && !ctx.completedTurnIds.has(interruptedTurnId)) {
-          yield* completeTurnLocally(ctx, interruptedTurnId, {
-            state: "cancelled",
-            stopReason: "session/cancel requested",
-          });
+          ctx.cancellingTurnIds.add(interruptedTurnId);
         }
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
@@ -913,26 +920,20 @@ export function makeGenericAcpAdapter(
           ),
           Effect.exit,
           Effect.timeoutOption(Duration.millis(ACP_CANCEL_WATCHDOG_GRACE_MS)),
-          Effect.flatMap((cancelExit) =>
-            cancelExit._tag === "Some" && Exit.isSuccess(cancelExit.value) && interruptedTurnId
-              ? Effect.sync(() => {
-                  ctx.forceCompletedTurnIds.delete(interruptedTurnId);
-                })
-              : Effect.void,
-          ),
+          Effect.flatMap((cancelExit) => {
+            if (!interruptedTurnId || ctx.stopped || ctx.completedTurnIds.has(interruptedTurnId)) {
+              return Effect.void;
+            }
+            if (cancelExit._tag === "Some" && Exit.isSuccess(cancelExit.value)) {
+              return Effect.void;
+            }
+            return completeTurnLocally(ctx, interruptedTurnId, {
+              state: "cancelled",
+              stopReason: "session/cancel requested",
+            }).pipe(Effect.andThen(stopSessionInternal(ctx)));
+          }),
           Effect.forkDetach,
         );
-
-        if (interruptedTurnId) {
-          yield* Effect.sleep(Duration.millis(ACP_CANCEL_WATCHDOG_GRACE_MS)).pipe(
-            Effect.flatMap(() =>
-              ctx.stopped || !ctx.forceCompletedTurnIds.has(interruptedTurnId)
-                ? Effect.void
-                : stopSessionInternal(ctx),
-            ),
-            Effect.forkDetach,
-          );
-        }
       });
 
     const respondToRequest: ProviderAdapterShape<ProviderAdapterError>["respondToRequest"] = (

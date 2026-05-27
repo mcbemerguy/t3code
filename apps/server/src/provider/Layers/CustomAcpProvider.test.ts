@@ -20,7 +20,6 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -486,7 +485,73 @@ describe("Custom ACP provider", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
-  it.effect("suppresses prompt failures after a locally cancelled turn", () =>
+  it.effect(
+    "streams post-interrupt ACP updates on the original turn before cancellation completes",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* makeGenericAcpAdapter(
+          makeCustomAcpSettings({ env: envText({ T3_ACP_EMIT_TOOL_CALLS: "1" }) }),
+          { instanceId: customAcpInstanceId },
+        );
+        const threadId = ThreadId.make("custom-acp-post-interrupt-updates");
+        const requested =
+          yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "request.opened" }>>();
+        const completed =
+          yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>>();
+        const events: Array<ProviderRuntimeEvent> = [];
+
+        yield* Stream.runForEach(adapter.streamEvents, (event) => {
+          if (event.threadId !== threadId) return Effect.void;
+          events.push(event);
+          if (event.type === "request.opened") {
+            return Deferred.succeed(requested, event).pipe(Effect.ignore);
+          }
+          if (event.type === "turn.completed") {
+            return Deferred.succeed(completed, event).pipe(Effect.ignore);
+          }
+          return Effect.void;
+        }).pipe(Effect.forkChild);
+
+        yield* adapter.startSession({
+          threadId,
+          provider: customAcpDriver,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "needs approval", attachments: [] })
+          .pipe(Effect.forkChild);
+
+        const openedEvent = yield* Deferred.await(requested);
+        const interruptEventCount = events.length;
+        yield* adapter.interruptTurn(threadId);
+        yield* Fiber.join(turnFiber);
+        const completedEvent = yield* Deferred.await(completed);
+        const postInterruptEvents = events.slice(interruptEventCount);
+        const completedIndex = postInterruptEvents.findIndex(
+          (event) => event.type === "turn.completed",
+        );
+        const toolCompletedIndex = postInterruptEvents.findIndex(
+          (event) =>
+            event.type === "item.completed" && event.payload.itemType === "command_execution",
+        );
+        const contentIndex = postInterruptEvents.findIndex(
+          (event) => event.type === "content.delta" && event.payload.delta === "hello from mock",
+        );
+
+        assert.isDefined(openedEvent.turnId);
+        assert.isTrue(completedIndex >= 0);
+        assert.isTrue(toolCompletedIndex >= 0 && toolCompletedIndex < completedIndex);
+        assert.isTrue(contentIndex >= 0 && contentIndex < completedIndex);
+        assert.equal(postInterruptEvents[toolCompletedIndex]?.turnId, openedEvent.turnId);
+        assert.equal(postInterruptEvents[contentIndex]?.turnId, openedEvent.turnId);
+        assert.equal(completedEvent.turnId, openedEvent.turnId);
+        assert.equal(completedEvent.payload.state, "cancelled");
+        yield* adapter.stopSession(threadId);
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("suppresses prompt failures after a cancelled turn", () =>
     Effect.gen(function* () {
       const adapter = yield* makeGenericAcpAdapter(
         makeCustomAcpSettings({
