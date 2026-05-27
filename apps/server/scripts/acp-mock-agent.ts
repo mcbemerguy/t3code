@@ -2,7 +2,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 // @effect-diagnostics globalTimers:off
 // @effect-diagnostics runEffectInsideEffect:off
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 
 import * as Effect from "effect/Effect";
 
@@ -30,6 +30,10 @@ const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
 const enableSessionList = process.env.T3_ACP_ENABLE_SESSION_LIST === "1";
 const enablePiSteering = process.env.T3_ACP_ENABLE_PI_STEERING === "1";
 const failLoadSession = process.env.T3_ACP_FAIL_LOAD_SESSION === "1";
+const failCreateSessionCount = parseNonNegativeInt(process.env.T3_ACP_FAIL_CREATE_SESSION_COUNT);
+const failCreateSessionStatePath = process.env.T3_ACP_FAIL_CREATE_SESSION_STATE_PATH;
+const failCreateSessionDetail =
+  process.env.T3_ACP_FAIL_CREATE_SESSION_DETAIL ?? "Mock failed session/new during startup";
 const failPromptAfterCancel = process.env.T3_ACP_FAIL_PROMPT_AFTER_CANCEL === "1";
 const hangCancel = process.env.T3_ACP_HANG_CANCEL === "1";
 const hangPrompt = process.env.T3_ACP_HANG_PROMPT === "1";
@@ -45,6 +49,27 @@ let currentReasoning = "medium";
 let currentContext = "272k";
 let currentFast = false;
 const cancelledSessions = new Set<string>();
+
+function parseNonNegativeInt(value: string | undefined): number {
+  if (value === undefined) return 0;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function readCreateSessionFailureAttempts(): number {
+  if (!failCreateSessionStatePath || !existsSync(failCreateSessionStatePath)) return 0;
+  const raw = readFileSync(failCreateSessionStatePath, "utf8").trim();
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function shouldFailCreateSession(): boolean {
+  if (failCreateSessionCount <= 0) return false;
+  if (!failCreateSessionStatePath) return true;
+  const attempts = readCreateSessionFailureAttempts();
+  writeFileSync(failCreateSessionStatePath, String(attempts + 1), "utf8");
+  return attempts < failCreateSessionCount;
+}
 
 function logExit(reason: string): void {
   if (!exitLogPath) {
@@ -287,25 +312,32 @@ const program = Effect.gen(function* () {
   yield* agent.handleAuthenticate(() => Effect.succeed({}));
 
   yield* agent.handleCreateSession(() =>
-    Effect.sync(() => {
-      if (emitAvailableCommands) {
-        setTimeout(() => {
-          Effect.runFork(
-            agent.client.sessionUpdate({
-              sessionId,
-              update: {
-                sessionUpdate: "available_commands_update",
-                availableCommands: availableCommands(),
-              },
-            }),
-          );
-        }, 0);
+    Effect.gen(function* () {
+      if (shouldFailCreateSession()) {
+        return yield* AcpError.AcpRequestError.internalError(failCreateSessionDetail, {
+          method: "session/new",
+        });
       }
-      return {
-        sessionId,
-        modes: modeState(),
-        configOptions: configOptions(),
-      };
+      return yield* Effect.sync(() => {
+        if (emitAvailableCommands) {
+          setTimeout(() => {
+            Effect.runFork(
+              agent.client.sessionUpdate({
+                sessionId,
+                update: {
+                  sessionUpdate: "available_commands_update",
+                  availableCommands: availableCommands(),
+                },
+              }),
+            );
+          }, 0);
+        }
+        return {
+          sessionId,
+          modes: modeState(),
+          configOptions: configOptions(),
+        };
+      });
     }),
   );
 

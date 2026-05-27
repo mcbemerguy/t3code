@@ -2,8 +2,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
+  CustomAcpSettings,
   ModelSelection,
   OrchestrationReadModel,
   ProviderRuntimeEvent,
@@ -28,12 +30,14 @@ import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { deriveServerPaths, ServerConfig } from "../../config.ts";
 import { TextGenerationError } from "@t3tools/contracts";
 import { ProviderAdapterProcessError, ProviderAdapterRequestError } from "../../provider/Errors.ts";
+import { makeGenericAcpAdapter } from "../../provider/Layers/GenericAcpAdapter.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -64,6 +68,12 @@ const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asApprovalRequestId = (value: string): ApprovalRequestId => ApprovalRequestId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
+const decodeCustomAcpSettings = Schema.decodeSync(CustomAcpSettings);
+const customAcpDriver = ProviderDriverKind.make("customAcp");
+const customAcpPiLocalInstanceId = ProviderInstanceId.make("customAcp_piLocal");
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const mockAgentPath = path.join(__dirname, "../../../scripts/acp-mock-agent.ts");
+const bunExe = "bun";
 const customAcpStartupFailure = (detail = "Pi RPC process exited during startup") =>
   new ProviderAdapterProcessError({
     provider: "customAcp",
@@ -73,6 +83,26 @@ const customAcpStartupFailure = (detail = "Pi RPC process exited during startup"
 
 const deriveServerPathsSync = (baseDir: string, devUrl: URL | undefined) =>
   Effect.runSync(deriveServerPaths(baseDir, devUrl).pipe(Effect.provide(NodeServices.layer)));
+
+function envText(env: Record<string, string>): string {
+  return Object.entries(env)
+    .map(([key, value]) => `${key}=${value}`)
+    .join("\n");
+}
+
+function readJsonLines(filePath: string): Array<Record<string, unknown>> {
+  if (!fs.existsSync(filePath)) return [];
+  const raw = fs.readFileSync(filePath, "utf8");
+  return raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+function jsonRpcMethods(entries: ReadonlyArray<Record<string, unknown>>): ReadonlyArray<string> {
+  return entries.flatMap((entry) => (typeof entry.method === "string" ? [entry.method] : []));
+}
 
 async function waitFor(
   predicate: () => boolean | Promise<boolean>,
@@ -439,6 +469,348 @@ describe("ProviderCommandReactor", () => {
       drain,
     };
   }
+
+  async function createCustomAcpE2eHarness() {
+    const now = "2026-01-01T00:00:00.000Z";
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3code-acp-first-message-"));
+    createdBaseDirs.add(baseDir);
+    const projectRoot = path.join(baseDir, "project");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const { stateDir, attachmentsDir } = deriveServerPathsSync(baseDir, undefined);
+    createdStateDirs.add(stateDir);
+    fs.mkdirSync(attachmentsDir, { recursive: true });
+
+    const requestLog = path.join(baseDir, "acp-requests.jsonl");
+    const failureStatePath = path.join(baseDir, "session-new-failures.txt");
+    const attachmentId = "thread-1-00000000-0000-4000-8000-000000000001";
+    const imageBytes = Buffer.from("fake image binary payload");
+    const imageBase64 = imageBytes.toString("base64");
+    fs.writeFileSync(path.join(attachmentsDir, `${attachmentId}.png`), imageBytes);
+
+    const diagnostic = [
+      "Pi RPC process exited during startup before session/new could be sent.",
+      "process status: spawned=true, exited=true, closed=true, code=42, signal=null, closeCode=42, closeSignal=null",
+      "stderr tail: startup failed sentinel",
+    ].join(" | ");
+    const settings = decodeCustomAcpSettings({
+      command: bunExe,
+      args: mockAgentPath,
+      env: envText({
+        T3_ACP_REQUEST_LOG_PATH: requestLog,
+        T3_ACP_FAIL_CREATE_SESSION_COUNT: "3",
+        T3_ACP_FAIL_CREATE_SESSION_STATE_PATH: failureStatePath,
+        T3_ACP_FAIL_CREATE_SESSION_DETAIL: diagnostic,
+      }),
+    });
+
+    const providerServiceLayer = Layer.effect(
+      ProviderService,
+      Effect.gen(function* () {
+        const adapterScope = yield* Scope.make();
+        yield* Effect.addFinalizer(() => Scope.close(adapterScope, Exit.void).pipe(Effect.ignore));
+        const adapter = yield* makeGenericAcpAdapter(settings, {
+          instanceId: customAcpPiLocalInstanceId,
+        }).pipe(Scope.provide(adapterScope));
+        const service: ProviderServiceShape = {
+          startSession: (_threadId, input) => adapter.startSession(input),
+          sendTurn: (input) => adapter.sendTurn(input),
+          sendActiveTurnInput: (input) =>
+            adapter.sendActiveTurnInput?.(input) ?? Effect.succeed(false),
+          interruptTurn: (input) => adapter.interruptTurn(input.threadId, input.turnId),
+          respondToRequest: (input) =>
+            adapter.respondToRequest(input.threadId, input.requestId, input.decision),
+          respondToUserInput: (input) =>
+            adapter.respondToUserInput(input.threadId, input.requestId, input.answers),
+          stopSession: (input) => adapter.stopSession(input.threadId),
+          listSessions: () => adapter.listSessions(),
+          getCapabilities: () => Effect.succeed(adapter.capabilities),
+          getInstanceInfo: (instanceId) =>
+            Effect.succeed({
+              instanceId,
+              driverKind: customAcpDriver,
+              displayName: "Pi Local",
+              enabled: true,
+              continuationIdentity: {
+                driverKind: customAcpDriver,
+                continuationKey: `customAcp:instance:${instanceId}`,
+              },
+            }),
+          rollbackConversation: (input) =>
+            adapter.rollbackThread(input.threadId, input.numTurns).pipe(Effect.asVoid),
+          get streamEvents() {
+            return adapter.streamEvents;
+          },
+        };
+        return service;
+      }),
+    );
+
+    const orchestrationLayer = OrchestrationEngineLive.pipe(
+      Layer.provide(OrchestrationProjectionSnapshotQueryLive),
+      Layer.provide(OrchestrationProjectionPipelineLive),
+      Layer.provide(OrchestrationEventStoreLive),
+      Layer.provide(OrchestrationCommandReceiptRepositoryLive),
+      Layer.provide(RepositoryIdentityResolverLive),
+      Layer.provide(SqlitePersistenceMemory),
+    );
+    const projectionSnapshotLayer = OrchestrationProjectionSnapshotQueryLive.pipe(
+      Layer.provide(RepositoryIdentityResolverLive),
+      Layer.provide(SqlitePersistenceMemory),
+    );
+    const layer = ProviderCommandReactorLive.pipe(
+      Layer.provideMerge(orchestrationLayer),
+      Layer.provideMerge(projectionSnapshotLayer),
+      Layer.provideMerge(providerServiceLayer),
+      Layer.provideMerge(
+        Layer.mock(GitWorkflowService)({
+          renameBranch: () => Effect.succeed({ branch: "renamed-branch" }),
+        } satisfies Partial<GitWorkflowServiceShape>),
+      ),
+      Layer.provideMerge(
+        Layer.succeed(VcsStatusBroadcaster, {
+          getStatus: () => Effect.die("getStatus should not be called in this test"),
+          refreshLocalStatus: () =>
+            Effect.die("refreshLocalStatus should not be called in this test"),
+          refreshStatus: () =>
+            Effect.succeed({
+              isRepo: false,
+              hasPrimaryRemote: false,
+              isDefaultRef: false,
+              refName: null,
+              hasWorkingTreeChanges: false,
+              workingTree: { files: [], insertions: 0, deletions: 0 },
+              hasUpstream: false,
+              aheadCount: 0,
+              behindCount: 0,
+              pr: null,
+            }),
+          streamStatus: () => Stream.die("streamStatus should not be called in this test"),
+        }),
+      ),
+      Layer.provideMerge(
+        Layer.mock(TextGeneration, {
+          generateBranchName: () =>
+            Effect.fail(
+              new TextGenerationError({
+                operation: "generateBranchName",
+                detail: "disabled in test harness",
+              }),
+            ),
+          generateThreadTitle: () =>
+            Effect.fail(
+              new TextGenerationError({
+                operation: "generateThreadTitle",
+                detail: "disabled in test harness",
+              }),
+            ),
+        }),
+      ),
+      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(ServerConfig.layerTest(projectRoot, baseDir)),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    runtime = ManagedRuntime.make(layer);
+
+    const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
+    const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
+    const reactor = await runtime.runPromise(Effect.service(ProviderCommandReactor));
+    scope = await Effect.runPromise(Scope.make("sequential"));
+    await Effect.runPromise(reactor.start().pipe(Scope.provide(scope)));
+    const modelSelection = {
+      instanceId: customAcpPiLocalInstanceId,
+      model: "default",
+    };
+
+    await Effect.runPromise(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-project-create-custom-acp-e2e"),
+        projectId: asProjectId("project-custom-acp-e2e"),
+        title: "Provider Project",
+        workspaceRoot: projectRoot,
+        defaultModelSelection: modelSelection,
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-create-custom-acp-e2e"),
+        threadId: ThreadId.make("thread-1"),
+        projectId: asProjectId("project-custom-acp-e2e"),
+        title: "Thread",
+        modelSelection,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt: now,
+      }),
+    );
+
+    return {
+      engine,
+      readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
+      requestLog,
+      imageBase64,
+      attachment: {
+        type: "image" as const,
+        id: attachmentId,
+        name: "screenshot.png",
+        mimeType: "image/png",
+        sizeBytes: imageBytes.length,
+      },
+      now,
+      drain: () => Effect.runPromise(reactor.drain),
+    };
+  }
+
+  it("preserves a first image message across Custom ACP startup failure and retry", async () => {
+    const harness = await createCustomAcpE2eHarness();
+    const originalMessageId = asMessageId("user-message-custom-acp-e2e-original");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-custom-acp-e2e-original"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: originalMessageId,
+          role: "user",
+          text: "Inspect this screenshot before changing anything",
+          attachments: [harness.attachment],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: harness.now,
+      }),
+    );
+
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      const message = thread?.messages.find((entry) => entry.id === originalMessageId);
+      return message?.providerDelivery?.status === "failed";
+    }, 10_000);
+
+    const failedSnapshot = await harness.readModel();
+    const failedThread = failedSnapshot.threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    const failedMessage = failedThread?.messages.find((entry) => entry.id === originalMessageId);
+    const failedDelivery = failedMessage?.providerDelivery;
+    expect(failedDelivery).toMatchObject({
+      status: "failed",
+      provider: "customAcp",
+      method: "session/start",
+    });
+    if (failedDelivery?.status !== "failed") {
+      throw new Error("Expected original message delivery to be failed.");
+    }
+    expect(failedDelivery.detail).toContain("Pi RPC process exited during startup");
+    expect(failedDelivery.detail).toContain("code=42");
+    expect(failedDelivery.detail).toContain("stderr tail");
+    expect(failedDelivery.detail).toContain("startup failed sentinel");
+    expect(failedDelivery.detail).not.toContain(harness.imageBase64);
+    expect(failedMessage?.attachments).toEqual([harness.attachment]);
+    const failureActivity = failedThread?.activities.find(
+      (activity) => activity.kind === "provider.turn.start.failed",
+    );
+    expect(failureActivity).toMatchObject({
+      payload: {
+        messageId: originalMessageId,
+        provider: "customAcp",
+        method: "session/start",
+      },
+    });
+    const failurePayload = failureActivity?.payload as { readonly detail?: string } | undefined;
+    expect(failurePayload?.detail).not.toContain(harness.imageBase64);
+
+    const failedEntries = readJsonLines(harness.requestLog);
+    expect(jsonRpcMethods(failedEntries).filter((method) => method === "session/new")).toHaveLength(
+      3,
+    );
+    expect(jsonRpcMethods(failedEntries)).not.toContain("session/prompt");
+
+    await expect(
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-custom-acp-e2e-placeholder"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("user-message-custom-acp-e2e-placeholder"),
+            role: "user",
+            text: "go",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: harness.now,
+        }),
+      ),
+    ).rejects.toThrow("has not been delivered to the provider");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.user.retry-delivery",
+        commandId: CommandId.make("cmd-retry-custom-acp-e2e-original"),
+        threadId: ThreadId.make("thread-1"),
+        messageId: originalMessageId,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        createdAt: harness.now,
+      }),
+    );
+
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      const message = thread?.messages.find((entry) => entry.id === originalMessageId);
+      return message?.providerDelivery?.status === "delivered";
+    }, 5000);
+    await harness.drain();
+
+    const deliveredSnapshot = await harness.readModel();
+    const deliveredThread = deliveredSnapshot.threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    const deliveredMessage = deliveredThread?.messages.find(
+      (entry) => entry.id === originalMessageId,
+    );
+    expect(deliveredThread?.messages.filter((entry) => entry.role === "user")).toHaveLength(1);
+    expect(deliveredMessage?.text).toBe("Inspect this screenshot before changing anything");
+    expect(deliveredMessage?.attachments).toEqual([harness.attachment]);
+    expect(deliveredMessage?.providerDelivery).toMatchObject({
+      status: "delivered",
+      attempt: 2,
+    });
+
+    const deliveredEntries = readJsonLines(harness.requestLog);
+    const deliveredMethods = jsonRpcMethods(deliveredEntries);
+    const promptIndex = deliveredMethods.indexOf("session/prompt");
+    expect(deliveredMethods.filter((method) => method === "session/new")).toHaveLength(4);
+    expect(promptIndex).toBeGreaterThan(deliveredMethods.lastIndexOf("session/new"));
+    expect(deliveredMethods.filter((method) => method === "session/prompt")).toHaveLength(1);
+
+    const promptEntry = deliveredEntries.find((entry) => entry.method === "session/prompt");
+    const promptParams = promptEntry?.params as
+      | { prompt?: ReadonlyArray<Record<string, unknown>> }
+      | undefined;
+    const prompt = promptParams?.prompt ?? [];
+    expect(prompt).toContainEqual({
+      type: "text",
+      text: "Inspect this screenshot before changing anything",
+    });
+    expect(prompt).not.toContainEqual({ type: "text", text: "go" });
+    expect(
+      prompt.some(
+        (part) =>
+          part.type === "image" &&
+          part.mimeType === "image/png" &&
+          part.data === harness.imageBase64,
+      ),
+    ).toBe(true);
+  });
 
   it("reacts to thread.turn.start by ensuring session and sending provider turn", async () => {
     const harness = await createHarness();
