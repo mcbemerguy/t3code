@@ -95,6 +95,7 @@ interface GenericAcpSessionContext {
   lastPlanFingerprint: string | undefined;
   activeTurnId: TurnId | undefined;
   piSteeringMethod: string | undefined;
+  readonly completedTurnIds: Set<TurnId>;
   readonly forceCompletedTurnIds: Set<TurnId>;
   stopped: boolean;
 }
@@ -250,8 +251,9 @@ export function makeGenericAcpAdapter(
       payload: { readonly state: "cancelled"; readonly stopReason: string | null },
     ) =>
       Effect.gen(function* () {
-        if (ctx.forceCompletedTurnIds.has(turnId)) return;
+        if (ctx.completedTurnIds.has(turnId)) return;
         ctx.activeTurnId = undefined;
+        ctx.completedTurnIds.add(turnId);
         ctx.forceCompletedTurnIds.add(turnId);
         const { activeTurnId: _activeTurnId, ...sessionWithoutActiveTurn } = ctx.session;
         void _activeTurnId;
@@ -589,6 +591,7 @@ export function makeGenericAcpAdapter(
             lastPlanFingerprint: undefined,
             activeTurnId: undefined,
             piSteeringMethod: started.piSteeringMethod,
+            completedTurnIds: new Set(),
             forceCompletedTurnIds: new Set(),
             stopped: false,
           };
@@ -789,10 +792,10 @@ export function makeGenericAcpAdapter(
             mapAcpToAdapterError(provider, input.threadId, "session/prompt", error),
           ),
           Effect.catch((error) =>
-            ctx.forceCompletedTurnIds.delete(turnId) ? Effect.void : Effect.fail(error),
+            ctx.completedTurnIds.has(turnId) ? Effect.void : Effect.fail(error),
           ),
         );
-        if (result === undefined || ctx.forceCompletedTurnIds.delete(turnId)) {
+        if (result === undefined || ctx.completedTurnIds.has(turnId)) {
           return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
         }
 
@@ -802,6 +805,7 @@ export function makeGenericAcpAdapter(
         void _activeTurnId;
         ctx.session = { ...sessionWithoutActiveTurn, updatedAt: yield* nowIso, model };
 
+        ctx.completedTurnIds.add(turnId);
         const promptUsage = normalizeAcpPromptUsage(result.usage);
         if (promptUsage) {
           ctx.latestTokenUsage = mergeAcpTokenUsageSnapshot(ctx.latestTokenUsage, promptUsage);
@@ -886,7 +890,7 @@ export function makeGenericAcpAdapter(
           ),
         ).pipe(Effect.timeoutOption(Duration.millis(ACP_CANCEL_TIMEOUT_MS)));
 
-        if (interruptedTurnId && !ctx.forceCompletedTurnIds.has(interruptedTurnId)) {
+        if (interruptedTurnId && !ctx.completedTurnIds.has(interruptedTurnId)) {
           yield* completeTurnLocally(ctx, interruptedTurnId, {
             state: "cancelled",
             stopReason: Option.isSome(cancelResult)

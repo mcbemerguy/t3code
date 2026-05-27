@@ -519,6 +519,50 @@ describe("Custom ACP provider", () => {
 
       const completedEvent = yield* Deferred.await(completed);
       assert.equal(completedEvent.payload.state, "cancelled");
+      yield* Effect.yieldNow;
+      assert.equal(completedCount, 1);
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("does not duplicate cancelled completion after a late explicit interrupt", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({ T3_ACP_PROMPT_STOP_REASON_CANCELLED: "1" }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-late-cancel-interrupt");
+      const completed =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>>();
+      let completedCount = 0;
+
+      yield* Stream.runForEach(adapter.streamEvents, (event) => {
+        if (event.threadId !== threadId || event.type !== "turn.completed") {
+          return Effect.void;
+        }
+        completedCount += 1;
+        return Deferred.succeed(completed, event).pipe(Effect.ignore);
+      }).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const result = yield* adapter.sendTurn({
+        threadId,
+        input: "cancel normally",
+        attachments: [],
+      });
+      const completedEvent = yield* Deferred.await(completed);
+      assert.equal(completedEvent.payload.state, "cancelled");
+
+      yield* adapter.interruptTurn(threadId, result.turnId);
+      yield* Effect.yieldNow;
+
       assert.equal(completedCount, 1);
       yield* adapter.stopSession(threadId);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),

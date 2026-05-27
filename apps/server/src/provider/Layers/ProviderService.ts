@@ -744,11 +744,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "provider.turn_id": input.turnId,
         });
         yield* routed.adapter.interruptTurn(routed.threadId, input.turnId);
+        const sessionStillActive = yield* routed.adapter.hasSession(routed.threadId);
         yield* directory.upsert({
           threadId: input.threadId,
           provider: routed.adapter.provider,
           providerInstanceId: routed.instanceId,
-          status: "running",
+          status: sessionStillActive ? "running" : "stopped",
           runtimePayload: {
             activeTurnId: null,
             lastRuntimeEvent: "provider.interruptTurn",
