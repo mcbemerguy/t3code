@@ -1,5 +1,6 @@
 import {
   ApprovalRequestId,
+  type ChatAttachment,
   type CustomAcpSettings,
   EventId,
   type ProviderApprovalDecision,
@@ -85,6 +86,7 @@ interface GenericAcpSessionContext {
   session: ProviderSession;
   readonly scope: Scope.Closeable;
   readonly acp: AcpSessionRuntimeShape;
+  readonly acpSessionId: string;
   notificationFiber: Fiber.Fiber<void, never> | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
   readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
@@ -92,6 +94,7 @@ interface GenericAcpSessionContext {
   latestTokenUsage: ThreadTokenUsageSnapshot | undefined;
   lastPlanFingerprint: string | undefined;
   activeTurnId: TurnId | undefined;
+  piSteeringMethod: string | undefined;
   readonly forceCompletedTurnIds: Set<TurnId>;
   stopped: boolean;
 }
@@ -290,6 +293,48 @@ export function makeGenericAcpAdapter(
             rawPayload,
           }),
         );
+      });
+
+    const buildPromptParts = (input: {
+      readonly input?: string;
+      readonly attachments?: ReadonlyArray<ChatAttachment>;
+      readonly method: string;
+    }) =>
+      Effect.gen(function* () {
+        const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
+        if (input.input?.trim()) promptParts.push({ type: "text", text: input.input.trim() });
+        if (input.attachments && input.attachments.length > 0) {
+          for (const attachment of input.attachments) {
+            const attachmentPath = resolveAttachmentPath({
+              attachmentsDir: serverConfig.attachmentsDir,
+              attachment,
+            });
+            if (!attachmentPath) {
+              return yield* new ProviderAdapterRequestError({
+                provider,
+                method: input.method,
+                detail: `Invalid attachment id '${attachment.id}'.`,
+              });
+            }
+            const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapterRequestError({
+                    provider,
+                    method: input.method,
+                    detail: cause.message,
+                    cause,
+                  }),
+              ),
+            );
+            promptParts.push({
+              type: "image",
+              data: Buffer.from(bytes).toString("base64"),
+              mimeType: attachment.mimeType,
+            });
+          }
+        }
+        return promptParts;
       });
 
     const requireSession = (
@@ -534,6 +579,7 @@ export function makeGenericAcpAdapter(
             session,
             scope: sessionScope,
             acp,
+            acpSessionId: started.sessionId,
             notificationFiber: undefined,
             pendingApprovals,
             pendingUserInputs,
@@ -541,6 +587,7 @@ export function makeGenericAcpAdapter(
             latestTokenUsage: undefined,
             lastPlanFingerprint: undefined,
             activeTurnId: undefined,
+            piSteeringMethod: started.piSteeringMethod,
             forceCompletedTurnIds: new Set(),
             stopped: false,
           };
@@ -722,39 +769,11 @@ export function makeGenericAcpAdapter(
           payload: { model: model ?? "default" },
         });
 
-        const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
-        if (input.input?.trim()) promptParts.push({ type: "text", text: input.input.trim() });
-        if (input.attachments && input.attachments.length > 0) {
-          for (const attachment of input.attachments) {
-            const attachmentPath = resolveAttachmentPath({
-              attachmentsDir: serverConfig.attachmentsDir,
-              attachment,
-            });
-            if (!attachmentPath) {
-              return yield* new ProviderAdapterRequestError({
-                provider,
-                method: "session/prompt",
-                detail: `Invalid attachment id '${attachment.id}'.`,
-              });
-            }
-            const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProviderAdapterRequestError({
-                    provider,
-                    method: "session/prompt",
-                    detail: cause.message,
-                    cause,
-                  }),
-              ),
-            );
-            promptParts.push({
-              type: "image",
-              data: Buffer.from(bytes).toString("base64"),
-              mimeType: attachment.mimeType,
-            });
-          }
-        }
+        const promptParts = yield* buildPromptParts({
+          ...(input.input !== undefined ? { input: input.input } : {}),
+          ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
+          method: "session/prompt",
+        });
 
         if (promptParts.length === 0) {
           return yield* new ProviderAdapterValidationError({
@@ -813,6 +832,40 @@ export function makeGenericAcpAdapter(
         });
 
         return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
+      });
+
+    const sendActiveTurnInput: NonNullable<
+      ProviderAdapterShape<ProviderAdapterError>["sendActiveTurnInput"]
+    > = (input) =>
+      Effect.gen(function* () {
+        const ctx = yield* requireSession(input.threadId);
+        if (!ctx.activeTurnId || ctx.activeTurnId !== input.turnId || !ctx.piSteeringMethod) {
+          return false;
+        }
+        const promptParts = yield* buildPromptParts({
+          ...(input.input !== undefined ? { input: input.input } : {}),
+          ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
+          method: ctx.piSteeringMethod,
+        });
+        if (promptParts.length === 0) {
+          return yield* new ProviderAdapterValidationError({
+            provider,
+            operation: "sendActiveTurnInput",
+            issue: "Active-turn input requires non-empty text or attachments.",
+          });
+        }
+        yield* ctx.acp
+          .request(ctx.piSteeringMethod, {
+            sessionId: ctx.acpSessionId,
+            prompt: promptParts,
+            mode: "steer",
+          })
+          .pipe(
+            Effect.mapError((error) =>
+              mapAcpToAdapterError(provider, input.threadId, ctx.piSteeringMethod!, error),
+            ),
+          );
+        return true;
       });
 
     const interruptTurn: ProviderAdapterShape<ProviderAdapterError>["interruptTurn"] = (
@@ -948,6 +1001,7 @@ export function makeGenericAcpAdapter(
       capabilities: { sessionModelSwitch: "in-session" },
       startSession,
       sendTurn,
+      sendActiveTurnInput,
       interruptTurn,
       readThread,
       rollbackThread,

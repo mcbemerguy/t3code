@@ -241,6 +241,7 @@ describe("Custom ACP external session import", () => {
               updatedAt: now,
             } satisfies ProviderSession);
           },
+          sendActiveTurnInput: () => Effect.die("unused"),
           sendTurn: () => Effect.die("unused"),
           interruptTurn: () => Effect.die("unused"),
           respondToRequest: () => Effect.die("unused"),
@@ -311,6 +312,7 @@ describe("Custom ACP external session import", () => {
               createdAt: now,
               updatedAt: now,
             } satisfies ProviderSession),
+          sendActiveTurnInput: () => Effect.die("unused"),
           sendTurn: () => Effect.die("unused"),
           interruptTurn: () => Effect.die("unused"),
           respondToRequest: () => Effect.die("unused"),

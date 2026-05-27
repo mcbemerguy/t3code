@@ -14,6 +14,7 @@ import type {
   ProviderUserInputAnswers,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
+  ProviderActiveTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
   ThreadId,
@@ -62,6 +63,8 @@ export interface ProviderAdapterShape<TError> {
   readonly sendTurn: (
     input: ProviderSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, TError>;
+
+  readonly sendActiveTurnInput?: (input: ProviderActiveTurnInput) => Effect.Effect<boolean, TError>;
 
   /**
    * Interrupt an active turn.

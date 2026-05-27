@@ -142,6 +142,7 @@ describe("ProviderCommandReactor", () => {
     readonly baseDir?: string;
     readonly threadModelSelection?: ModelSelection;
     readonly sessionModelSwitch?: "unsupported" | "in-session";
+    readonly sendActiveTurnInput?: ProviderServiceShape["sendActiveTurnInput"];
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir = input?.baseDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "t3code-reactor-"));
@@ -285,6 +286,9 @@ describe("ProviderCommandReactor", () => {
     const service: ProviderServiceShape = {
       startSession: startSession as ProviderServiceShape["startSession"],
       sendTurn: sendTurn as ProviderServiceShape["sendTurn"],
+      sendActiveTurnInput:
+        input?.sendActiveTurnInput ??
+        ((() => Effect.succeed(false)) as ProviderServiceShape["sendActiveTurnInput"]),
       interruptTurn: interruptTurn as ProviderServiceShape["interruptTurn"],
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
@@ -400,6 +404,7 @@ describe("ProviderCommandReactor", () => {
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
       startSession,
       sendTurn,
+      sendActiveTurnInput: service.sendActiveTurnInput,
       interruptTurn,
       respondToRequest,
       respondToUserInput,
@@ -451,6 +456,68 @@ describe("ProviderCommandReactor", () => {
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
+  });
+
+  it("routes mid-turn input to active-turn provider input without starting a new turn", async () => {
+    const activeTurnId = asTurnId("turn-active");
+    const sendActiveTurnInput = vi.fn<ProviderServiceShape["sendActiveTurnInput"]>(() =>
+      Effect.succeed(true),
+    );
+    const harness = await createHarness({ sendActiveTurnInput });
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-running"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: ProviderDriverKind.make("customAcp"),
+          providerInstanceId: ProviderInstanceId.make("customAcp"),
+          runtimeMode: "approval-required",
+          activeTurnId,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-active-turn-input"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-steer"),
+          role: "user",
+          text: "actually do the other thing",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => sendActiveTurnInput.mock.calls.length === 1);
+    await harness.drain();
+
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+    expect(sendActiveTurnInput.mock.calls[0]?.[0]).toMatchObject({
+      threadId: ThreadId.make("thread-1"),
+      turnId: activeTurnId,
+      input: "actually do the other thing",
+    });
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    const message = thread?.messages.find(
+      (entry) => entry.id === asMessageId("user-message-steer"),
+    );
+    expect(message?.turnId).toBe(activeTurnId);
+    expect(thread?.session?.activeTurnId).toBe(activeTurnId);
   });
 
   it("generates a thread title on the first turn", async () => {

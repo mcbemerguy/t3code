@@ -694,6 +694,15 @@ const ThreadSessionSetCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadMessageUserAttachToTurnCommand = Schema.Struct({
+  type: Schema.Literal("thread.message.user.attach-to-turn"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  turnId: TurnId,
+  createdAt: IsoDateTime,
+});
+
 const ThreadMessageAssistantDeltaCommand = Schema.Struct({
   type: Schema.Literal("thread.message.assistant.delta"),
   commandId: CommandId,
@@ -753,6 +762,7 @@ const ThreadRevertCompleteCommand = Schema.Struct({
 
 const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
+  ThreadMessageUserAttachToTurnCommand,
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
   ThreadProposedPlanUpsertCommand,

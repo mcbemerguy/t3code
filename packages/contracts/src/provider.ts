@@ -77,6 +77,18 @@ export const ProviderSendTurnInput = Schema.Struct({
 });
 export type ProviderSendTurnInput = typeof ProviderSendTurnInput.Type;
 
+export const ProviderActiveTurnInput = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+  input: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS)),
+  ),
+  attachments: Schema.optional(
+    Schema.Array(ChatAttachment).check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS)),
+  ),
+});
+export type ProviderActiveTurnInput = typeof ProviderActiveTurnInput.Type;
+
 export const ProviderTurnStartResult = Schema.Struct({
   threadId: ThreadId,
   turnId: TurnId,

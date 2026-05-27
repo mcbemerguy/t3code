@@ -16,6 +16,7 @@ import {
   ProviderInterruptTurnInput,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
+  ProviderActiveTurnInput,
   ProviderSendTurnInput,
   ProviderSessionStartInput,
   ProviderStopSessionInput,
@@ -695,6 +696,32 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  const sendActiveTurnInput: ProviderServiceShape["sendActiveTurnInput"] = Effect.fn(
+    "sendActiveTurnInput",
+  )(function* (rawInput) {
+    const parsed = yield* decodeInputOrValidationError({
+      operation: "ProviderService.sendActiveTurnInput",
+      schema: ProviderActiveTurnInput,
+      payload: rawInput,
+    });
+    const input = { ...parsed, attachments: parsed.attachments ?? [] };
+    if (!input.input && input.attachments.length === 0) {
+      return yield* toValidationError(
+        "ProviderService.sendActiveTurnInput",
+        "Either input text or at least one attachment is required",
+      );
+    }
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.sendActiveTurnInput",
+      allowRecovery: false,
+    });
+    if (!routed.adapter.sendActiveTurnInput) {
+      return false;
+    }
+    return yield* routed.adapter.sendActiveTurnInput(input);
+  });
+
   const interruptTurn: ProviderServiceShape["interruptTurn"] = Effect.fn("interruptTurn")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -1035,6 +1062,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   return {
     startSession,
     sendTurn,
+    sendActiveTurnInput,
     interruptTurn,
     respondToRequest,
     respondToUserInput,

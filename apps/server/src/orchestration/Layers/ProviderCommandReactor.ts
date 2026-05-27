@@ -699,6 +699,27 @@ const make = Effect.gen(function* () {
       return;
     }
 
+    const activeTurnId = thread.session?.activeTurnId ?? null;
+    if (activeTurnId && thread.session?.status === "running") {
+      const accepted = yield* providerService.sendActiveTurnInput({
+        threadId: event.payload.threadId,
+        turnId: activeTurnId,
+        input: message.text,
+        ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+      });
+      if (accepted) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.message.user.attach-to-turn",
+          commandId: serverCommandId("active-turn-input-message-bind"),
+          threadId: event.payload.threadId,
+          messageId: event.payload.messageId,
+          turnId: activeTurnId,
+          createdAt: event.payload.createdAt,
+        });
+        return;
+      }
+    }
+
     const isFirstUserMessageTurn =
       thread.messages.filter((entry) => entry.role === "user").length === 1;
     if (isFirstUserMessageTurn) {

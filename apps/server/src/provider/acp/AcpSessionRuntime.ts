@@ -32,6 +32,21 @@ function formatConfigOptionValue(value: string | boolean): string {
   return JSON.stringify(value);
 }
 
+function extractPiSteeringMethod(response: EffectAcpSchema.InitializeResponse): string | undefined {
+  const meta = response._meta;
+  if (!isRecord(meta)) return undefined;
+  const piAcp = meta.piAcp;
+  if (!isRecord(piAcp)) return undefined;
+  if (piAcp.steering !== true) return undefined;
+  return typeof piAcp.steeringMethod === "string" && piAcp.steeringMethod.trim()
+    ? piAcp.steeringMethod.trim()
+    : "_pi/steer";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export interface AcpSpawnInput {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
@@ -74,6 +89,7 @@ export interface AcpSessionRuntimeStartResult {
     | EffectAcpSchema.NewSessionResponse
     | EffectAcpSchema.ResumeSessionResponse;
   readonly modelConfigId: string | undefined;
+  readonly piSteeringMethod: string | undefined;
 }
 
 export interface AcpSessionRuntimeShape {
@@ -471,6 +487,7 @@ const makeAcpSessionRuntime = (
         initializeResult,
         sessionSetupResult,
         modelConfigId: extractModelConfigId(sessionSetupResult),
+        piSteeringMethod: extractPiSteeringMethod(initializeResult),
       } satisfies AcpStartedState;
       return nextState;
     });

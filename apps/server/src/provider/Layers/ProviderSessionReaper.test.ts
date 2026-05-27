@@ -153,6 +153,7 @@ describe("ProviderSessionReaper", () => {
     const providerService: ProviderServiceShape = {
       startSession: () => unsupported(),
       sendTurn: () => unsupported(),
+      sendActiveTurnInput: () => unsupported(),
       interruptTurn: () => unsupported(),
       respondToRequest: () => unsupported(),
       respondToUserInput: () => unsupported(),
