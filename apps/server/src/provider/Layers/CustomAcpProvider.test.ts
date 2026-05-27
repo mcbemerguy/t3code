@@ -444,12 +444,19 @@ describe("Custom ACP provider", () => {
       const threadId = ThreadId.make("custom-acp-stale-ask-question");
       const requested =
         yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "user-input.requested" }>>();
+      const resolved =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "user-input.resolved" }>>();
 
-      yield* Stream.runForEach(adapter.streamEvents, (event) =>
-        event.threadId === threadId && event.type === "user-input.requested"
-          ? Deferred.succeed(requested, event).pipe(Effect.ignore)
-          : Effect.void,
-      ).pipe(Effect.forkChild);
+      yield* Stream.runForEach(adapter.streamEvents, (event) => {
+        if (event.threadId !== threadId) return Effect.void;
+        if (event.type === "user-input.requested") {
+          return Deferred.succeed(requested, event).pipe(Effect.ignore);
+        }
+        if (event.type === "user-input.resolved") {
+          return Deferred.succeed(resolved, event).pipe(Effect.ignore);
+        }
+        return Effect.void;
+      }).pipe(Effect.forkChild);
 
       yield* adapter.startSession({
         threadId,
@@ -463,6 +470,9 @@ describe("Custom ACP provider", () => {
       const request = yield* Deferred.await(requested);
       yield* adapter.interruptTurn(threadId);
       yield* Fiber.await(turnFiber);
+      const resolvedEvent = yield* Deferred.await(resolved);
+      assert.isDefined(request.turnId);
+      assert.equal(resolvedEvent.turnId, request.turnId);
 
       const late = yield* adapter
         .respondToUserInput(threadId, ApprovalRequestId.make(String(request.requestId)), {
@@ -489,7 +499,10 @@ describe("Custom ACP provider", () => {
         { instanceId: customAcpInstanceId },
       );
       const threadId = ThreadId.make("custom-acp-cancelled-prompt-failure");
-      const requested = yield* Deferred.make<ProviderRuntimeEvent>();
+      const requested =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "request.opened" }>>();
+      const resolved =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "request.resolved" }>>();
       const completed =
         yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>>();
       let completedCount = 0;
@@ -498,6 +511,9 @@ describe("Custom ACP provider", () => {
         if (event.threadId !== threadId) return Effect.void;
         if (event.type === "request.opened") {
           return Deferred.succeed(requested, event).pipe(Effect.ignore);
+        }
+        if (event.type === "request.resolved") {
+          return Deferred.succeed(resolved, event).pipe(Effect.ignore);
         }
         if (event.type === "turn.completed") {
           completedCount += 1;
@@ -516,10 +532,13 @@ describe("Custom ACP provider", () => {
         .sendTurn({ threadId, input: "needs approval", attachments: [] })
         .pipe(Effect.forkChild);
 
-      yield* Deferred.await(requested);
+      const openedEvent = yield* Deferred.await(requested);
       yield* adapter.interruptTurn(threadId);
       yield* Fiber.join(turnFiber);
 
+      const resolvedEvent = yield* Deferred.await(resolved);
+      assert.isDefined(openedEvent.turnId);
+      assert.equal(resolvedEvent.turnId, openedEvent.turnId);
       const completedEvent = yield* Deferred.await(completed);
       assert.equal(completedEvent.payload.state, "cancelled");
       yield* Effect.yieldNow;

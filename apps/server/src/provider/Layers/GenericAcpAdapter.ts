@@ -469,13 +469,14 @@ export function makeGenericAcpAdapter(
                   const requestId = ApprovalRequestId.make(crypto.randomUUID());
                   const runtimeRequestId = RuntimeRequestId.make(requestId);
                   const answers = yield* Deferred.make<ProviderUserInputAnswers>();
+                  const requestTurnId = ctx?.activeTurnId;
                   pendingUserInputs.set(requestId, { answers });
                   yield* offerRuntimeEvent({
                     type: "user-input.requested",
                     ...(yield* makeEventStamp()),
                     provider,
                     threadId: input.threadId,
-                    turnId: ctx?.activeTurnId,
+                    turnId: requestTurnId,
                     requestId: runtimeRequestId,
                     payload: { questions: extractAskQuestions(params) },
                     raw: { source: extensionSource, method: askQuestionMethod, payload: params },
@@ -487,7 +488,7 @@ export function makeGenericAcpAdapter(
                     ...(yield* makeEventStamp()),
                     provider,
                     threadId: input.threadId,
-                    turnId: ctx?.activeTurnId,
+                    turnId: requestTurnId,
                     requestId: runtimeRequestId,
                     payload: { answers: resolved },
                   });
@@ -516,13 +517,14 @@ export function makeGenericAcpAdapter(
                 const requestId = ApprovalRequestId.make(crypto.randomUUID());
                 const runtimeRequestId = RuntimeRequestId.make(requestId);
                 const decision = yield* Deferred.make<ProviderApprovalDecision>();
+                const requestTurnId = ctx?.activeTurnId;
                 pendingApprovals.set(requestId, { decision, kind: permissionRequest.kind });
                 yield* offerRuntimeEvent(
                   makeAcpRequestOpenedEvent({
                     stamp: yield* makeEventStamp(),
                     provider,
                     threadId: input.threadId,
-                    turnId: ctx?.activeTurnId,
+                    turnId: requestTurnId,
                     requestId: runtimeRequestId,
                     permissionRequest,
                     detail:
@@ -542,7 +544,7 @@ export function makeGenericAcpAdapter(
                     stamp: yield* makeEventStamp(),
                     provider,
                     threadId: input.threadId,
-                    turnId: ctx?.activeTurnId,
+                    turnId: requestTurnId,
                     requestId: runtimeRequestId,
                     permissionRequest,
                     decision: resolved,
