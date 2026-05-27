@@ -20,12 +20,14 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
 import { CustomAcpDriver } from "../Drivers/CustomAcpDriver.ts";
@@ -633,6 +635,7 @@ describe("Custom ACP provider", () => {
           env: envText({
             T3_ACP_EMIT_TOOL_CALLS: "1",
             T3_ACP_FAIL_PROMPT_AFTER_CANCEL: "1",
+            T3_ACP_HANG_CANCEL: "1",
           }),
         }),
         { instanceId: customAcpInstanceId },
@@ -663,6 +666,60 @@ describe("Custom ACP provider", () => {
 
       assert.equal(yield* adapter.hasSession(threadId), true);
       yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("force-stops only after a hung cancel leaves the prompt unsettled past grace", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({
+            T3_ACP_HANG_CANCEL: "1",
+            T3_ACP_HANG_PROMPT: "1",
+          }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-cancel-watchdog-hung");
+      const turnStarted = yield* Deferred.make<ProviderRuntimeEvent>();
+      const completed =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>>();
+
+      yield* Stream.runForEach(adapter.streamEvents, (event) => {
+        if (event.threadId !== threadId) return Effect.void;
+        if (event.type === "turn.started") {
+          return Deferred.succeed(turnStarted, event).pipe(Effect.ignore);
+        }
+        if (event.type === "turn.completed") {
+          return Deferred.succeed(completed, event).pipe(Effect.ignore);
+        }
+        return Effect.void;
+      }).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      yield* adapter.sendTurn({ threadId, input: "hang", attachments: [] }).pipe(Effect.forkChild);
+
+      yield* Deferred.await(turnStarted);
+      const interruptResult = yield* adapter
+        .interruptTurn(threadId)
+        .pipe(Effect.timeoutOption(Duration.millis(1_000)));
+      assert.equal(interruptResult._tag, "Some");
+      const completedEvent = yield* Deferred.await(completed).pipe(
+        Effect.timeoutOption(Duration.millis(1_000)),
+      );
+      assert.equal(completedEvent._tag, "Some");
+      if (completedEvent._tag === "Some") {
+        assert.equal(completedEvent.value.payload.state, "cancelled");
+      }
+      assert.equal(yield* adapter.hasSession(threadId), true);
+
+      yield* TestClock.adjust(Duration.millis(2_800));
+      assert.equal(yield* adapter.hasSession(threadId), false);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 

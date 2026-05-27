@@ -31,6 +31,9 @@ const enableSessionList = process.env.T3_ACP_ENABLE_SESSION_LIST === "1";
 const enablePiSteering = process.env.T3_ACP_ENABLE_PI_STEERING === "1";
 const failLoadSession = process.env.T3_ACP_FAIL_LOAD_SESSION === "1";
 const failPromptAfterCancel = process.env.T3_ACP_FAIL_PROMPT_AFTER_CANCEL === "1";
+const hangCancel = process.env.T3_ACP_HANG_CANCEL === "1";
+const hangPrompt = process.env.T3_ACP_HANG_PROMPT === "1";
+const hangPromptAfterCancel = process.env.T3_ACP_HANG_PROMPT_AFTER_CANCEL === "1";
 const promptStopReasonCancelled = process.env.T3_ACP_PROMPT_STOP_REASON_CANCELLED === "1";
 const listExtraCwd = process.env.T3_ACP_LIST_EXTRA_CWD;
 const sessionId = "mock-session-1";
@@ -394,14 +397,20 @@ const program = Effect.gen(function* () {
   );
 
   yield* agent.handleCancel(({ sessionId }) =>
-    Effect.sync(() => {
-      cancelledSessions.add(String(sessionId ?? "mock-session-1"));
-    }),
+    hangCancel
+      ? Effect.never
+      : Effect.sync(() => {
+          cancelledSessions.add(String(sessionId ?? "mock-session-1"));
+        }),
   );
 
   yield* agent.handlePrompt((request) =>
     Effect.gen(function* () {
       const requestedSessionId = String(request.sessionId ?? sessionId);
+
+      if (hangPrompt) {
+        return yield* Effect.never;
+      }
 
       if (emitAvailableCommandsOnPrompt) {
         yield* agent.client.sessionUpdate({
@@ -516,6 +525,10 @@ const program = Effect.gen(function* () {
         const cancelled =
           cancelledSessions.delete(requestedSessionId) ||
           permission.outcome.outcome === "cancelled";
+
+        if (cancelled && hangPromptAfterCancel) {
+          return yield* Effect.never;
+        }
 
         if (cancelled && failPromptAfterCancel) {
           return yield* AcpError.AcpRequestError.invalidParams("Mock prompt failed after cancel", {

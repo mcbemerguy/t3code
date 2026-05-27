@@ -74,6 +74,12 @@ const claudeAgentInstanceId = ProviderInstanceId.make("claudeAgent");
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_AGENT_DRIVER = ProviderDriverKind.make("claudeAgent");
 const CURSOR_DRIVER = ProviderDriverKind.make("cursor");
+const strictCustomAcpResumeCursor = {
+  schemaVersion: 1,
+  provider: ProviderDriverKind.make("customAcp"),
+  sessionId: "pi-session-1",
+  requireSessionLoad: true,
+};
 
 type LegacyProviderRuntimeEvent = {
   readonly type: string;
@@ -1064,12 +1070,14 @@ routing.layer("ProviderServiceLive routing", (it) => {
   it.effect("recovers stale sessions for sendTurn using persisted cwd", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;
+      const runtimeRepository = yield* ProviderSessionRuntimeRepository;
 
       const initial = yield* provider.startSession(asThreadId("thread-1"), {
         provider: ProviderDriverKind.make("codex"),
         providerInstanceId: codexInstanceId,
         threadId: asThreadId("thread-1"),
         cwd: "/tmp/project-send-turn",
+        resumeCursor: strictCustomAcpResumeCursor,
         runtimeMode: "full-access",
       });
 
@@ -1099,6 +1107,16 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(startPayload.threadId, initial.threadId);
       }
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+      const persistedAfterRecoverySend = yield* runtimeRepository.getByThreadId({
+        threadId: initial.threadId,
+      });
+      assert.equal(Option.isSome(persistedAfterRecoverySend), true);
+      if (Option.isSome(persistedAfterRecoverySend)) {
+        assert.deepEqual(
+          persistedAfterRecoverySend.value.resumeCursor,
+          strictCustomAcpResumeCursor,
+        );
+      }
     }),
   );
 
@@ -1190,6 +1208,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
         provider: ProviderDriverKind.make("codex"),
         providerInstanceId: codexInstanceId,
         threadId,
+        resumeCursor: strictCustomAcpResumeCursor,
         runtimeMode: "full-access",
       });
       yield* provider.sendTurn({
@@ -1230,6 +1249,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
       assert.equal(Option.isSome(interruptedRuntime), true);
       if (Option.isSome(interruptedRuntime)) {
         assert.equal(interruptedRuntime.value.status, "running");
+        assert.deepEqual(interruptedRuntime.value.resumeCursor, strictCustomAcpResumeCursor);
         const payload = interruptedRuntime.value.runtimePayload;
         assert.equal(payload !== null && typeof payload === "object", true);
         if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {

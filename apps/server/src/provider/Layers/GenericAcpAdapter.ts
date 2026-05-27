@@ -69,7 +69,6 @@ import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogg
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
 const CUSTOM_ACP_PROVIDER = ProviderDriverKind.make("customAcp");
 const CUSTOM_ACP_RESUME_VERSION = 1 as const;
-const ACP_CANCEL_TIMEOUT_MS = 5_000;
 const ACP_CANCEL_WATCHDOG_GRACE_MS = 2_500;
 
 interface PendingApproval {
@@ -132,7 +131,8 @@ function parseCustomAcpResume(
   return { sessionId: raw.sessionId.trim(), requireResumeSession: raw.requireSessionLoad === true };
 }
 
-function hasPiAcpMetadata(raw: unknown): boolean {
+function requiresStrictPiAcpResume(raw: unknown, piSteeringMethod: string | undefined): boolean {
+  if (piSteeringMethod !== undefined) return true;
   if (!isRecord(raw)) return false;
   const agentCapabilities = raw.agentCapabilities;
   return (
@@ -585,7 +585,9 @@ export function makeGenericAcpAdapter(
               schemaVersion: CUSTOM_ACP_RESUME_VERSION,
               provider,
               sessionId: started.sessionId,
-              ...(hasPiAcpMetadata(started.initializeResult) ? { requireSessionLoad: true } : {}),
+              ...(requiresStrictPiAcpResume(started.initializeResult, started.piSteeringMethod)
+                ? { requireSessionLoad: true }
+                : {}),
             },
             createdAt: now,
             updatedAt: now,
@@ -894,30 +896,23 @@ export function makeGenericAcpAdapter(
     ) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(threadId);
-        yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
-        yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
         const interruptedTurnId = turnId ?? ctx.activeTurnId;
-        const cancelResult = yield* Effect.ignore(
-          ctx.acp.cancel.pipe(
-            Effect.mapError((error) =>
-              mapAcpToAdapterError(provider, threadId, "session/cancel", error),
-            ),
-          ),
-        ).pipe(Effect.timeoutOption(Duration.millis(ACP_CANCEL_TIMEOUT_MS)));
-
         if (interruptedTurnId && !ctx.completedTurnIds.has(interruptedTurnId)) {
           yield* completeTurnLocally(ctx, interruptedTurnId, {
             state: "cancelled",
-            stopReason: Option.isSome(cancelResult)
-              ? "session/cancel requested"
-              : "session/cancel timed out; ACP session was force-stopped",
+            stopReason: "session/cancel requested",
           });
         }
-
-        if (Option.isNone(cancelResult)) {
-          yield* stopSessionInternal(ctx);
-          return;
-        }
+        yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
+        yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
+        yield* ctx.acp.cancel.pipe(
+          Effect.mapError((error) =>
+            mapAcpToAdapterError(provider, threadId, "session/cancel", error),
+          ),
+          Effect.exit,
+          Effect.timeoutOption(Duration.millis(ACP_CANCEL_WATCHDOG_GRACE_MS)),
+          Effect.forkDetach,
+        );
 
         if (interruptedTurnId) {
           yield* Effect.sleep(Duration.millis(ACP_CANCEL_WATCHDOG_GRACE_MS)).pipe(
