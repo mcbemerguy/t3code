@@ -33,7 +33,13 @@ function formatConfigOptionValue(value: string | boolean): string {
 }
 
 function extractPiSteeringMethod(response: EffectAcpSchema.InitializeResponse): string | undefined {
-  const meta = response._meta;
+  return (
+    extractPiSteeringMethodFromMeta(response.agentCapabilities?._meta) ??
+    extractPiSteeringMethodFromMeta(response._meta)
+  );
+}
+
+function extractPiSteeringMethodFromMeta(meta: unknown): string | undefined {
   if (!isRecord(meta)) return undefined;
   const piAcp = meta.piAcp;
   if (!isRecord(piAcp)) return undefined;

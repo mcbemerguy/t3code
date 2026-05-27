@@ -28,6 +28,7 @@ const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
 const enableSessionList = process.env.T3_ACP_ENABLE_SESSION_LIST === "1";
+const enablePiSteering = process.env.T3_ACP_ENABLE_PI_STEERING === "1";
 const failLoadSession = process.env.T3_ACP_FAIL_LOAD_SESSION === "1";
 const failPromptAfterCancel = process.env.T3_ACP_FAIL_PROMPT_AFTER_CANCEL === "1";
 const listExtraCwd = process.env.T3_ACP_LIST_EXTRA_CWD;
@@ -271,6 +272,9 @@ const program = Effect.gen(function* () {
         agentCapabilities: {
           loadSession: true,
           ...(enableSessionList ? { sessionCapabilities: { list: {} } } : {}),
+          ...(enablePiSteering
+            ? { _meta: { piAcp: { steering: true, steeringMethod: "_pi/steer" } } }
+            : {}),
         },
       };
     }),

@@ -65,6 +65,32 @@ describe("AcpSessionRuntime", () => {
     );
   });
 
+  it.effect("detects pi steering from agent capability metadata", () =>
+    Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime;
+      const started = yield* runtime.start();
+
+      expect(started.piSteeringMethod).toBe("_pi/steer");
+      expect(started.initializeResult.agentCapabilities?._meta).toMatchObject({
+        piAcp: { steering: true, steeringMethod: "_pi/steer" },
+      });
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: bunExe,
+            args: [mockAgentPath],
+            env: { T3_ACP_ENABLE_PI_STEERING: "1" },
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+
   it.effect("skips authenticate when no auth method is configured", () => {
     const requestEvents: Array<AcpSessionRequestLogEvent> = [];
     return Effect.gen(function* () {
