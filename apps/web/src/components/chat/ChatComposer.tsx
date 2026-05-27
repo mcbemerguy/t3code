@@ -135,6 +135,39 @@ const runtimeModeConfig: Record<
   },
 };
 
+function resolveComposerPlaceholderText(params: {
+  isComposerApprovalState: boolean;
+  activePendingApprovalDetail: string | undefined;
+  activePendingProgress: boolean;
+  showPlanFollowUpPrompt: boolean;
+  activeProposedPlan: boolean;
+  sendBlockedReason: string | null;
+  environmentUnavailable: { readonly label: string; readonly connectionState: string } | null;
+  phase: SessionPhase;
+}): string {
+  if (params.isComposerApprovalState) {
+    return params.activePendingApprovalDetail ?? "Resolve this approval request to continue";
+  }
+  if (params.activePendingProgress) {
+    return "Type your own answer, or leave this blank to use the selected option";
+  }
+  if (params.showPlanFollowUpPrompt && params.activeProposedPlan) {
+    return "Add feedback to refine the plan, or leave this blank to implement it";
+  }
+  if (params.sendBlockedReason) {
+    return "Retry the undelivered message before sending more";
+  }
+  if (params.environmentUnavailable) {
+    return `${params.environmentUnavailable.label} is ${
+      params.environmentUnavailable.connectionState === "connecting" ? "connecting" : "disconnected"
+    }`;
+  }
+  if (params.phase === "disconnected") {
+    return "Ask for follow-up changes or attach images";
+  }
+  return "Ask anything, @tag files/folders, $use skills, or / for commands";
+}
+
 const runtimeModeOptions = Object.keys(runtimeModeConfig) as RuntimeMode[];
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
@@ -2265,25 +2298,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 onChange={onPromptChange}
                 onCommandKeyDown={onComposerCommandKey}
                 onPaste={onComposerPaste}
-                placeholder={
-                  isComposerApprovalState
-                    ? (activePendingApproval?.detail ?? "Resolve this approval request to continue")
-                    : activePendingProgress
-                      ? "Type your own answer, or leave this blank to use the selected option"
-                      : showPlanFollowUpPrompt && activeProposedPlan
-                        ? "Add feedback to refine the plan, or leave this blank to implement it"
-                        : sendBlockedReason
-                          ? "Retry the undelivered message before sending more"
-                          : environmentUnavailable
-                            ? `${environmentUnavailable.label} is ${
-                                environmentUnavailable.connectionState === "connecting"
-                                  ? "connecting"
-                                  : "disconnected"
-                              }`
-                            : phase === "disconnected"
-                              ? "Ask for follow-up changes or attach images"
-                              : "Ask anything, @tag files/folders, $use skills, or / for commands"
-                }
+                placeholder={resolveComposerPlaceholderText({
+                  isComposerApprovalState,
+                  activePendingApprovalDetail: activePendingApproval?.detail,
+                  activePendingProgress: activePendingProgress !== null,
+                  showPlanFollowUpPrompt,
+                  activeProposedPlan: activeProposedPlan !== null,
+                  sendBlockedReason,
+                  environmentUnavailable,
+                  phase,
+                })}
                 disabled={
                   isConnecting ||
                   isComposerApprovalState ||

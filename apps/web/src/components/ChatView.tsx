@@ -1199,6 +1199,10 @@ export default function ChatView(props: ChatViewProps) {
       if (!api || !activeThread || retryingUserMessageIdsRef.current.has(messageId)) {
         return;
       }
+      const message = activeThread.messages.find((m) => m.id === messageId);
+      if (message?.providerDelivery?.status !== "failed") {
+        return;
+      }
       retryingUserMessageIdsRef.current.add(messageId);
       setRetryingUserMessageIds((existing) =>
         existing.includes(messageId) ? existing : [...existing, messageId],

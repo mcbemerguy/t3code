@@ -899,6 +899,7 @@ describe("incremental orchestration updates", () => {
       attempt: 1,
       updatedAt: "2026-02-27T00:00:01.000Z",
     });
+    expect(threadsOf(pending)[0]?.messages[0]?.completedAt).toBe("2026-02-27T00:00:00.000Z");
 
     const failed = applyOrchestrationEvent(
       pending,
@@ -919,6 +920,7 @@ describe("incremental orchestration updates", () => {
       provider: "pi",
       method: "session/new",
     });
+    expect(threadsOf(failed)[0]?.messages[0]?.completedAt).toBe("2026-02-27T00:00:00.000Z");
 
     const retryPending = applyOrchestrationEvent(
       failed,
@@ -938,6 +940,7 @@ describe("incremental orchestration updates", () => {
       attempt: 2,
       updatedAt: "2026-02-27T00:00:03.000Z",
     });
+    expect(threadsOf(retryPending)[0]?.messages[0]?.completedAt).toBe("2026-02-27T00:00:00.000Z");
 
     const delivered = applyOrchestrationEvent(
       retryPending,
@@ -960,6 +963,61 @@ describe("incremental orchestration updates", () => {
       turnId: TurnId.make("turn-1"),
       deliveredAt: "2026-02-27T00:00:04.000Z",
     });
+  });
+
+  it("does not regress user provider delivery from delivered to pending or failed", () => {
+    const userMessageId = MessageId.make("user-1");
+    const state = makeState(
+      makeThread({
+        messages: [
+          {
+            id: userMessageId,
+            role: "user",
+            text: "hello",
+            turnId: TurnId.make("turn-1"),
+            createdAt: "2026-02-27T00:00:00.000Z",
+            completedAt: "2026-02-27T00:00:00.000Z",
+            streaming: false,
+            providerDelivery: {
+              status: "delivered",
+              attempt: 1,
+              turnId: TurnId.make("turn-1"),
+              deliveredAt: "2026-02-27T00:00:00.000Z",
+            },
+          },
+        ],
+      }),
+    );
+
+    const afterTurnStart = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.turn-start-requested", {
+        threadId: ThreadId.make("thread-1"),
+        messageId: userMessageId,
+        runtimeMode: DEFAULT_RUNTIME_MODE,
+        interactionMode: DEFAULT_INTERACTION_MODE,
+        deliveryKind: "new-turn",
+        createdAt: "2026-02-27T00:00:01.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(afterTurnStart)[0]?.messages[0]?.providerDelivery?.status).toBe("delivered");
+
+    const afterFailure = applyOrchestrationEvent(
+      afterTurnStart,
+      makeEvent("thread.message-user-delivery-failed", {
+        threadId: ThreadId.make("thread-1"),
+        messageId: userMessageId,
+        provider: "pi",
+        method: "session/new",
+        detail: "Pi RPC process exited during startup",
+        failedAt: "2026-02-27T00:00:02.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(afterFailure)[0]?.messages[0]?.providerDelivery?.status).toBe("delivered");
   });
 
   it("reverts messages, plans, activities, and checkpoints by retained turns", () => {

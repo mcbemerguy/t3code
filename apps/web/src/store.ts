@@ -1329,14 +1329,17 @@ function applyEnvironmentOrchestrationEvent(
           if (message.id !== event.payload.messageId || message.role !== "user") {
             return message;
           }
+          const currentDelivery = message.providerDelivery;
+          if (currentDelivery?.status === "delivered") {
+            return message;
+          }
           return {
             ...message,
             providerDelivery: {
               status: "pending" as const,
-              attempt: (message.providerDelivery?.attempt ?? 0) + 1,
+              attempt: (currentDelivery?.attempt ?? 0) + 1,
               updatedAt: event.payload.createdAt,
             },
-            completedAt: event.payload.createdAt,
           };
         });
         return {
@@ -1482,17 +1485,20 @@ function applyEnvironmentOrchestrationEvent(
           if (message.id !== event.payload.messageId || message.role !== "user") {
             return message;
           }
+          const currentDelivery = message.providerDelivery;
+          if (currentDelivery?.status !== "pending") {
+            return message;
+          }
           return {
             ...message,
             providerDelivery: {
               status: "failed" as const,
-              attempt: message.providerDelivery?.attempt ?? 1,
+              attempt: currentDelivery.attempt,
               provider: event.payload.provider,
               ...(event.payload.method !== undefined ? { method: event.payload.method } : {}),
               detail: event.payload.detail,
               failedAt: event.payload.failedAt,
             },
-            completedAt: event.payload.failedAt,
           };
         });
         return {

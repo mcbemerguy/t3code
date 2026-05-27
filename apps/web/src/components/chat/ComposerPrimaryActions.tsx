@@ -218,16 +218,17 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
         !hasSendableContent
       }
       aria-label={
-        sendBlockedReason ??
-        (isEnvironmentUnavailable
-          ? "Environment disconnected"
-          : isConnecting
-            ? "Connecting"
-            : isPreparingWorktree
-              ? "Preparing worktree"
-              : isSendBusy
-                ? "Sending"
-                : "Send message")
+        sendBlockedReason !== null
+          ? "Send blocked: resolve pending delivery first"
+          : isEnvironmentUnavailable
+            ? "Environment disconnected"
+            : isConnecting
+              ? "Connecting"
+              : isPreparingWorktree
+                ? "Preparing worktree"
+                : isSendBusy
+                  ? "Sending"
+                  : "Send message"
       }
     >
       {isConnecting || isSendBusy ? (
