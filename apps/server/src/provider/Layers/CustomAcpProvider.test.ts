@@ -551,6 +551,70 @@ describe("Custom ACP provider", () => {
       }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
+  it.effect("queues a new ACP prompt until cancelled-turn drain finishes", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({ env: envText({ T3_ACP_EMIT_TOOL_CALLS: "1" }) }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-queued-after-cancel");
+      const firstRequested =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "request.opened" }>>();
+      const secondRequested =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "request.opened" }>>();
+      const events: Array<ProviderRuntimeEvent> = [];
+      let requestCount = 0;
+
+      yield* Stream.runForEach(adapter.streamEvents, (event) => {
+        if (event.threadId !== threadId) return Effect.void;
+        events.push(event);
+        if (event.type !== "request.opened") return Effect.void;
+        requestCount += 1;
+        return (
+          requestCount === 1
+            ? Deferred.succeed(firstRequested, event)
+            : requestCount === 2
+              ? Deferred.succeed(secondRequested, event)
+              : Effect.void
+        ).pipe(Effect.ignore);
+      }).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const firstTurnFiber = yield* adapter
+        .sendTurn({ threadId, input: "needs approval", attachments: [] })
+        .pipe(Effect.forkChild);
+
+      const firstOpenedEvent = yield* Deferred.await(firstRequested);
+      yield* adapter.interruptTurn(threadId);
+      const secondTurnFiber = yield* adapter
+        .sendTurn({ threadId, input: "next prompt", attachments: [] })
+        .pipe(Effect.forkChild);
+      yield* Fiber.join(firstTurnFiber);
+      const secondOpenedEvent = yield* Deferred.await(secondRequested);
+
+      assert.isDefined(firstOpenedEvent.turnId);
+      assert.isDefined(secondOpenedEvent.turnId);
+      assert.notEqual(secondOpenedEvent.turnId, firstOpenedEvent.turnId);
+
+      const firstCompletedIndex = events.findIndex(
+        (event) => event.type === "turn.completed" && event.turnId === firstOpenedEvent.turnId,
+      );
+      const secondStartedIndex = events.findIndex(
+        (event) => event.type === "turn.started" && event.turnId === secondOpenedEvent.turnId,
+      );
+      assert.isTrue(firstCompletedIndex >= 0);
+      assert.isTrue(secondStartedIndex > firstCompletedIndex);
+
+      yield* adapter.stopSession(threadId);
+      yield* Fiber.await(secondTurnFiber);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("suppresses prompt failures after a cancelled turn", () =>
     Effect.gen(function* () {
       const adapter = yield* makeGenericAcpAdapter(
@@ -752,45 +816,43 @@ describe("Custom ACP provider", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
-  it.effect(
-    "keeps the ACP session alive when cancel succeeds before a prompt response settles",
-    () =>
-      Effect.gen(function* () {
-        const adapter = yield* makeGenericAcpAdapter(
-          makeCustomAcpSettings({
-            env: envText({
-              T3_ACP_EMIT_TOOL_CALLS: "1",
-              T3_ACP_HANG_PROMPT_AFTER_CANCEL: "1",
-            }),
+  it.effect("resolves the turn when a prompt does not produce a normal response after cancel", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({
+            T3_ACP_EMIT_TOOL_CALLS: "1",
+            T3_ACP_HANG_PROMPT_AFTER_CANCEL: "1",
           }),
-          { instanceId: customAcpInstanceId },
-        );
-        const threadId = ThreadId.make("custom-acp-cancel-settled-prompt-lag");
-        const requested = yield* Deferred.make<ProviderRuntimeEvent>();
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-cancel-settled-prompt-lag");
+      const requested = yield* Deferred.make<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        event.threadId === threadId && event.type === "request.opened"
+          ? Deferred.succeed(requested, event).pipe(Effect.ignore)
+          : Effect.void,
+      ).pipe(Effect.forkChild);
 
-        yield* Stream.runForEach(adapter.streamEvents, (event) =>
-          event.threadId === threadId && event.type === "request.opened"
-            ? Deferred.succeed(requested, event).pipe(Effect.ignore)
-            : Effect.void,
-        ).pipe(Effect.forkChild);
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const turnFiber = yield* adapter
+        .sendTurn({ threadId, input: "needs approval", attachments: [] })
+        .pipe(Effect.forkChild);
 
-        yield* adapter.startSession({
-          threadId,
-          provider: customAcpDriver,
-          cwd: process.cwd(),
-          runtimeMode: "approval-required",
-        });
-        yield* adapter
-          .sendTurn({ threadId, input: "needs approval", attachments: [] })
-          .pipe(Effect.exit, Effect.forkChild);
+      yield* Deferred.await(requested);
+      yield* adapter.interruptTurn(threadId);
+      const turnResult = yield* Fiber.join(turnFiber);
 
-        yield* Deferred.await(requested);
-        yield* adapter.interruptTurn(threadId);
-        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 2_800)));
-
-        assert.equal(yield* adapter.hasSession(threadId), true);
-        yield* adapter.stopSession(threadId);
-      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+      assert.equal(turnResult.threadId, threadId);
+      assert.equal(yield* adapter.hasSession(threadId), true);
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
   it.effect("does not duplicate cancelled completion after a late explicit interrupt", () =>

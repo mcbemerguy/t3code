@@ -70,6 +70,7 @@ const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJ
 const CUSTOM_ACP_PROVIDER = ProviderDriverKind.make("customAcp");
 const CUSTOM_ACP_RESUME_VERSION = 1 as const;
 const ACP_CANCEL_WATCHDOG_GRACE_MS = 2_500;
+const ACP_CANCEL_PROMPT_DRAIN_MS = 500;
 
 interface PendingApproval {
   readonly decision: Deferred.Deferred<ProviderApprovalDecision>;
@@ -96,6 +97,13 @@ interface GenericAcpSessionContext {
   piSteeringMethod: string | undefined;
   readonly completedTurnIds: Set<TurnId>;
   readonly cancellingTurnIds: Set<TurnId>;
+  readonly turnGate: Semaphore.Semaphore;
+  turnIdle: Deferred.Deferred<void>;
+  readonly turnCancelSignals: Map<TurnId, Deferred.Deferred<void>>;
+  readonly turnPromptCompletions: Map<
+    TurnId,
+    Deferred.Deferred<Exit.Exit<EffectAcpSchema.PromptResponse, ProviderAdapterError>>
+  >;
   stopped: boolean;
 }
 
@@ -258,6 +266,15 @@ export function makeGenericAcpAdapter(
         );
       });
 
+    const releaseTurnReservation = (ctx: GenericAcpSessionContext, turnId: TurnId) =>
+      Effect.gen(function* () {
+        ctx.turnCancelSignals.delete(turnId);
+        ctx.turnPromptCompletions.delete(turnId);
+        if (ctx.activeTurnId !== turnId) return;
+        ctx.activeTurnId = undefined;
+        yield* Deferred.succeed(ctx.turnIdle, undefined).pipe(Effect.ignore);
+      });
+
     const completeTurnLocally = (
       ctx: GenericAcpSessionContext,
       turnId: TurnId,
@@ -265,7 +282,6 @@ export function makeGenericAcpAdapter(
     ) =>
       Effect.gen(function* () {
         if (ctx.completedTurnIds.has(turnId)) return;
-        ctx.activeTurnId = undefined;
         ctx.completedTurnIds.add(turnId);
         ctx.cancellingTurnIds.delete(turnId);
         const { activeTurnId: _activeTurnId, ...sessionWithoutActiveTurn } = ctx.session;
@@ -279,6 +295,7 @@ export function makeGenericAcpAdapter(
           turnId,
           payload,
         });
+        yield* releaseTurnReservation(ctx, turnId);
       });
 
     const emitPlanUpdate = (
@@ -371,6 +388,26 @@ export function makeGenericAcpAdapter(
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
         if (ctx.notificationFiber) yield* Fiber.interrupt(ctx.notificationFiber);
         yield* Effect.ignore(Scope.close(ctx.scope, Exit.void));
+        sessions.delete(ctx.threadId);
+        yield* offerRuntimeEvent({
+          type: "session.exited",
+          ...(yield* makeEventStamp()),
+          provider,
+          threadId: ctx.threadId,
+          payload: { exitKind: "graceful" },
+        });
+      });
+
+    const stopSessionWithoutWaitingForPrompt = (ctx: GenericAcpSessionContext) =>
+      Effect.gen(function* () {
+        if (ctx.stopped) return;
+        ctx.stopped = true;
+        yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
+        yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
+        if (ctx.notificationFiber) {
+          yield* Fiber.interrupt(ctx.notificationFiber).pipe(Effect.forkDetach, Effect.ignore);
+        }
+        yield* Scope.close(ctx.scope, Exit.void).pipe(Effect.forkDetach, Effect.ignore);
         sessions.delete(ctx.threadId);
         yield* offerRuntimeEvent({
           type: "session.exited",
@@ -595,6 +632,10 @@ export function makeGenericAcpAdapter(
             updatedAt: now,
           };
 
+          const turnGate = yield* Semaphore.make(1);
+          const turnIdle = yield* Deferred.make<void>();
+          yield* Deferred.succeed(turnIdle, undefined);
+
           ctx = {
             threadId: input.threadId,
             session,
@@ -611,6 +652,10 @@ export function makeGenericAcpAdapter(
             piSteeringMethod: started.piSteeringMethod,
             completedTurnIds: new Set(),
             cancellingTurnIds: new Set(),
+            turnGate,
+            turnIdle,
+            turnCancelSignals: new Map(),
+            turnPromptCompletions: new Map(),
             stopped: false,
           };
 
@@ -769,28 +814,6 @@ export function makeGenericAcpAdapter(
         const turnModelSelection =
           input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
         const model = turnModelSelection?.model ?? ctx.session.model;
-        yield* applyGenericAcpSessionConfiguration({
-          runtime: ctx.acp,
-          runtimeMode: ctx.session.runtimeMode,
-          interactionMode: input.interactionMode,
-          modelSelection:
-            model === undefined ? undefined : { model, options: turnModelSelection?.options },
-          mapError: ({ cause, method }) =>
-            mapAcpToAdapterError(provider, input.threadId, method, cause),
-        });
-        ctx.activeTurnId = turnId;
-        ctx.lastPlanFingerprint = undefined;
-        ctx.session = { ...ctx.session, activeTurnId: turnId, updatedAt: yield* nowIso };
-
-        yield* offerRuntimeEvent({
-          type: "turn.started",
-          ...(yield* makeEventStamp()),
-          provider,
-          threadId: input.threadId,
-          turnId,
-          payload: { model: model ?? "default" },
-        });
-
         const promptParts = yield* buildPromptParts({
           ...(input.input !== undefined ? { input: input.input } : {}),
           ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
@@ -805,34 +828,93 @@ export function makeGenericAcpAdapter(
           });
         }
 
-        const result = yield* ctx.acp.prompt({ prompt: promptParts }).pipe(
-          Effect.mapError((error) =>
-            mapAcpToAdapterError(provider, input.threadId, "session/prompt", error),
-          ),
-          Effect.catch((error) => {
-            if (ctx.completedTurnIds.has(turnId)) return Effect.void;
-            if (ctx.cancellingTurnIds.has(turnId)) {
-              return completeTurnLocally(ctx, turnId, {
-                state: "cancelled",
-                stopReason: "session/cancel requested",
-              }).pipe(Effect.asVoid);
+        yield* ctx.turnGate.withPermit(
+          Effect.gen(function* () {
+            yield* Deferred.await(ctx.turnIdle);
+            if (ctx.stopped) {
+              return yield* new ProviderAdapterSessionNotFoundError({
+                provider,
+                threadId: input.threadId,
+              });
             }
-            return Effect.fail(error);
+            ctx.turnIdle = yield* Deferred.make<void>();
+            const signal = yield* Deferred.make<void>();
+            ctx.turnCancelSignals.set(turnId, signal);
+            ctx.activeTurnId = turnId;
+            ctx.lastPlanFingerprint = undefined;
+            ctx.session = { ...ctx.session, activeTurnId: turnId, updatedAt: yield* nowIso };
+            return signal;
           }),
         );
-        if (result === undefined || ctx.completedTurnIds.has(turnId)) {
+
+        const promptRequest = ctx.acp
+          .prompt({ prompt: promptParts })
+          .pipe(
+            Effect.mapError((error) =>
+              mapAcpToAdapterError(provider, input.threadId, "session/prompt", error),
+            ),
+          );
+
+        const promptResult = yield* Effect.gen(function* () {
+          yield* applyGenericAcpSessionConfiguration({
+            runtime: ctx.acp,
+            runtimeMode: ctx.session.runtimeMode,
+            interactionMode: input.interactionMode,
+            modelSelection:
+              model === undefined ? undefined : { model, options: turnModelSelection?.options },
+            mapError: ({ cause, method }) =>
+              mapAcpToAdapterError(provider, input.threadId, method, cause),
+          });
+
+          yield* offerRuntimeEvent({
+            type: "turn.started",
+            ...(yield* makeEventStamp()),
+            provider,
+            threadId: input.threadId,
+            turnId,
+            payload: { model: model ?? "default" },
+          });
+
+          const promptSettled =
+            yield* Deferred.make<Exit.Exit<EffectAcpSchema.PromptResponse, ProviderAdapterError>>();
+          ctx.turnPromptCompletions.set(turnId, promptSettled);
+          yield* Effect.sync(() => {
+            // @effect-diagnostics-next-line runEffectInsideEffect:off
+            Effect.runFork(
+              promptRequest.pipe(
+                Effect.exit,
+                Effect.flatMap((exit) => Deferred.succeed(promptSettled, exit)),
+              ),
+            );
+          });
+
+          const promptExit = yield* Deferred.await(promptSettled);
+          if (Exit.isFailure(promptExit)) {
+            if (ctx.completedTurnIds.has(turnId)) return undefined;
+            if (ctx.cancellingTurnIds.has(turnId)) {
+              yield* completeTurnLocally(ctx, turnId, {
+                state: "cancelled",
+                stopReason: "session/cancel requested",
+              });
+              return undefined;
+            }
+            return yield* Effect.failCause(promptExit.cause);
+          }
+          return promptExit.value;
+        }).pipe(Effect.onError(() => releaseTurnReservation(ctx, turnId)));
+
+        if (promptResult === undefined || ctx.completedTurnIds.has(turnId)) {
           return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
         }
 
         const wasCancelling = ctx.cancellingTurnIds.delete(turnId);
-        ctx.activeTurnId = undefined;
-        ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });
+        ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result: promptResult }] });
         const { activeTurnId: _activeTurnId, ...sessionWithoutActiveTurn } = ctx.session;
         void _activeTurnId;
         ctx.session = { ...sessionWithoutActiveTurn, updatedAt: yield* nowIso, model };
 
         ctx.completedTurnIds.add(turnId);
-        const promptUsage = normalizeAcpPromptUsage(result.usage);
+        const promptUsage = normalizeAcpPromptUsage(promptResult.usage);
         if (promptUsage) {
           ctx.latestTokenUsage = mergeAcpTokenUsageSnapshot(ctx.latestTokenUsage, promptUsage);
           yield* offerRuntimeEvent({
@@ -845,7 +927,7 @@ export function makeGenericAcpAdapter(
             raw: {
               source: "acp.jsonrpc",
               method: "session/prompt",
-              payload: result,
+              payload: promptResult,
             },
           });
         }
@@ -857,13 +939,15 @@ export function makeGenericAcpAdapter(
           threadId: input.threadId,
           turnId,
           payload: {
-            state: wasCancelling || result.stopReason === "cancelled" ? "cancelled" : "completed",
+            state:
+              wasCancelling || promptResult.stopReason === "cancelled" ? "cancelled" : "completed",
             stopReason:
-              wasCancelling && result.stopReason !== "cancelled"
+              wasCancelling && promptResult.stopReason !== "cancelled"
                 ? "session/cancel requested"
-                : (result.stopReason ?? null),
+                : (promptResult.stopReason ?? null),
           },
         });
+        yield* releaseTurnReservation(ctx, turnId);
 
         return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
       });
@@ -911,6 +995,36 @@ export function makeGenericAcpAdapter(
         const interruptedTurnId = turnId ?? ctx.activeTurnId;
         if (interruptedTurnId && !ctx.completedTurnIds.has(interruptedTurnId)) {
           ctx.cancellingTurnIds.add(interruptedTurnId);
+          const cancelSignal = ctx.turnCancelSignals.get(interruptedTurnId);
+          if (cancelSignal) {
+            yield* Deferred.succeed(cancelSignal, undefined).pipe(Effect.ignore);
+          }
+          const promptCompletion = ctx.turnPromptCompletions.get(interruptedTurnId);
+          if (promptCompletion) {
+            yield* Effect.sync(() => {
+              // @effect-diagnostics-next-line runEffectInsideEffect:off
+              Effect.runFork(
+                Effect.sleep(Duration.millis(ACP_CANCEL_PROMPT_DRAIN_MS)).pipe(
+                  Effect.andThen(
+                    Effect.gen(function* () {
+                      if (ctx.completedTurnIds.has(interruptedTurnId) || ctx.stopped) return;
+                      yield* Deferred.succeed(
+                        promptCompletion,
+                        Exit.fail(
+                          new ProviderAdapterRequestError({
+                            provider,
+                            method: "session/prompt",
+                            detail: "Prompt did not settle after session/cancel.",
+                          }),
+                        ),
+                      ).pipe(Effect.ignore);
+                      yield* stopSessionWithoutWaitingForPrompt(ctx);
+                    }),
+                  ),
+                ),
+              );
+            });
+          }
         }
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
