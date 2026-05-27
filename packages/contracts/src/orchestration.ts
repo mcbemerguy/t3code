@@ -961,6 +961,9 @@ export const ThreadMessageUserDeliveryFailedPayload = Schema.Struct({
   failedAt: IsoDateTime,
 });
 
+export const ThreadTurnStartDeliveryKind = Schema.Literals(["new-turn", "delivery-retry"]);
+export type ThreadTurnStartDeliveryKind = typeof ThreadTurnStartDeliveryKind.Type;
+
 export const ThreadTurnStartRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
@@ -969,6 +972,9 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
+  ),
+  deliveryKind: ThreadTurnStartDeliveryKind.pipe(
+    Schema.withDecodingDefault(Effect.succeed("new-turn" as const)),
   ),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   createdAt: IsoDateTime,

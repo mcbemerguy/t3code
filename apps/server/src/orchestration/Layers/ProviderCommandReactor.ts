@@ -767,7 +767,11 @@ const make = Effect.gen(function* () {
     }
 
     const activeTurnId = thread.session?.activeTurnId ?? null;
-    if (activeTurnId && thread.session?.status === "running") {
+    if (
+      event.payload.deliveryKind !== "delivery-retry" &&
+      activeTurnId &&
+      thread.session?.status === "running"
+    ) {
       const accepted = yield* providerService.sendActiveTurnInput({
         threadId: event.payload.threadId,
         turnId: activeTurnId,

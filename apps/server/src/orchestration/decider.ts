@@ -399,7 +399,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         (entry) =>
           entry.role === "user" &&
           entry.providerDelivery !== undefined &&
-          entry.providerDelivery.status === "failed",
+          entry.providerDelivery.status !== "delivered",
       );
       if (blockingUndeliveredMessage) {
         return yield* new OrchestrationCommandInvariantError({
@@ -446,6 +446,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(command.titleSeed !== undefined ? { titleSeed: command.titleSeed } : {}),
           runtimeMode: targetThread.runtimeMode,
           interactionMode: targetThread.interactionMode,
+          deliveryKind: "new-turn",
           ...(sourceProposedPlan !== undefined ? { sourceProposedPlan } : {}),
           createdAt: command.createdAt,
         },
@@ -494,6 +495,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             : {}),
           runtimeMode: targetThread.runtimeMode,
           interactionMode: command.interactionMode,
+          deliveryKind: "delivery-retry",
           createdAt: command.createdAt,
         },
       };

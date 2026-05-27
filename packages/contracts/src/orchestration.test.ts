@@ -579,7 +579,7 @@ it.effect("accepts a source proposed plan reference in thread.turn.start", () =>
 );
 
 it.effect(
-  "decodes thread.turn-start-requested defaults for provider, runtime mode, and interaction mode",
+  "decodes thread.turn-start-requested defaults for provider, runtime mode, interaction mode, and delivery kind",
   () =>
     Effect.gen(function* () {
       const parsed = yield* decodeThreadTurnStartRequestedPayload({
@@ -590,6 +590,7 @@ it.effect(
       assert.strictEqual(parsed.modelSelection, undefined);
       assert.strictEqual(parsed.runtimeMode, DEFAULT_RUNTIME_MODE);
       assert.strictEqual(parsed.interactionMode, DEFAULT_PROVIDER_INTERACTION_MODE);
+      assert.strictEqual(parsed.deliveryKind, "new-turn");
       assert.strictEqual(parsed.sourceProposedPlan, undefined);
     }),
 );
