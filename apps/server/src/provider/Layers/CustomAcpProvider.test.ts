@@ -489,6 +489,7 @@ describe("Custom ACP provider", () => {
       const requested = yield* Deferred.make<ProviderRuntimeEvent>();
       const completed =
         yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>>();
+      let completedCount = 0;
 
       yield* Stream.runForEach(adapter.streamEvents, (event) => {
         if (event.threadId !== threadId) return Effect.void;
@@ -496,6 +497,7 @@ describe("Custom ACP provider", () => {
           return Deferred.succeed(requested, event).pipe(Effect.ignore);
         }
         if (event.type === "turn.completed") {
+          completedCount += 1;
           return Deferred.succeed(completed, event).pipe(Effect.ignore);
         }
         return Effect.void;
@@ -517,6 +519,7 @@ describe("Custom ACP provider", () => {
 
       const completedEvent = yield* Deferred.await(completed);
       assert.equal(completedEvent.payload.state, "cancelled");
+      assert.equal(completedCount, 1);
       yield* adapter.stopSession(threadId);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );

@@ -1222,6 +1222,25 @@ routing.layer("ProviderServiceLive routing", (it) => {
           assert.equal(runtimePayload.lastRuntimeEvent, "provider.sendTurn");
         }
       }
+
+      yield* provider.interruptTurn({ threadId: session.threadId });
+      const interruptedRuntime = yield* runtimeRepository.getByThreadId({
+        threadId: session.threadId,
+      });
+      assert.equal(Option.isSome(interruptedRuntime), true);
+      if (Option.isSome(interruptedRuntime)) {
+        assert.equal(interruptedRuntime.value.status, "running");
+        const payload = interruptedRuntime.value.runtimePayload;
+        assert.equal(payload !== null && typeof payload === "object", true);
+        if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
+          const runtimePayload = payload as {
+            activeTurnId: string | null;
+            lastRuntimeEvent: string | null;
+          };
+          assert.equal(runtimePayload.activeTurnId, null);
+          assert.equal(runtimePayload.lastRuntimeEvent, "provider.interruptTurn");
+        }
+      }
     }),
   );
 

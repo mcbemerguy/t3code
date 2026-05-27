@@ -744,6 +744,17 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "provider.turn_id": input.turnId,
         });
         yield* routed.adapter.interruptTurn(routed.threadId, input.turnId);
+        yield* directory.upsert({
+          threadId: input.threadId,
+          provider: routed.adapter.provider,
+          providerInstanceId: routed.instanceId,
+          status: "running",
+          runtimePayload: {
+            activeTurnId: null,
+            lastRuntimeEvent: "provider.interruptTurn",
+            lastRuntimeEventAt: yield* nowIso,
+          },
+        });
         yield* analytics.record("provider.turn.interrupted", {
           provider: routed.adapter.provider,
         });

@@ -250,6 +250,7 @@ export function makeGenericAcpAdapter(
       payload: { readonly state: "cancelled"; readonly stopReason: string | null },
     ) =>
       Effect.gen(function* () {
+        if (ctx.forceCompletedTurnIds.has(turnId)) return;
         ctx.activeTurnId = undefined;
         ctx.forceCompletedTurnIds.add(turnId);
         const { activeTurnId: _activeTurnId, ...sessionWithoutActiveTurn } = ctx.session;
