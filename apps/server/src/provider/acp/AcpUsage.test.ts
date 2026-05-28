@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  areAcpTokenUsageSnapshotsEqual,
   mergeAcpTokenUsageSnapshot,
   normalizeAcpPromptUsage,
   normalizeAcpUsageUpdate,
@@ -47,6 +48,24 @@ describe("AcpUsage", () => {
       costAmount: 0.25,
       costCurrency: "USD",
     });
+  });
+
+  it("compares token usage snapshots across optional fields", () => {
+    expect(
+      areAcpTokenUsageSnapshotsEqual(
+        { usedTokens: 10, maxTokens: 100, costCurrency: "USD" },
+        { maxTokens: 100, usedTokens: 10, costCurrency: "USD" },
+      ),
+    ).toBe(true);
+    expect(
+      areAcpTokenUsageSnapshotsEqual(
+        { usedTokens: 10, maxTokens: 100 },
+        { usedTokens: 10, maxTokens: 101 },
+      ),
+    ).toBe(false);
+    expect(
+      areAcpTokenUsageSnapshotsEqual({ usedTokens: 10 }, { usedTokens: 10, maxTokens: 100 }),
+    ).toBe(false);
   });
 
   it("keeps prompt usage usable when no context window snapshot exists", () => {

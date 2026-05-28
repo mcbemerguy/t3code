@@ -70,6 +70,27 @@ export function mergeAcpTokenUsageSnapshot(
   };
 }
 
+export function areAcpTokenUsageSnapshotsEqual(
+  left: ThreadTokenUsageSnapshot | undefined,
+  right: ThreadTokenUsageSnapshot | undefined,
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right) {
+    return false;
+  }
+
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+  for (const key of keys) {
+    const snapshotKey = key as keyof ThreadTokenUsageSnapshot;
+    if (left[snapshotKey] !== right[snapshotKey]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function normalizeAcpPromptUsage(
   usage: EffectAcpSchema.PromptResponse["usage"],
 ): ThreadTokenUsageSnapshot | undefined {

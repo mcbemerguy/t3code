@@ -55,7 +55,11 @@ import {
 } from "../acp/AcpCoreRuntimeEvents.ts";
 import { makeAcpNativeLoggers } from "../acp/AcpNativeLogging.ts";
 import { parsePermissionRequest } from "../acp/AcpRuntimeModel.ts";
-import { mergeAcpTokenUsageSnapshot, normalizeAcpPromptUsage } from "../acp/AcpUsage.ts";
+import {
+  areAcpTokenUsageSnapshotsEqual,
+  mergeAcpTokenUsageSnapshot,
+  normalizeAcpPromptUsage,
+} from "../acp/AcpUsage.ts";
 import {
   AskQuestionRequest,
   extractAskQuestions,
@@ -762,10 +766,14 @@ export function makeGenericAcpAdapter(
                       event.rawPayload,
                       "acp.jsonrpc",
                     );
-                    ctx.latestTokenUsage = mergeAcpTokenUsageSnapshot(
+                    const mergedUsage = mergeAcpTokenUsageSnapshot(
                       ctx.latestTokenUsage,
                       event.usage,
                     );
+                    if (areAcpTokenUsageSnapshotsEqual(ctx.latestTokenUsage, mergedUsage)) {
+                      return;
+                    }
+                    ctx.latestTokenUsage = mergedUsage;
                     yield* offerRuntimeEvent({
                       type: "thread.token-usage.updated",
                       ...(yield* makeEventStamp()),
@@ -925,20 +933,23 @@ export function makeGenericAcpAdapter(
         ctx.completedTurnIds.add(turnId);
         const promptUsage = normalizeAcpPromptUsage(promptResult.usage);
         if (promptUsage) {
-          ctx.latestTokenUsage = mergeAcpTokenUsageSnapshot(ctx.latestTokenUsage, promptUsage);
-          yield* offerRuntimeEvent({
-            type: "thread.token-usage.updated",
-            ...(yield* makeEventStamp()),
-            provider,
-            threadId: input.threadId,
-            turnId,
-            payload: { usage: ctx.latestTokenUsage },
-            raw: {
-              source: "acp.jsonrpc",
-              method: "session/prompt",
-              payload: promptResult,
-            },
-          });
+          const mergedUsage = mergeAcpTokenUsageSnapshot(ctx.latestTokenUsage, promptUsage);
+          if (!areAcpTokenUsageSnapshotsEqual(ctx.latestTokenUsage, mergedUsage)) {
+            ctx.latestTokenUsage = mergedUsage;
+            yield* offerRuntimeEvent({
+              type: "thread.token-usage.updated",
+              ...(yield* makeEventStamp()),
+              provider,
+              threadId: input.threadId,
+              turnId,
+              payload: { usage: ctx.latestTokenUsage },
+              raw: {
+                source: "acp.jsonrpc",
+                method: "session/prompt",
+                payload: promptResult,
+              },
+            });
+          }
         }
 
         yield* offerRuntimeEvent({
