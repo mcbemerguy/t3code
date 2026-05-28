@@ -315,6 +315,9 @@ function makeToolCallState(
   if (kind) {
     data.kind = kind;
   }
+  if (title) {
+    data.acpTitle = title;
+  }
   if (command) {
     data.command = command;
   }

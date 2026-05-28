@@ -58,6 +58,8 @@ export interface WorkLogEntry {
   changedFiles?: ReadonlyArray<string>;
   tone: "thinking" | "tool" | "info" | "error";
   toolTitle?: string;
+  toolKind?: string;
+  acpTitle?: string;
   itemType?: ToolLifecycleItemType;
   requestKind?: PendingApproval["requestKind"];
 }
@@ -555,6 +557,8 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     activityKind: activity.kind,
   };
   const itemType = extractWorkLogItemType(payload);
+  const toolKind = extractWorkLogToolKind(payload);
+  const acpTitle = extractWorkLogAcpTitle(payload);
   const requestKind = extractWorkLogRequestKind(payload);
   if (detail) {
     entry.detail = detail;
@@ -570,6 +574,12 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (title) {
     entry.toolTitle = title;
+  }
+  if (toolKind) {
+    entry.toolKind = toolKind;
+  }
+  if (acpTitle) {
+    entry.acpTitle = acpTitle;
   }
   if (itemType) {
     entry.itemType = itemType;
@@ -639,6 +649,8 @@ function mergeDerivedWorkLogEntries(
   const command = next.command ?? previous.command;
   const rawCommand = next.rawCommand ?? previous.rawCommand;
   const toolTitle = next.toolTitle ?? previous.toolTitle;
+  const toolKind = next.toolKind ?? previous.toolKind;
+  const acpTitle = next.acpTitle ?? previous.acpTitle;
   const itemType = next.itemType ?? previous.itemType;
   const requestKind = next.requestKind ?? previous.requestKind;
   const collapseKey = next.collapseKey ?? previous.collapseKey;
@@ -651,6 +663,8 @@ function mergeDerivedWorkLogEntries(
     ...(rawCommand ? { rawCommand } : {}),
     ...(changedFiles.length > 0 ? { changedFiles } : {}),
     ...(toolTitle ? { toolTitle } : {}),
+    ...(toolKind ? { toolKind } : {}),
+    ...(acpTitle ? { acpTitle } : {}),
     ...(itemType ? { itemType } : {}),
     ...(requestKind ? { requestKind } : {}),
     ...(collapseKey ? { collapseKey } : {}),
@@ -1033,6 +1047,14 @@ function extractWorkLogItemType(
     return payload.itemType;
   }
   return undefined;
+}
+
+function extractWorkLogToolKind(payload: Record<string, unknown> | null): string | undefined {
+  return asTrimmedString(asRecord(payload?.data)?.kind) ?? undefined;
+}
+
+function extractWorkLogAcpTitle(payload: Record<string, unknown> | null): string | undefined {
+  return asTrimmedString(asRecord(payload?.data)?.acpTitle) ?? undefined;
 }
 
 function extractWorkLogRequestKind(

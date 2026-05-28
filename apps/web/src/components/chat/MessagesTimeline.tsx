@@ -1157,10 +1157,39 @@ function ChangedFilesPreviewText({
   );
 }
 
+function normalizedToolIdentity(workEntry: TimelineWorkEntry): string | undefined {
+  return (
+    (workEntry.acpTitle ?? workEntry.toolTitle ?? workEntry.label).trim().toLowerCase() || undefined
+  );
+}
+
+function isCompactToolWorkEntry(workEntry: TimelineWorkEntry): boolean {
+  const kind = workEntry.toolKind?.toLowerCase();
+  const identity = normalizedToolIdentity(workEntry);
+  return (
+    kind === "read" ||
+    kind === "execute" ||
+    identity === "read" ||
+    identity === "read file" ||
+    identity === "bash" ||
+    identity === "edit" ||
+    identity === "write"
+  );
+}
+
 function workEntryIcon(workEntry: TimelineWorkEntry): LucideIcon {
   if (workEntry.requestKind === "command") return TerminalIcon;
   if (workEntry.requestKind === "file-read") return EyeIcon;
   if (workEntry.requestKind === "file-change") return SquarePenIcon;
+
+  const kind = workEntry.toolKind?.toLowerCase();
+  const identity = normalizedToolIdentity(workEntry);
+  if (kind === "read" || identity === "read" || identity === "read file") return EyeIcon;
+  if (kind === "search" || kind === "fetch") return GlobeIcon;
+  if (identity === "write") return HammerIcon;
+  if (identity === "edit" || kind === "edit" || kind === "delete" || kind === "move") {
+    return SquarePenIcon;
+  }
 
   if (workEntry.itemType === "command_execution" || workEntry.command) {
     return TerminalIcon;
@@ -1214,7 +1243,9 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       ? null
       : rawPreview;
   const rawCommand = workEntryRawCommand(workEntry);
-  const displayText = preview ? `${heading} - ${preview}` : heading;
+  const compactTool = isCompactToolWorkEntry(workEntry) && Boolean(preview);
+  const displayText =
+    compactTool && preview ? preview : preview ? `${heading} - ${preview}` : heading;
   const hasChangedFiles = (workEntry.changedFiles?.length ?? 0) > 0;
   const previewIsChangedFiles = hasChangedFiles && !workEntry.command && !workEntry.detail;
 
@@ -1237,9 +1268,11 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                 )}
                 title={displayText}
               >
-                <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
-                  {heading}
-                </span>
+                {!compactTool && (
+                  <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
+                    {heading}
+                  </span>
+                )}
                 {preview && (
                   <Tooltip>
                     <TooltipTrigger
@@ -1247,8 +1280,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                       delay={75}
                       render={
                         <span className="max-w-full cursor-default text-muted-foreground/55 transition-colors hover:text-muted-foreground/75 focus-visible:text-muted-foreground/75">
-                          {" "}
-                          -{" "}
+                          {!compactTool && " - "}
                           <InlineFilePathText
                             text={preview}
                             cwd={workspaceRoot}
@@ -1292,13 +1324,14 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                         preview ? "text-muted-foreground/70" : "",
                       )}
                     >
-                      <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
-                        {heading}
-                      </span>
+                      {!compactTool && (
+                        <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
+                          {heading}
+                        </span>
+                      )}
                       {preview && (
                         <span className="text-muted-foreground/55">
-                          {" "}
-                          -{" "}
+                          {!compactTool && " - "}
                           {previewIsChangedFiles ? (
                             <ChangedFilesPreviewText
                               changedFiles={workEntry.changedFiles}
@@ -1323,7 +1356,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                 <p className="whitespace-pre-wrap wrap-break-word text-xs leading-5">
                   {previewIsChangedFiles ? (
                     <>
-                      {heading} -{" "}
+                      {!compactTool && `${heading} - `}
                       <ChangedFilesPreviewText
                         changedFiles={workEntry.changedFiles}
                         workspaceRoot={workspaceRoot}
