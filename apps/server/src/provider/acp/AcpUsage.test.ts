@@ -50,6 +50,32 @@ describe("AcpUsage", () => {
     });
   });
 
+  it("does not preserve a previous context window across usage source changes", () => {
+    const childUsage = normalizePiUsageTelemetry({
+      sessionId: "parent-session",
+      contextSessionId: "child-session",
+      workflow: { runId: "run-1", workflowId: "review", stepId: "code" },
+      usage: {
+        context: { usedTokens: 12_000, maxTokens: 200_000 },
+      },
+    });
+    const promptUsage = normalizeAcpPromptUsage({
+      totalTokens: 1_000,
+      inputTokens: 700,
+      outputTokens: 300,
+    });
+
+    expect(childUsage).toEqual({
+      usedTokens: 12_000,
+      maxTokens: 200_000,
+      contextSourceId: "pi-workflow-child:child-session",
+      contextSourceLabel: "review/code",
+    });
+    expect(promptUsage).toBeDefined();
+
+    expect(mergeAcpTokenUsageSnapshot(childUsage, promptUsage!)).toEqual(promptUsage);
+  });
+
   it("compares token usage snapshots across optional fields", () => {
     expect(
       areAcpTokenUsageSnapshotsEqual(

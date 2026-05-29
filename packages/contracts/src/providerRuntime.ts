@@ -327,6 +327,8 @@ export const ThreadTokenUsageSnapshot = Schema.Struct({
   modelProvider: Schema.optional(TrimmedNonEmptyStringSchema),
   reasoningEffort: Schema.optional(TrimmedNonEmptyStringSchema),
   cacheStatus: Schema.optional(TrimmedNonEmptyStringSchema),
+  contextSourceId: Schema.optional(TrimmedNonEmptyStringSchema),
+  contextSourceLabel: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type ThreadTokenUsageSnapshot = typeof ThreadTokenUsageSnapshot.Type;
 

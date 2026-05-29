@@ -101,6 +101,8 @@ export function deriveLatestContextWindowSnapshot(
       modelProvider: asNonEmptyString(payload?.modelProvider),
       reasoningEffort: asNonEmptyString(payload?.reasoningEffort),
       cacheStatus: asNonEmptyString(payload?.cacheStatus),
+      contextSourceId: asNonEmptyString(payload?.contextSourceId),
+      contextSourceLabel: asNonEmptyString(payload?.contextSourceLabel),
       updatedAt: activity.createdAt,
     };
   }

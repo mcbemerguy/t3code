@@ -50,11 +50,19 @@ function hasRequestAccounting(usage: ThreadTokenUsageSnapshot): boolean {
   );
 }
 
+function contextSourceKey(usage: ThreadTokenUsageSnapshot | undefined): string {
+  return usage?.contextSourceId ?? "";
+}
+
 export function mergeAcpTokenUsageSnapshot(
   previous: ThreadTokenUsageSnapshot | undefined,
   next: ThreadTokenUsageSnapshot,
 ): ThreadTokenUsageSnapshot {
   if (!previous) {
+    return next;
+  }
+
+  if (contextSourceKey(previous) !== contextSourceKey(next)) {
     return next;
   }
 
@@ -135,6 +143,28 @@ function nonEmptyString(value: unknown): string | undefined {
 
 function booleanValue(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+function piUsageContextSource(params: Record<string, unknown>): {
+  contextSourceId?: string;
+  contextSourceLabel?: string;
+} {
+  const workflow = isRecord(params.workflow) ? params.workflow : undefined;
+  const childSessionId =
+    nonEmptyString(params.contextSessionId) ?? nonEmptyString(workflow?.childSessionId);
+  const stepId = nonEmptyString(workflow?.stepId);
+  const runId = nonEmptyString(workflow?.runId);
+  const workflowId = nonEmptyString(workflow?.workflowId);
+  const contextSourceId = childSessionId
+    ? `pi-workflow-child:${childSessionId}`
+    : runId && stepId
+      ? `pi-workflow-step:${runId}:${stepId}`
+      : undefined;
+  const contextSourceLabel = workflowId && stepId ? `${workflowId}/${stepId}` : stepId;
+  return {
+    ...(contextSourceId ? { contextSourceId } : {}),
+    ...(contextSourceLabel ? { contextSourceLabel } : {}),
+  };
 }
 
 export const PI_USAGE_UPDATE_METHOD = "_pi/session_usage_update";
@@ -220,5 +250,6 @@ export function normalizePiUsageTelemetry(params: unknown): ThreadTokenUsageSnap
     ...(nonEmptyString(cache?.status) !== undefined
       ? { cacheStatus: nonEmptyString(cache?.status) }
       : {}),
+    ...piUsageContextSource(params),
   };
 }
