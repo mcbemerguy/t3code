@@ -702,6 +702,131 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
     ).toBe(false);
   });
 
+  it("clears local dispatch when the target message is attached to the active running turn", () => {
+    const activeTurnId = TurnId.make("turn-1");
+    const messageId = MessageId.make("message-steer");
+    const runningSession = {
+      ...previousSession,
+      status: "running" as const,
+      orchestrationStatus: "running" as const,
+      activeTurnId,
+      updatedAt: "2026-03-29T00:00:10.000Z",
+    };
+    const localDispatch = createLocalDispatchSnapshot(
+      {
+        id: ThreadId.make("thread-1"),
+        environmentId: localEnvironmentId,
+        codexThreadId: null,
+        projectId,
+        title: "Thread",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        session: runningSession,
+        messages: [],
+        proposedPlans: [],
+        error: null,
+        createdAt: "2026-03-29T00:00:00.000Z",
+        archivedAt: null,
+        updatedAt: "2026-03-29T00:00:10.000Z",
+        latestTurn: previousLatestTurn,
+        branch: null,
+        worktreePath: null,
+        turnDiffSummaries: [],
+        activities: [],
+      },
+      { messageId },
+    );
+
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        localDispatch,
+        phase: "running",
+        latestTurn: previousLatestTurn,
+        session: runningSession,
+        messages: [
+          {
+            id: messageId,
+            role: "user",
+            text: "steer this turn",
+            turnId: activeTurnId,
+            createdAt: "2026-03-29T00:00:11.000Z",
+            streaming: false,
+          },
+        ],
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        threadError: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("clears local dispatch when the target message delivery fails", () => {
+    const activeTurnId = TurnId.make("turn-1");
+    const messageId = MessageId.make("message-steer-failed");
+    const runningSession = {
+      ...previousSession,
+      status: "running" as const,
+      orchestrationStatus: "running" as const,
+      activeTurnId,
+      updatedAt: "2026-03-29T00:00:10.000Z",
+    };
+    const localDispatch = createLocalDispatchSnapshot(
+      {
+        id: ThreadId.make("thread-1"),
+        environmentId: localEnvironmentId,
+        codexThreadId: null,
+        projectId,
+        title: "Thread",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        session: runningSession,
+        messages: [],
+        proposedPlans: [],
+        error: null,
+        createdAt: "2026-03-29T00:00:00.000Z",
+        archivedAt: null,
+        updatedAt: "2026-03-29T00:00:10.000Z",
+        latestTurn: previousLatestTurn,
+        branch: null,
+        worktreePath: null,
+        turnDiffSummaries: [],
+        activities: [],
+      },
+      { messageId },
+    );
+
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        localDispatch,
+        phase: "running",
+        latestTurn: previousLatestTurn,
+        session: runningSession,
+        messages: [
+          {
+            id: messageId,
+            role: "user",
+            text: "steer this turn",
+            turnId: null,
+            providerDelivery: {
+              status: "failed",
+              attempt: 1,
+              provider: "customAcp",
+              detail: "steering rejected",
+              failedAt: "2026-03-29T00:00:11.000Z",
+            },
+            createdAt: "2026-03-29T00:00:11.000Z",
+            streaming: false,
+          },
+        ],
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        threadError: null,
+      }),
+    ).toBe(true);
+  });
+
   it("clears local dispatch once the running latestTurn matches the active session turn", () => {
     const localDispatch = createLocalDispatchSnapshot({
       id: ThreadId.make("thread-1"),

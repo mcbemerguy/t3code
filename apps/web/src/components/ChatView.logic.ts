@@ -1,6 +1,7 @@
 import {
   type EnvironmentId,
   isProviderDriverKind,
+  type MessageId,
   ProjectId,
   type ModelSelection,
   type ProviderDriverKind,
@@ -328,9 +329,16 @@ export async function waitForStartedServerThread(
   });
 }
 
+export interface LocalDispatchOptions {
+  preparingWorktree?: boolean;
+  messageId?: MessageId | null;
+}
+
 export interface LocalDispatchSnapshot {
   startedAt: string;
   preparingWorktree: boolean;
+  messageId: MessageId | null;
+  activeTurnIdAtDispatch: TurnId | null;
   latestTurnTurnId: TurnId | null;
   latestTurnRequestedAt: string | null;
   latestTurnStartedAt: string | null;
@@ -341,13 +349,15 @@ export interface LocalDispatchSnapshot {
 
 export function createLocalDispatchSnapshot(
   activeThread: Thread | undefined,
-  options?: { preparingWorktree?: boolean },
+  options?: LocalDispatchOptions,
 ): LocalDispatchSnapshot {
   const latestTurn = activeThread?.latestTurn ?? null;
   const session = activeThread?.session ?? null;
   return {
     startedAt: new Date().toISOString(),
     preparingWorktree: Boolean(options?.preparingWorktree),
+    messageId: options?.messageId ?? null,
+    activeTurnIdAtDispatch: session?.status === "running" ? (session.activeTurnId ?? null) : null,
     latestTurnTurnId: latestTurn?.turnId ?? null,
     latestTurnRequestedAt: latestTurn?.requestedAt ?? null,
     latestTurnStartedAt: latestTurn?.startedAt ?? null,
@@ -357,11 +367,45 @@ export function createLocalDispatchSnapshot(
   };
 }
 
+function hasAcknowledgedLocalDispatchMessage(input: {
+  localDispatch: LocalDispatchSnapshot;
+  messages: ReadonlyArray<ChatMessage>;
+  session: Thread["session"] | null;
+}): boolean {
+  if (!input.localDispatch.messageId) {
+    return false;
+  }
+
+  const message = input.messages.find((entry) => entry.id === input.localDispatch.messageId);
+  if (!message || message.role !== "user") {
+    return false;
+  }
+
+  if (message.providerDelivery?.status === "delivered") {
+    return true;
+  }
+  if (message.providerDelivery?.status === "failed") {
+    return true;
+  }
+
+  const messageTurnId = message.turnId ?? null;
+  if (!messageTurnId) {
+    return false;
+  }
+
+  const activeTurnId = input.session?.activeTurnId ?? null;
+  return (
+    messageTurnId === input.localDispatch.activeTurnIdAtDispatch ||
+    (activeTurnId !== null && messageTurnId === activeTurnId)
+  );
+}
+
 export function hasServerAcknowledgedLocalDispatch(input: {
   localDispatch: LocalDispatchSnapshot | null;
   phase: SessionPhase;
   latestTurn: Thread["latestTurn"] | null;
   session: Thread["session"] | null;
+  messages?: ReadonlyArray<ChatMessage>;
   hasPendingApproval: boolean;
   hasPendingUserInput: boolean;
   threadError: string | null | undefined;
@@ -375,6 +419,17 @@ export function hasServerAcknowledgedLocalDispatch(input: {
 
   const latestTurn = input.latestTurn ?? null;
   const session = input.session ?? null;
+
+  if (
+    hasAcknowledgedLocalDispatchMessage({
+      localDispatch: input.localDispatch,
+      messages: input.messages ?? [],
+      session,
+    })
+  ) {
+    return true;
+  }
+
   const latestTurnChanged =
     input.localDispatch.latestTurnTurnId !== (latestTurn?.turnId ?? null) ||
     input.localDispatch.latestTurnRequestedAt !== (latestTurn?.requestedAt ?? null) ||
