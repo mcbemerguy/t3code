@@ -410,10 +410,8 @@ describe("Custom ACP provider", () => {
         runtimeMode: "full-access",
       });
 
-      const exit = yield* adapter
-        .sendTurn({ threadId, input: "fail prompt", attachments: [] })
-        .pipe(Effect.exit);
-      assert.isTrue(Exit.isFailure(exit));
+      const turn = yield* adapter.sendTurn({ threadId, input: "fail prompt", attachments: [] });
+      assert.equal(turn.threadId, threadId);
 
       const completedEvent = yield* Deferred.await(completed);
       assert.equal(completedEvent.payload.state, "failed");

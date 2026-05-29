@@ -982,7 +982,7 @@ export function makeGenericAcpAdapter(
               stopReason: "session/prompt failed",
               errorMessage: detail,
             });
-            return yield* Effect.failCause(promptExit.cause);
+            return undefined;
           }
           return promptExit.value;
         }).pipe(Effect.onError(() => releaseTurnReservation(ctx, turnId)));
