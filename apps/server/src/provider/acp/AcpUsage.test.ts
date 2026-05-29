@@ -50,6 +50,37 @@ describe("AcpUsage", () => {
     });
   });
 
+  it("derives context source from Pi workflow metadata on ACP usage updates", () => {
+    const childUsage = normalizeAcpUsageUpdate({
+      sessionUpdate: "usage_update",
+      used: 12_000,
+      size: 200_000,
+      _meta: {
+        piWorkflow: {
+          runId: "run-1",
+          workflowId: "review",
+          stepId: "code",
+          childSessionId: "child-session",
+        },
+      },
+    });
+    const promptUsage = normalizeAcpPromptUsage({
+      totalTokens: 1_000,
+      inputTokens: 700,
+      outputTokens: 300,
+    });
+
+    expect(childUsage).toEqual({
+      usedTokens: 12_000,
+      maxTokens: 200_000,
+      contextSourceId: "pi-workflow-child:child-session",
+      contextSourceLabel: "review/code",
+    });
+    expect(promptUsage).toBeDefined();
+
+    expect(mergeAcpTokenUsageSnapshot(childUsage, promptUsage!)).toEqual(promptUsage);
+  });
+
   it("does not preserve a previous context window across usage source changes", () => {
     const childUsage = normalizePiUsageTelemetry({
       sessionId: "parent-session",

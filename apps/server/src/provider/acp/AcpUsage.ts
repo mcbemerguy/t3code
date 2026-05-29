@@ -30,11 +30,13 @@ export function normalizeAcpUsageUpdate(
     typeof update.cost?.currency === "string" && update.cost.currency.trim().length > 0
       ? update.cost.currency.trim()
       : undefined;
+  const meta = isRecord(update._meta) ? update._meta : undefined;
   return {
     usedTokens,
     ...(maxTokens !== undefined ? { maxTokens } : {}),
     ...(costAmount !== undefined && costAmount >= 0 ? { costAmount } : {}),
     ...(costCurrency !== undefined ? { costCurrency } : {}),
+    ...piWorkflowContextSource(meta?.piWorkflow),
   };
 }
 
@@ -145,13 +147,16 @@ function booleanValue(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
 }
 
-function piUsageContextSource(params: Record<string, unknown>): {
+function piWorkflowContextSource(
+  workflowValue: unknown,
+  contextSessionIdValue?: unknown,
+): {
   contextSourceId?: string;
   contextSourceLabel?: string;
 } {
-  const workflow = isRecord(params.workflow) ? params.workflow : undefined;
+  const workflow = isRecord(workflowValue) ? workflowValue : undefined;
   const childSessionId =
-    nonEmptyString(params.contextSessionId) ?? nonEmptyString(workflow?.childSessionId);
+    nonEmptyString(contextSessionIdValue) ?? nonEmptyString(workflow?.childSessionId);
   const stepId = nonEmptyString(workflow?.stepId);
   const runId = nonEmptyString(workflow?.runId);
   const workflowId = nonEmptyString(workflow?.workflowId);
@@ -165,6 +170,13 @@ function piUsageContextSource(params: Record<string, unknown>): {
     ...(contextSourceId ? { contextSourceId } : {}),
     ...(contextSourceLabel ? { contextSourceLabel } : {}),
   };
+}
+
+function piUsageContextSource(params: Record<string, unknown>): {
+  contextSourceId?: string;
+  contextSourceLabel?: string;
+} {
+  return piWorkflowContextSource(params.workflow, params.contextSessionId);
 }
 
 export const PI_USAGE_UPDATE_METHOD = "_pi/session_usage_update";
