@@ -27,6 +27,8 @@ const emitThoughtLevelConfig = process.env.T3_ACP_EMIT_THOUGHT_LEVEL_CONFIG === 
 const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
+const failPrompt = process.env.T3_ACP_FAIL_PROMPT === "1";
+const failPromptDetail = process.env.T3_ACP_FAIL_PROMPT_DETAIL ?? "Mock prompt failed";
 const enableSessionList = process.env.T3_ACP_ENABLE_SESSION_LIST === "1";
 const enablePiSteering = process.env.T3_ACP_ENABLE_PI_STEERING === "1";
 const failLoadSession = process.env.T3_ACP_FAIL_LOAD_SESSION === "1";
@@ -457,6 +459,14 @@ const program = Effect.gen(function* () {
             sessionUpdate: "available_commands_update",
             availableCommands: availableCommands(),
           },
+        });
+      }
+
+      if (failPrompt) {
+        return yield* AcpError.AcpRequestError.internalError("Internal error", {
+          details: failPromptDetail,
+          method: "session/prompt",
+          params: request,
         });
       }
 

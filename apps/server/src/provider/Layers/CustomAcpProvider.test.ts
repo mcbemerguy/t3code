@@ -383,6 +383,46 @@ describe("Custom ACP provider", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
+  it.effect("emits a failed turn completion when ACP prompt fails after start", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({
+            T3_ACP_FAIL_PROMPT: "1",
+            T3_ACP_FAIL_PROMPT_DETAIL: "Mock prompt failed after turn start",
+          }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-prompt-failure-after-start");
+      const completed =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>>();
+
+      yield* Stream.runForEach(adapter.streamEvents, (event) => {
+        if (event.threadId !== threadId || event.type !== "turn.completed") return Effect.void;
+        return Deferred.succeed(completed, event).pipe(Effect.ignore);
+      }).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      const exit = yield* adapter
+        .sendTurn({ threadId, input: "fail prompt", attachments: [] })
+        .pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(exit));
+
+      const completedEvent = yield* Deferred.await(completed);
+      assert.equal(completedEvent.payload.state, "failed");
+      assert.equal(completedEvent.payload.stopReason, "session/prompt failed");
+      assert.equal(completedEvent.payload.errorMessage, "Mock prompt failed after turn start");
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("handles ask-question requests and resolves them through respondToUserInput", () =>
     Effect.gen(function* () {
       const adapter = yield* makeGenericAcpAdapter(

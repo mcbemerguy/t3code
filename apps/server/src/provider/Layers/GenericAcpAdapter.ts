@@ -15,6 +15,7 @@ import {
   type ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -161,6 +162,25 @@ function hasPiAcpMetadataRecord(meta: unknown): boolean {
 
 function currentRuntimeEventTurnId(ctx: GenericAcpSessionContext): TurnId | undefined {
   return ctx.activeTurnId ?? ctx.runtimeEventTurnId;
+}
+
+function providerAdapterErrorDetail(error: ProviderAdapterError): string {
+  switch (error._tag) {
+    case "ProviderAdapterRequestError":
+    case "ProviderAdapterProcessError":
+      return error.detail;
+    case "ProviderAdapterValidationError":
+      return error.issue;
+    case "ProviderAdapterSessionClosedError":
+    case "ProviderAdapterSessionNotFoundError":
+    default:
+      return error.message;
+  }
+}
+
+function promptFailureDetail(cause: Cause.Cause<ProviderAdapterError>): string {
+  const failure = cause.reasons.find(Cause.isFailReason)?.error;
+  return failure ? providerAdapterErrorDetail(failure) : Cause.pretty(cause);
 }
 
 function settlePendingApprovalsAsCancelled(
@@ -312,7 +332,11 @@ export function makeGenericAcpAdapter(
     const completeTurnLocally = (
       ctx: GenericAcpSessionContext,
       turnId: TurnId,
-      payload: { readonly state: "cancelled"; readonly stopReason: string | null },
+      payload: {
+        readonly state: "cancelled" | "failed";
+        readonly stopReason: string | null;
+        readonly errorMessage?: string;
+      },
     ) =>
       Effect.gen(function* () {
         if (ctx.completedTurnIds.has(turnId)) return;
@@ -952,6 +976,12 @@ export function makeGenericAcpAdapter(
               });
               return undefined;
             }
+            const detail = promptFailureDetail(promptExit.cause);
+            yield* completeTurnLocally(ctx, turnId, {
+              state: "failed",
+              stopReason: "session/prompt failed",
+              errorMessage: detail,
+            });
             return yield* Effect.failCause(promptExit.cause);
           }
           return promptExit.value;
