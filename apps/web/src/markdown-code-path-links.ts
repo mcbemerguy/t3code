@@ -1,3 +1,4 @@
+import { isHighConfidenceAutolinkPath } from "./fileLinkCandidate";
 import { resolveMarkdownFileLinkMeta, type MarkdownFileLinkMeta } from "./markdown-links";
 
 const MAX_CODE_SPAN_PATH_LENGTH = 300;
@@ -99,6 +100,7 @@ export function resolveMarkdownCodeSpanPathLinkMeta(
   if (normalized.length === 0 || normalized.length > MAX_CODE_SPAN_PATH_LENGTH) return null;
   if (isGenericOnlySnippet(normalized)) return null;
   if (!hasPathSignal(normalized)) return null;
+  if (!isHighConfidenceAutolinkPath(normalized, cwd)) return null;
 
   return resolveMarkdownFileLinkMeta(normalized, cwd);
 }

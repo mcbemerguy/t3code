@@ -75,15 +75,19 @@ function settingsLayer(settings: CustomAcpSettings) {
   });
 }
 
+let tempNameCounter = 0;
+
+function uniqueTempName(prefix: string): string {
+  tempNameCounter += 1;
+  return `${prefix}-${process.pid}-${tempNameCounter}`;
+}
+
 const discoveryLayer = (settings: CustomAcpSettings) =>
   settingsLayer(settings).pipe(Layer.provideMerge(NodeServices.layer));
 
 describe("Custom ACP external session import", () => {
   it.effect("lists sessions with initialize and session/list without session/new", () => {
-    const requestLog = path.join(
-      os.tmpdir(),
-      `custom-acp-import-list-${crypto.randomUUID()}.jsonl`,
-    );
+    const requestLog = path.join(os.tmpdir(), `${uniqueTempName("custom-acp-import-list")}.jsonl`);
     return Effect.gen(function* () {
       const result = yield* listCustomAcpExternalSessions({
         providerInstanceId: customAcpInstanceId,
@@ -114,7 +118,7 @@ describe("Custom ACP external session import", () => {
     () => {
       const requestLog = path.join(
         os.tmpdir(),
-        `custom-acp-import-auth-list-${crypto.randomUUID()}.jsonl`,
+        `${uniqueTempName("custom-acp-import-auth-list")}.jsonl`,
       );
       return Effect.gen(function* () {
         const result = yield* listCustomAcpExternalSessions({
@@ -146,7 +150,7 @@ describe("Custom ACP external session import", () => {
   );
 
   it.effect("filters out listed sessions outside the requested cwd", () => {
-    const outsideCwd = path.join(os.tmpdir(), `custom-acp-outside-${crypto.randomUUID()}`);
+    const outsideCwd = path.join(os.tmpdir(), uniqueTempName("custom-acp-outside"));
     return Effect.gen(function* () {
       const result = yield* listCustomAcpExternalSessions({
         providerInstanceId: customAcpInstanceId,
@@ -183,7 +187,7 @@ describe("Custom ACP external session import", () => {
     () => {
       const requestLog = path.join(
         os.tmpdir(),
-        `custom-acp-import-strict-resume-${crypto.randomUUID()}.jsonl`,
+        `${uniqueTempName("custom-acp-import-strict-resume")}.jsonl`,
       );
       return Effect.gen(function* () {
         const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;

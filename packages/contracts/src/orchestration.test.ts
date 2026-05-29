@@ -1,5 +1,4 @@
-import assert from "node:assert/strict";
-import { it } from "@effect/vitest";
+import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -335,7 +334,9 @@ it.effect("decodes user message delivery retry command", () =>
       createdAt: "2026-01-01T00:00:00.000Z",
     });
 
-    assert.strictEqual(parsed.type, "thread.message.user.retry-delivery");
+    if (parsed.type !== "thread.message.user.retry-delivery") {
+      throw new Error(`Unexpected command type: ${parsed.type}`);
+    }
     assert.strictEqual(parsed.interactionMode, DEFAULT_PROVIDER_INTERACTION_MODE);
   }),
 );
@@ -363,7 +364,9 @@ it.effect("decodes user message delivery failure events", () =>
       },
     });
 
-    assert.strictEqual(parsed.type, "thread.message-user-delivery-failed");
+    if (parsed.type !== "thread.message-user-delivery-failed") {
+      throw new Error(`Unexpected event type: ${parsed.type}`);
+    }
     assert.strictEqual(parsed.payload.messageId, "message-1");
   }),
 );
@@ -422,7 +425,9 @@ it.effect("decodes thread archived and unarchived events", () =>
       },
     });
 
-    assert.strictEqual(archived.type, "thread.archived");
+    if (archived.type !== "thread.archived") {
+      assert.fail(`Expected thread.archived event, received ${archived.type}.`);
+    }
     assert.strictEqual(archived.payload.archivedAt, "2026-01-01T00:00:00.000Z");
     assert.strictEqual(unarchived.type, "thread.unarchived");
   }),

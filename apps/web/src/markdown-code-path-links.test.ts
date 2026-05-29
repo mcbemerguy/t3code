@@ -15,27 +15,24 @@ describe("resolveMarkdownCodeSpanPathLinkMeta", () => {
     });
   });
 
-  it("accepts workspace file names with known source or config extensions", () => {
+  it("accepts allowlisted bare workspace file names", () => {
     expect(resolveMarkdownCodeSpanPathLinkMeta("package.json", "/repo/project")).toMatchObject({
       filePath: "/repo/project/package.json",
       targetPath: "/repo/project/package.json",
       displayPath: "project/package.json",
       basename: "package.json",
     });
-    expect(resolveMarkdownCodeSpanPathLinkMeta("ChatMarkdown.tsx", "/repo/project")).toMatchObject({
-      filePath: "/repo/project/ChatMarkdown.tsx",
-      targetPath: "/repo/project/ChatMarkdown.tsx",
-      displayPath: "project/ChatMarkdown.tsx",
-      basename: "ChatMarkdown.tsx",
-    });
   });
 
-  it("accepts explicitly prefixed paths even without an extension", () => {
-    expect(resolveMarkdownCodeSpanPathLinkMeta("./src/components", "/repo/project")).toMatchObject({
-      filePath: "/repo/project/./src/components",
-      targetPath: "/repo/project/./src/components",
-      displayPath: "project/./src/components",
-      basename: "components",
+  it("requires a directory signal for ordinary source file names", () => {
+    expect(resolveMarkdownCodeSpanPathLinkMeta("ChatMarkdown.tsx", "/repo/project")).toBeNull();
+    expect(
+      resolveMarkdownCodeSpanPathLinkMeta("./src/components/index.ts", "/repo/project"),
+    ).toMatchObject({
+      filePath: "/repo/project/./src/components/index.ts",
+      targetPath: "/repo/project/./src/components/index.ts",
+      displayPath: "project/./src/components/index.ts",
+      basename: "index.ts",
     });
   });
 
@@ -47,7 +44,10 @@ describe("resolveMarkdownCodeSpanPathLinkMeta", () => {
     expect(resolveMarkdownCodeSpanPathLinkMeta("<foo.ts>", "/repo/project")).toBeNull();
   });
 
-  it("rejects common code identifiers and slash-separated prose", () => {
+  it("rejects glob patterns, shell-like snippets, common code identifiers, and slash-separated prose", () => {
+    expect(resolveMarkdownCodeSpanPathLinkMeta("**/*.py", "/repo/project")).toBeNull();
+    expect(resolveMarkdownCodeSpanPathLinkMeta("src/**/*.ts", "/repo/project")).toBeNull();
+    expect(resolveMarkdownCodeSpanPathLinkMeta("$HOME/src/main.ts", "/repo/project")).toBeNull();
     expect(resolveMarkdownCodeSpanPathLinkMeta("props.children", "/repo/project")).toBeNull();
     expect(resolveMarkdownCodeSpanPathLinkMeta("error.message", "/repo/project")).toBeNull();
     expect(resolveMarkdownCodeSpanPathLinkMeta("process.env", "/repo/project")).toBeNull();

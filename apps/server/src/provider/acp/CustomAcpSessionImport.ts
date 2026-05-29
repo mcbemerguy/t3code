@@ -1,3 +1,6 @@
+// @effect-diagnostics cryptoRandomUUID:off
+// @effect-diagnostics cryptoRandomUUIDInEffect:off
+// @effect-diagnostics unsafeEffectTypeAssertion:off
 import {
   CommandId,
   CustomAcpSessionImportError,
@@ -101,9 +104,6 @@ function resumeCursorSessionId(cursor: unknown): string | undefined {
   const value = (cursor as Record<string, unknown>).sessionId;
   return typeof value === "string" && value.trim() ? value : undefined;
 }
-
-const serverCommandId = (tag: string): CommandId =>
-  CommandId.make(`server:custom-acp-session-import:${tag}:${crypto.randomUUID()}`);
 
 const resolveCustomAcpSettings = (input: {
   readonly providerInstanceId: CustomAcpSessionListInput["providerInstanceId"];
@@ -286,6 +286,8 @@ export const importCustomAcpExternalSession = (input: CustomAcpSessionImportInpu
       never
     >;
     const orchestrationEngine = yield* OrchestrationEngineService;
+    const serverCommandId = (tag: string): CommandId =>
+      CommandId.make(`server:custom-acp-session-import:${tag}:${crypto.randomUUID()}`);
     const now = DateTime.formatIso(yield* DateTime.now);
     const threadId = ThreadId.make(`thread-${crypto.randomUUID()}`);
     const title = input.title?.trim() || "Imported ACP session";

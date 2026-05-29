@@ -326,7 +326,7 @@ const program = Effect.gen(function* () {
       }
       return yield* Effect.sync(() => {
         if (emitAvailableCommands) {
-          setTimeout(() => {
+          queueMicrotask(() => {
             Effect.runFork(
               agent.client.sessionUpdate({
                 sessionId,
@@ -336,7 +336,7 @@ const program = Effect.gen(function* () {
                 },
               }),
             );
-          }, 0);
+          });
         }
         return {
           sessionId,

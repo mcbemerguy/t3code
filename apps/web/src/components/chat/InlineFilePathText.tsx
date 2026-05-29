@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
 
+import { isHighConfidenceAutolinkPath } from "../../fileLinkCandidate";
 import { resolveMarkdownFileLinkMeta, type MarkdownFileLinkMeta } from "../../markdown-links";
 import { extractTerminalLinks } from "../../terminal-links";
 import { cn } from "../../lib/utils";
@@ -100,7 +101,9 @@ export function renderInlineFilePathParts(
     const before = text.slice(cursor, match.start);
     if (before) children.push(before);
 
-    const meta = resolveMarkdownFileLinkMeta(match.text, cwd);
+    const meta = isHighConfidenceAutolinkPath(match.text, cwd)
+      ? resolveMarkdownFileLinkMeta(match.text, cwd)
+      : null;
     children.push(
       meta
         ? renderFileLink(match.text, meta, theme, linkClassName, `${match.start}:${match.end}`)
@@ -128,7 +131,9 @@ export function InlineFilePathLink({
   className?: string | undefined;
   showIcon?: boolean | undefined;
 }) {
-  const meta = resolveMarkdownFileLinkMeta(text, cwd);
+  const meta = isHighConfidenceAutolinkPath(text, cwd)
+    ? resolveMarkdownFileLinkMeta(text, cwd)
+    : null;
   if (!meta) return <>{text}</>;
   return renderFileLink(text, meta, theme, className, text, showIcon);
 }

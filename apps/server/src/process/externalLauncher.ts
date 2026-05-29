@@ -274,10 +274,10 @@ export interface DetachedProcessSpawnerShape {
 export class DetachedProcessSpawner extends Context.Service<
   DetachedProcessSpawner,
   DetachedProcessSpawnerShape
->()("t3/process/DetachedProcessSpawner") {}
+>()("t3/process/externalLauncher/DetachedProcessSpawner") {}
 
 export class ExternalLauncher extends Context.Service<ExternalLauncher, ExternalLauncherShape>()(
-  "t3/process/ExternalLauncher",
+  "t3/process/externalLauncher",
 ) {}
 
 // ==============================

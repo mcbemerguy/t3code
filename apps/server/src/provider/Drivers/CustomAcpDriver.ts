@@ -1,4 +1,5 @@
 import { CustomAcpSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
+import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -39,6 +40,7 @@ const MAINTENANCE_CAPABILITIES = makeManualOnlyProviderMaintenanceCapabilities({
 
 export type CustomAcpDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
+  | Crypto.Crypto
   | FileSystem.FileSystem
   | Path.Path
   | ProviderEventLoggers
