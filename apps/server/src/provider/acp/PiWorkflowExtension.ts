@@ -190,10 +190,17 @@ export function parsePiWorkflowEventNotification(
   return { runId, sequence, record };
 }
 
+function piWorkflowMetaFromPayload(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+  const meta = isRecord(value._meta) ? value._meta : undefined;
+  const piWorkflow = isRecord(meta?.piWorkflow) ? meta.piWorkflow : undefined;
+  return piWorkflow;
+}
+
 export function workflowMetaFromRawPayload(rawPayload: unknown): { runId: string } | undefined {
   if (!isRecord(rawPayload)) return undefined;
-  const meta = isRecord(rawPayload._meta) ? rawPayload._meta : undefined;
-  const piWorkflow = isRecord(meta?.piWorkflow) ? meta.piWorkflow : undefined;
+  const piWorkflow =
+    piWorkflowMetaFromPayload(rawPayload) ?? piWorkflowMetaFromPayload(rawPayload.update);
   const runId = stringField(piWorkflow?.runId);
   return runId ? { runId } : undefined;
 }

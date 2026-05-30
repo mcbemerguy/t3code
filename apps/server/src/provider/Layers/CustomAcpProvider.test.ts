@@ -806,6 +806,59 @@ describe("Custom ACP provider", () => {
     });
   });
 
+  it.effect("requests Pi workflow pause instead of ACP cancel on first workflow interrupt", () =>
+    Effect.gen(function* () {
+      const requestLog = yield* Effect.promise(() => tempFile("workflow-pause.jsonl"));
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({
+            T3_ACP_ENABLE_PI_WORKFLOWS: "1",
+            T3_ACP_REQUEST_LOG_PATH: requestLog,
+          }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-workflow-pause-interrupt");
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: {
+          schemaVersion: 2,
+          provider: customAcpDriver,
+          sessionId: "mock-session-1",
+          workflows: {
+            activeRuns: [{ runId: "workflow-run-1", lastSequence: 7 }],
+          },
+        },
+      });
+
+      yield* adapter.interruptTurn(threadId);
+      const sessions = yield* adapter.listSessions();
+      const currentSession = sessions.find((session) => session.threadId === threadId);
+      assert.isDefined(currentSession);
+      assert.deepStrictEqual(
+        parseCustomAcpResume(customAcpDriver, currentSession!.resumeCursor)?.activeWorkflowRuns,
+        [{ runId: "workflow-run-1", lastSequence: 7, status: "paused" }],
+      );
+      yield* adapter.stopSession(threadId);
+
+      const entries = yield* Effect.promise(() => readJsonLines(requestLog));
+      const methods = jsonRpcMethods(entries);
+      assert.include(methods, "_pi/workflows/pause");
+      assert.notInclude(methods, "session/cancel");
+      expect(
+        entries.some(
+          (entry) =>
+            entry.method === "_pi/workflows/pause" &&
+            (entry.params as Record<string, unknown> | undefined)?.runId === "workflow-run-1",
+        ),
+      ).toBe(true);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("fails strict custom ACP resume visibly instead of falling back to session/new", () =>
     Effect.gen(function* () {
       const requestLog = yield* Effect.promise(() => tempFile("strict-resume-failure.jsonl"));

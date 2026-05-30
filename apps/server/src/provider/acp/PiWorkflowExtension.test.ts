@@ -63,5 +63,15 @@ describe("Pi workflow ACP extension helpers", () => {
         _meta: { piWorkflow: { runId: "run-1" } },
       }),
     ).toEqual({ runId: "run-1" });
+
+    expect(
+      workflowMetaFromRawPayload({
+        sessionId: "pi-session",
+        update: {
+          sessionUpdate: "tool_call",
+          _meta: { piWorkflow: { runId: "run-2" } },
+        },
+      }),
+    ).toEqual({ runId: "run-2" });
   });
 });

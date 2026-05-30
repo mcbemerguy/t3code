@@ -325,18 +325,22 @@ export function makeGenericAcpAdapter(
     const pauseActiveWorkflows = (ctx: GenericAcpSessionContext) =>
       Effect.gen(function* () {
         const pauseMethod = ctx.piWorkflowCapabilities?.pauseMethod;
-        if (!pauseMethod || ctx.workflowRuns.size === 0) return false;
-        for (const run of ctx.workflowRuns.values()) {
-          yield* logNative(
-            ctx.threadId,
-            pauseMethod,
-            {
-              sessionId: ctx.acpSessionId,
-              runId: run.runId,
-              reason: "User requested workflow interruption from t3code.",
-            },
-            "acp.extension",
-          );
+        const runs = Array.from(ctx.workflowRuns.values());
+        if (!pauseMethod || runs.length === 0) return false;
+        for (const run of runs) {
+          const payload = {
+            sessionId: ctx.acpSessionId,
+            runId: run.runId,
+            reason: "User requested workflow interruption from t3code.",
+          };
+          yield* logNative(ctx.threadId, pauseMethod, payload, "acp.extension");
+          const pauseExit = yield* ctx.acp
+            .request(pauseMethod, payload)
+            .pipe(Effect.exit, Effect.timeoutOption(Duration.millis(ACP_CANCEL_WATCHDOG_GRACE_MS)));
+          if (pauseExit._tag === "None" || Exit.isFailure(pauseExit.value)) return false;
+        }
+        for (const run of runs) {
+          upsertWorkflowRunCursor(ctx, { ...run, status: "paused" }, false);
         }
         yield* offerRuntimeEvent(
           makeAcpContentDeltaEvent({
@@ -346,7 +350,7 @@ export function makeGenericAcpAdapter(
             turnId: currentRuntimeEventTurnId(ctx),
             streamKind: "assistant_text",
             text: "Workflow pause requested. Use the workflow resume or abort action to continue or terminate it explicitly.",
-            rawPayload: { activeWorkflowRuns: Array.from(ctx.workflowRuns.keys()) },
+            rawPayload: { activeWorkflowRuns: runs.map((run) => run.runId) },
           }),
         );
         return true;
