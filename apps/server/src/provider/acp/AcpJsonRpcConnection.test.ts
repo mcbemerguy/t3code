@@ -233,7 +233,7 @@ describe("AcpSessionRuntime", () => {
     ),
   );
 
-  it.effect("suppresses generic placeholder tool updates until completion", () =>
+  it.effect("emits generic placeholder tools at start and completion", () =>
     Effect.gen(function* () {
       const runtime = yield* AcpSessionRuntime;
       yield* runtime.start();
@@ -243,13 +243,19 @@ describe("AcpSessionRuntime", () => {
       });
       expect(promptResult).toMatchObject({ stopReason: "end_turn" });
 
-      const notes = Array.from(yield* Stream.runCollect(Stream.take(runtime.getEvents(), 1)));
-      expect(notes.map((note) => note._tag)).toEqual(["ToolCallUpdated"]);
-      const toolCall = notes[0];
-      expect(toolCall?._tag).toBe("ToolCallUpdated");
-      if (toolCall?._tag === "ToolCallUpdated") {
-        expect(toolCall.toolCall.status).toBe("completed");
-        expect(toolCall.toolCall.title).toBe("Read file");
+      const notes = Array.from(yield* Stream.runCollect(Stream.take(runtime.getEvents(), 2)));
+      expect(notes.map((note) => note._tag)).toEqual(["ToolCallUpdated", "ToolCallUpdated"]);
+      const toolStarted = notes[0];
+      expect(toolStarted?._tag).toBe("ToolCallUpdated");
+      if (toolStarted?._tag === "ToolCallUpdated") {
+        expect(toolStarted.toolCall.status).toBe("pending");
+        expect(toolStarted.toolCall.title).toBe("Read file");
+      }
+      const toolCompleted = notes[1];
+      expect(toolCompleted?._tag).toBe("ToolCallUpdated");
+      if (toolCompleted?._tag === "ToolCallUpdated") {
+        expect(toolCompleted.toolCall.status).toBe("completed");
+        expect(toolCompleted.toolCall.title).toBe("Read file");
       }
     }).pipe(
       Effect.provide(
@@ -259,6 +265,54 @@ describe("AcpSessionRuntime", () => {
             args: [mockAgentPath],
             env: {
               T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS: "1",
+            },
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          authMethodId: "test",
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+
+  it.effect("presents Pi subagent ACP tool calls with task context", () =>
+    Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime;
+      yield* runtime.start();
+
+      const promptResult = yield* runtime.prompt({
+        prompt: [{ type: "text", text: "hi" }],
+      });
+      expect(promptResult).toMatchObject({ stopReason: "end_turn" });
+
+      const notes = Array.from(yield* Stream.runCollect(Stream.take(runtime.getEvents(), 2)));
+      expect(notes.map((note) => note._tag)).toEqual(["ToolCallUpdated", "ToolCallUpdated"]);
+      const toolStarted = notes[0];
+      expect(toolStarted?._tag).toBe("ToolCallUpdated");
+      if (toolStarted?._tag === "ToolCallUpdated") {
+        expect(toolStarted.toolCall.itemType).toBe("collab_agent_tool_call");
+        expect(toolStarted.toolCall.status).toBe("inProgress");
+        expect(toolStarted.toolCall.title).toBe("Subagent task");
+        expect(toolStarted.toolCall.detail).toBe("scout: 3 tasks");
+      }
+      const toolCompleted = notes[1];
+      expect(toolCompleted?._tag).toBe("ToolCallUpdated");
+      if (toolCompleted?._tag === "ToolCallUpdated") {
+        expect(toolCompleted.toolCall.itemType).toBe("collab_agent_tool_call");
+        expect(toolCompleted.toolCall.status).toBe("completed");
+        expect(toolCompleted.toolCall.title).toBe("Subagent task");
+        expect(toolCompleted.toolCall.detail).toBe("scout: 3 tasks");
+      }
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: bunExe,
+            args: [mockAgentPath],
+            env: {
+              T3_ACP_EMIT_SUBAGENT_TOOL_CALL: "1",
             },
           },
           cwd: process.cwd(),

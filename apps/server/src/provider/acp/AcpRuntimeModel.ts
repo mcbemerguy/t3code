@@ -32,6 +32,7 @@ export interface AcpSessionModeState {
 export interface AcpToolCallState {
   readonly toolCallId: string;
   readonly kind?: string;
+  readonly itemType?: ToolLifecycleItemType;
   readonly title?: string;
   readonly status?: "pending" | "inProgress" | "completed" | "failed";
   readonly command?: string;
@@ -277,8 +278,29 @@ function normalizeToolKind(kind: unknown): string | undefined {
   return typeof kind === "string" && kind.trim().length > 0 ? kind.trim() : undefined;
 }
 
-function canonicalItemTypeFromAcpToolKind(kind: string | undefined): ToolLifecycleItemType {
-  switch (kind) {
+function isPiSubagentTool(input: {
+  readonly title?: string | undefined;
+  readonly rawInput?: unknown;
+}): boolean {
+  const title = input.title?.trim().toLowerCase();
+  if (title === "subagent" || title === "sub-agent" || title === "subagent task") {
+    return true;
+  }
+  if (!isRecord(input.rawInput)) {
+    return false;
+  }
+  return typeof input.rawInput.type === "string" && Array.isArray(input.rawInput.tasks);
+}
+
+function canonicalItemTypeFromAcpToolCall(input: {
+  readonly kind: string | undefined;
+  readonly title?: string | undefined;
+  readonly rawInput?: unknown;
+}): ToolLifecycleItemType | undefined {
+  if (isPiSubagentTool(input)) {
+    return "collab_agent_tool_call";
+  }
+  switch (input.kind) {
     case "execute":
       return "command_execution";
     case "edit":
@@ -288,6 +310,8 @@ function canonicalItemTypeFromAcpToolKind(kind: string | undefined): ToolLifecyc
     case "search":
     case "fetch":
       return "web_search";
+    case undefined:
+      return undefined;
     default:
       return "dynamic_tool_call";
   }
@@ -342,16 +366,18 @@ function makeToolCallState(
   if (input.locations !== undefined) {
     data.locations = input.locations;
   }
+  const itemType = canonicalItemTypeFromAcpToolCall({ kind, title, rawInput: input.rawInput });
   const fallbackDetail = command ?? normalizedTitle ?? textContent;
   const hasPresentationSeed =
     title !== undefined ||
     kind !== undefined ||
+    itemType !== undefined ||
     command !== undefined ||
     normalizedTitle !== undefined ||
     textContent !== undefined;
   const presentation = hasPresentationSeed
     ? deriveToolActivityPresentation({
-        itemType: canonicalItemTypeFromAcpToolKind(kind),
+        itemType,
         title,
         detail: fallbackDetail,
         data,
@@ -362,6 +388,7 @@ function makeToolCallState(
   return {
     toolCallId,
     ...(kind ? { kind } : {}),
+    ...(itemType ? { itemType } : {}),
     ...(presentation?.summary ? { title: presentation.summary } : {}),
     ...(status ? { status } : {}),
     ...(command ? { command } : {}),
@@ -397,6 +424,7 @@ export function mergeToolCallState(
 ): AcpToolCallState {
   const nextKind = typeof next.data.kind === "string" ? next.data.kind : undefined;
   const kind = nextKind ?? previous?.kind;
+  const itemType = next.itemType ?? previous?.itemType;
   const title = next.title ?? previous?.title;
   const status = next.status ?? previous?.status;
   const command = next.command ?? previous?.command;
@@ -404,6 +432,7 @@ export function mergeToolCallState(
   return {
     toolCallId: next.toolCallId,
     ...(kind ? { kind } : {}),
+    ...(itemType ? { itemType } : {}),
     ...(title ? { title } : {}),
     ...(status ? { status } : {}),
     ...(command ? { command } : {}),

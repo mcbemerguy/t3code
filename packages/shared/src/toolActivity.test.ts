@@ -54,4 +54,25 @@ describe("toolActivity", () => {
       summary: "Read file",
     });
   });
+
+  it("summarizes Pi subagent calls from ACP raw input", () => {
+    expect(
+      deriveToolActivityPresentation({
+        itemType: "collab_agent_tool_call",
+        title: "subagent",
+        detail: "subagent",
+        data: {
+          acpTitle: "subagent",
+          rawInput: {
+            type: "scout",
+            tasks: ["find one", "find two", "find three"],
+          },
+        },
+        fallbackSummary: "subagent",
+      }),
+    ).toEqual({
+      summary: "Subagent task",
+      detail: "scout: 3 tasks",
+    });
+  });
 });

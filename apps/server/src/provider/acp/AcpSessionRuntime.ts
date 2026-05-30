@@ -751,13 +751,13 @@ function shouldEmitToolCallUpdate(
   previous: AcpToolCallState | undefined,
   next: AcpToolCallState,
 ): boolean {
+  if (previous === undefined) {
+    return true;
+  }
   if (next.status === "completed" || next.status === "failed") {
     return true;
   }
-  if (!next.detail) {
-    return false;
-  }
-  return previous === undefined || previous.title !== next.title || previous.detail !== next.detail;
+  return previous.title !== next.title || previous.detail !== next.detail;
 }
 
 const assistantItemId = (sessionId: string, segmentIndex: number) =>

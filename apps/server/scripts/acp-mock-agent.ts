@@ -19,6 +19,7 @@ const emitToolCalls = process.env.T3_ACP_EMIT_TOOL_CALLS === "1";
 const emitInterleavedAssistantToolCalls =
   process.env.T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS === "1";
 const emitGenericToolPlaceholders = process.env.T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS === "1";
+const emitSubagentToolCall = process.env.T3_ACP_EMIT_SUBAGENT_TOOL_CALL === "1";
 const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
 const emitAvailableCommands = process.env.T3_ACP_EMIT_AVAILABLE_COMMANDS === "1";
 const emitAvailableCommandsOnPrompt = process.env.T3_ACP_EMIT_AVAILABLE_COMMANDS_ON_PROMPT === "1";
@@ -644,6 +645,39 @@ const program = Effect.gen(function* () {
             status: "completed",
             rawOutput: {
               content: "package.json\n",
+            },
+          },
+        });
+
+        return { stopReason: "end_turn" };
+      }
+
+      if (emitSubagentToolCall) {
+        const toolCallId = "tool-call-subagent-1";
+
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId,
+            title: "subagent",
+            kind: "other",
+            status: "in_progress",
+            rawInput: {
+              type: "scout",
+              tasks: ["find ACP tool code", "find t3code rendering code", "find tests"],
+            },
+          },
+        });
+
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId,
+            status: "completed",
+            rawOutput: {
+              content: "scout results",
             },
           },
         });

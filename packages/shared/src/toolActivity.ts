@@ -154,14 +154,44 @@ function isEquivalent(left: string | undefined, right: string | undefined): bool
   return normalizedLeft !== undefined && normalizedLeft === normalizedRight;
 }
 
+function subagentTaskCount(rawInput: Record<string, unknown> | undefined): number | undefined {
+  return Array.isArray(rawInput?.tasks) ? rawInput.tasks.length : undefined;
+}
+
+function subagentDetail(data: Record<string, unknown> | undefined): string | undefined {
+  const rawInput = asRecord(data?.rawInput);
+  const agentType = asTrimmedString(rawInput?.type);
+  const taskCount = subagentTaskCount(rawInput);
+  if (agentType && taskCount !== undefined) {
+    return `${agentType}: ${taskCount} ${taskCount === 1 ? "task" : "tasks"}`;
+  }
+  if (agentType) {
+    return agentType;
+  }
+  if (taskCount !== undefined) {
+    return `${taskCount} ${taskCount === 1 ? "task" : "tasks"}`;
+  }
+  return undefined;
+}
+
 function classifyToolAction(input: {
   readonly itemType?: ToolLifecycleItemType | null | undefined;
   readonly title?: string | undefined;
   readonly data?: Record<string, unknown> | undefined;
-}): "command" | "read" | "file_change" | "search" | "other" {
+}): "command" | "read" | "file_change" | "search" | "subagent" | "other" {
   const itemType = input.itemType ?? undefined;
   const kind = asTrimmedString(input.data?.kind)?.toLowerCase();
   const title = asTrimmedString(input.title)?.toLowerCase();
+  const acpTitle = asTrimmedString(input.data?.acpTitle)?.toLowerCase();
+  if (
+    itemType === "collab_agent_tool_call" ||
+    title === "subagent" ||
+    title === "sub-agent" ||
+    title === "subagent task" ||
+    acpTitle === "subagent"
+  ) {
+    return "subagent";
+  }
   if (itemType === "command_execution" || kind === "execute" || title === "terminal") {
     return "command";
   }
@@ -215,6 +245,16 @@ export function deriveToolActivityPresentation(
     return {
       summary: "Ran command",
       ...(command ? { detail: command } : {}),
+    };
+  }
+
+  if (action === "subagent") {
+    const detailText =
+      subagentDetail(data) ??
+      (!isEquivalent(detail, title) && !isEquivalent(detail, "Subagent task") ? detail : undefined);
+    return {
+      summary: "Subagent task",
+      ...(detailText ? { detail: detailText } : {}),
     };
   }
 
