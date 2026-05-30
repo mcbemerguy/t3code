@@ -21,7 +21,7 @@ import {
   findSessionConfigOption,
   mergeToolCallState,
   parseSessionModeState,
-  parsePiUsageTelemetryEvent,
+  parsePiExtensionEvent,
   parseSessionUpdateEvent,
   type AcpParsedSessionEvent,
   type AcpSessionModeState,
@@ -280,7 +280,7 @@ const makeAcpSessionRuntime = (
         if (notification._tag !== "ExtNotification") {
           return Effect.void;
         }
-        const event = parsePiUsageTelemetryEvent(notification.method, notification.params);
+        const event = parsePiExtensionEvent(notification.method, notification.params);
         return event ? Queue.offer(eventQueue, event) : Effect.void;
       }),
       Effect.forkScoped,

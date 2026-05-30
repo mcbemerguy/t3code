@@ -13,6 +13,7 @@ import {
   normalizePiUsageTelemetry,
   PI_USAGE_UPDATE_METHOD,
 } from "./AcpUsage.ts";
+import { parsePiWorkflowEventNotification } from "./PiWorkflowExtension.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -96,6 +97,13 @@ export type AcpParsedSessionEvent =
   | {
       readonly _tag: "TokenUsageUpdated";
       readonly usage: ThreadTokenUsageSnapshot;
+      readonly rawPayload: unknown;
+    }
+  | {
+      readonly _tag: "WorkflowEventObserved";
+      readonly runId: string;
+      readonly sequence: number;
+      readonly record: Record<string, unknown>;
       readonly rawPayload: unknown;
     };
 
@@ -473,15 +481,31 @@ export function parsePermissionRequest(
   };
 }
 
+export function parsePiExtensionEvent(
+  method: string,
+  params: unknown,
+): AcpParsedSessionEvent | undefined {
+  if (method === PI_USAGE_UPDATE_METHOD) {
+    const usage = normalizePiUsageTelemetry(params);
+    return usage ? { _tag: "TokenUsageUpdated", usage, rawPayload: params } : undefined;
+  }
+  const workflowEvent = parsePiWorkflowEventNotification(method, params);
+  return workflowEvent
+    ? {
+        _tag: "WorkflowEventObserved",
+        runId: workflowEvent.runId,
+        sequence: workflowEvent.sequence,
+        record: workflowEvent.record,
+        rawPayload: params,
+      }
+    : undefined;
+}
+
 export function parsePiUsageTelemetryEvent(
   method: string,
   params: unknown,
 ): AcpParsedSessionEvent | undefined {
-  if (method !== PI_USAGE_UPDATE_METHOD) {
-    return undefined;
-  }
-  const usage = normalizePiUsageTelemetry(params);
-  return usage ? { _tag: "TokenUsageUpdated", usage, rawPayload: params } : undefined;
+  return parsePiExtensionEvent(method, params);
 }
 
 export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotification): {

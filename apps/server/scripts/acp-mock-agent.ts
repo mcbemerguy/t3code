@@ -5,6 +5,7 @@
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -32,6 +33,10 @@ const failPrompt = process.env.T3_ACP_FAIL_PROMPT === "1";
 const failPromptDetail = process.env.T3_ACP_FAIL_PROMPT_DETAIL ?? "Mock prompt failed";
 const enableSessionList = process.env.T3_ACP_ENABLE_SESSION_LIST === "1";
 const enablePiSteering = process.env.T3_ACP_ENABLE_PI_STEERING === "1";
+const enablePiWorkflows = process.env.T3_ACP_ENABLE_PI_WORKFLOWS === "1";
+const emitWorkflowReplayOnLoad = process.env.T3_ACP_EMIT_WORKFLOW_REPLAY_ON_LOAD === "1";
+const workflowReplaySequence =
+  parseNonNegativeIntOrZero(process.env.T3_ACP_WORKFLOW_REPLAY_SEQUENCE) || 1;
 const failLoadSession = process.env.T3_ACP_FAIL_LOAD_SESSION === "1";
 const failCreateSessionCount = parseNonNegativeIntOrZero(
   process.env.T3_ACP_FAIL_CREATE_SESSION_COUNT,
@@ -310,8 +315,28 @@ const program = Effect.gen(function* () {
         agentCapabilities: {
           loadSession: true,
           ...(enableSessionList ? { sessionCapabilities: { list: {} } } : {}),
-          ...(enablePiSteering
-            ? { _meta: { piAcp: { steering: true, steeringMethod: "_pi/steer" } } }
+          ...(enablePiSteering || enablePiWorkflows
+            ? {
+                _meta: {
+                  piAcp: {
+                    ...(enablePiSteering ? { steering: true, steeringMethod: "_pi/steer" } : {}),
+                    ...(enablePiWorkflows
+                      ? {
+                          workflows: true,
+                          workflowMethods: [
+                            "_pi/workflows/list",
+                            "_pi/workflows/get",
+                            "_pi/workflows/events",
+                            "_pi/workflows/resume",
+                            "_pi/workflows/pause",
+                            "_pi/workflows/abort",
+                          ],
+                          workflowEventsMethod: "_pi/workflows/events",
+                        }
+                      : {}),
+                  },
+                },
+              }
             : {}),
         },
       };
@@ -381,20 +406,48 @@ const program = Effect.gen(function* () {
             method: "session/load",
           }),
         )
-      : agent.client
-          .sessionUpdate({
-            sessionId: String(request.sessionId ?? sessionId),
+      : Effect.gen(function* () {
+          const requestedSessionId = String(request.sessionId ?? sessionId);
+          yield* agent.client.sessionUpdate({
+            sessionId: requestedSessionId,
             update: {
               sessionUpdate: "user_message_chunk",
               content: { type: "text", text: "replay" },
             },
-          })
-          .pipe(
-            Effect.as({
-              modes: modeState(),
-              configOptions: configOptions(),
-            }),
-          ),
+          });
+          if (emitWorkflowReplayOnLoad) {
+            yield* agent.client.extNotification("_pi/workflows/events", {
+              sessionId: requestedSessionId,
+              runId: "workflow-run-1",
+              sequence: workflowReplaySequence,
+              event: {
+                type: "run_start",
+                runId: "workflow-run-1",
+                sequence: workflowReplaySequence,
+                workflowId: "mock-workflow",
+                runDir: "/tmp/workflow-run-1",
+                auditPath: "/tmp/workflow-run-1/audit.md",
+                status: "running",
+              },
+            });
+            yield* agent.client.sessionUpdate({
+              sessionId: requestedSessionId,
+              update: {
+                sessionUpdate: "tool_call",
+                toolCallId: "workflow:workflow-run-1",
+                title: "Workflow: mock-workflow",
+                kind: "other",
+                status: "in_progress",
+                rawInput: { runId: "workflow-run-1" },
+                _meta: { piWorkflow: { runId: "workflow-run-1" } },
+              },
+            } as AcpSchema.SessionNotification);
+          }
+          return {
+            modes: modeState(),
+            configOptions: configOptions(),
+          };
+        }),
   );
 
   yield* agent.handleSetSessionConfigOption((request) =>
@@ -444,6 +497,30 @@ const program = Effect.gen(function* () {
           cancelledSessions.add(String(sessionId ?? "mock-session-1"));
         }),
   );
+
+  for (const method of [
+    "_pi/workflows/resume",
+    "_pi/workflows/pause",
+    "_pi/workflows/abort",
+  ] as const) {
+    yield* agent.handleExtRequest(method, Schema.Unknown, (params) => {
+      const payload =
+        typeof params === "object" && params !== null ? (params as Record<string, unknown>) : {};
+      const runId = typeof payload.runId === "string" ? payload.runId : "workflow-run-1";
+      return Effect.succeed({
+        run: {
+          id: runId,
+          runId,
+          status:
+            method === "_pi/workflows/abort"
+              ? "aborted"
+              : method === "_pi/workflows/pause"
+                ? "paused"
+                : "recovering",
+        },
+      });
+    });
+  }
 
   yield* agent.handlePrompt((request) =>
     Effect.gen(function* () {
@@ -736,6 +813,45 @@ const program = Effect.gen(function* () {
   );
 
   yield* agent.handleUnknownExtRequest((method, params) => {
+    if (method.startsWith("_pi/workflows/")) {
+      const payload =
+        typeof params === "object" && params !== null ? (params as Record<string, unknown>) : {};
+      const runId = typeof payload.runId === "string" ? payload.runId : "workflow-run-1";
+      if (method === "_pi/workflows/list") {
+        return Effect.succeed({
+          runs: [
+            {
+              id: runId,
+              runId,
+              status: "running",
+              runDir: "/tmp/workflow-run-1",
+              auditPath: "/tmp/workflow-run-1/audit.md",
+            },
+          ],
+        });
+      }
+      if (method === "_pi/workflows/events") {
+        return Effect.succeed({
+          events: [],
+          nextOffset: 0,
+          lastSequence: 1,
+          malformedLineCount: 0,
+        });
+      }
+      return Effect.succeed({
+        run: {
+          id: runId,
+          runId,
+          status:
+            method === "_pi/workflows/abort"
+              ? "aborted"
+              : method === "_pi/workflows/pause"
+                ? "paused"
+                : "recovering",
+        },
+      });
+    }
+
     if (method !== "session/mode/set") {
       return Effect.fail(AcpError.AcpRequestError.methodNotFound(method));
     }

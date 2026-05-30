@@ -32,6 +32,7 @@ import { CustomAcpDriver } from "../Drivers/CustomAcpDriver.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 import { makeProviderInstanceRegistry } from "./ProviderInstanceRegistryLive.ts";
 import { checkCustomAcpProviderStatus } from "./CustomAcpProvider.ts";
+import { parseCustomAcpResume } from "../acp/PiWorkflowExtension.ts";
 import { makeGenericAcpAdapter } from "./GenericAcpAdapter.ts";
 
 const decodeCustomAcpSettings = Schema.decodeSync(CustomAcpSettings);
@@ -357,7 +358,7 @@ describe("Custom ACP provider", () => {
 
       assert.equal(session.provider, customAcpDriver);
       assert.deepStrictEqual(session.resumeCursor, {
-        schemaVersion: 1,
+        schemaVersion: 2,
         provider: customAcpDriver,
         sessionId: "mock-session-1",
       });
@@ -744,7 +745,7 @@ describe("Custom ACP provider", () => {
           runtimeMode: "approval-required",
         });
         assert.deepStrictEqual(session.resumeCursor, {
-          schemaVersion: 1,
+          schemaVersion: 2,
           provider: customAcpDriver,
           sessionId: "mock-session-1",
           requireSessionLoad: true,
@@ -774,6 +775,36 @@ describe("Custom ACP provider", () => {
         assert.include(methods, "session/load");
       }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
+
+  it("migrates custom ACP resume cursor version 1 to workflow-aware resume metadata", () => {
+    const parsed = parseCustomAcpResume(customAcpDriver, {
+      schemaVersion: 1,
+      provider: customAcpDriver,
+      sessionId: "legacy-session",
+      requireSessionLoad: true,
+    });
+    expect(parsed).toEqual({
+      sessionId: "legacy-session",
+      requireResumeSession: true,
+      activeWorkflowRuns: [],
+    });
+  });
+
+  it("parses workflow-aware custom ACP resume cursors", () => {
+    const parsed = parseCustomAcpResume(customAcpDriver, {
+      schemaVersion: 2,
+      provider: customAcpDriver,
+      sessionId: "pi-session",
+      workflows: {
+        activeRuns: [{ runId: "workflow-run-1", lastSequence: 7, runDir: "/tmp/run" }],
+      },
+    });
+    expect(parsed).toEqual({
+      sessionId: "pi-session",
+      requireResumeSession: false,
+      activeWorkflowRuns: [{ runId: "workflow-run-1", lastSequence: 7, runDir: "/tmp/run" }],
+    });
+  });
 
   it.effect("fails strict custom ACP resume visibly instead of falling back to session/new", () =>
     Effect.gen(function* () {
