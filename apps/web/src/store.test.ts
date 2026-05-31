@@ -726,6 +726,52 @@ describe("incremental orchestration updates", () => {
     );
   });
 
+  it("stores live activity events with their event sequence for stable ordering", () => {
+    const thread = makeThread({
+      activities: [
+        {
+          id: EventId.make("activity-snapshot"),
+          tone: "info",
+          kind: "turn.plan.updated",
+          summary: "snapshot plan",
+          payload: {},
+          turnId: TurnId.make("turn-1"),
+          sequence: 10,
+          createdAt: "2026-02-27T00:00:10.000Z",
+        },
+      ],
+    });
+    const state = makeState(thread);
+
+    const next = applyOrchestrationEvent(
+      state,
+      makeEvent(
+        "thread.activity-appended",
+        {
+          threadId: thread.id,
+          activity: {
+            id: EventId.make("activity-live"),
+            tone: "info",
+            kind: "turn.plan.updated",
+            summary: "live plan",
+            payload: {},
+            turnId: TurnId.make("turn-1"),
+            createdAt: "2026-02-27T00:00:00.000Z",
+          },
+        },
+        { sequence: 11 },
+      ),
+      localEnvironmentId,
+    );
+
+    const activities = threadsOf(next)[0]?.activities;
+    expect(activities?.map((activity) => activity.id)).toEqual([
+      EventId.make("activity-snapshot"),
+      EventId.make("activity-live"),
+    ]);
+    expect(activities?.[1]?.sequence).toBe(11);
+  });
+
   it("applies replay batches in sequence and updates session state", () => {
     const thread = makeThread({
       latestTurn: {

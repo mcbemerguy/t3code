@@ -1677,7 +1677,7 @@ function applyEnvironmentOrchestrationEvent(
       return updateThreadState(state, event.payload.threadId, (thread) => {
         const activities = [
           ...thread.activities.filter((activity) => activity.id !== event.payload.activity.id),
-          { ...event.payload.activity },
+          { ...event.payload.activity, sequence: event.sequence },
         ]
           .toSorted(compareActivities)
           .slice(-MAX_THREAD_ACTIVITIES);
