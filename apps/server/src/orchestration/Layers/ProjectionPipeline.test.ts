@@ -175,6 +175,114 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
   );
 });
 
+it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-activity-sequence-")))(
+  "OrchestrationProjectionPipeline",
+  (it) => {
+    it.effect("persists projected activity ordering from orchestration event sequence", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const now = "2026-01-01T00:00:00.000Z";
+        const createdAt = "2026-05-30T20:12:37.304Z";
+
+        yield* eventStore.append({
+          type: "thread.created",
+          eventId: EventId.make("evt-activity-sequence-thread"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-activity-sequence"),
+          occurredAt: now,
+          commandId: CommandId.make("cmd-activity-sequence-thread"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-activity-sequence-thread"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-activity-sequence"),
+            projectId: ProjectId.make("project-activity-sequence"),
+            title: "Thread activity sequence",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+
+        yield* eventStore.append({
+          type: "thread.activity-appended",
+          eventId: EventId.make("evt-stale-plan"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-activity-sequence"),
+          occurredAt: createdAt,
+          commandId: CommandId.make("cmd-stale-plan"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-stale-plan"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-activity-sequence"),
+            activity: {
+              id: EventId.make("z-stale-plan"),
+              tone: "info",
+              kind: "turn.plan.updated",
+              summary: "Plan updated",
+              payload: { plan: [{ step: "parent", status: "inProgress" }] },
+              turnId: null,
+              createdAt,
+            },
+          },
+        });
+
+        yield* eventStore.append({
+          type: "thread.activity-appended",
+          eventId: EventId.make("evt-final-plan"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-activity-sequence"),
+          occurredAt: createdAt,
+          commandId: CommandId.make("cmd-final-plan"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-final-plan"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-activity-sequence"),
+            activity: {
+              id: EventId.make("a-final-plan"),
+              tone: "info",
+              kind: "turn.plan.updated",
+              summary: "Plan updated",
+              payload: { plan: [{ step: "parent", status: "completed" }] },
+              turnId: null,
+              createdAt,
+            },
+          },
+        });
+
+        yield* projectionPipeline.bootstrap;
+
+        const rows = yield* sql<{
+          readonly activityId: string;
+          readonly sequence: number;
+        }>`
+          SELECT
+            activity_id AS "activityId",
+            sequence
+          FROM projection_thread_activities
+          WHERE thread_id = 'thread-activity-sequence'
+          ORDER BY sequence ASC
+        `;
+
+        assert.deepStrictEqual(rows, [
+          { activityId: "z-stale-plan", sequence: 2 },
+          { activityId: "a-final-plan", sequence: 3 },
+        ]);
+      }),
+    );
+  },
+);
+
 it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-base-")))(
   "OrchestrationProjectionPipeline",
   (it) => {

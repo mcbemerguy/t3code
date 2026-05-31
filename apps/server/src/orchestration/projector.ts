@@ -716,7 +716,7 @@ export function projectEvent(
 
           const activities = [
             ...thread.activities.filter((entry) => entry.id !== payload.activity.id),
-            payload.activity,
+            { ...payload.activity, sequence: event.sequence },
           ]
             .toSorted(compareThreadActivities)
             .slice(-500);

@@ -99,6 +99,99 @@ describe("orchestration projector", () => {
     ]);
   });
 
+  it("orders same-timestamp activity updates by orchestration event sequence", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const model = createEmptyReadModel(now);
+
+    const afterCreate = await Effect.runPromise(
+      projectEvent(
+        model,
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-activity-sequence",
+          occurredAt: now,
+          commandId: "cmd-thread-create",
+          payload: {
+            threadId: "thread-activity-sequence",
+            projectId: "project-1",
+            title: "demo",
+            modelSelection: {
+              provider: ProviderDriverKind.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      ),
+    );
+
+    const createdAt = "2026-05-30T20:12:37.304Z";
+    const events: ReadonlyArray<OrchestrationEvent> = [
+      makeEvent({
+        sequence: 2,
+        type: "thread.activity-appended",
+        aggregateKind: "thread",
+        aggregateId: "thread-activity-sequence",
+        occurredAt: createdAt,
+        commandId: "cmd-stale-plan",
+        payload: {
+          threadId: "thread-activity-sequence",
+          activity: {
+            id: "z-stale-plan",
+            tone: "info",
+            kind: "turn.plan.updated",
+            summary: "Plan updated",
+            payload: { plan: [{ step: "parent", status: "inProgress" }] },
+            turnId: null,
+            createdAt,
+          },
+        },
+      }),
+      makeEvent({
+        sequence: 3,
+        type: "thread.activity-appended",
+        aggregateKind: "thread",
+        aggregateId: "thread-activity-sequence",
+        occurredAt: createdAt,
+        commandId: "cmd-final-plan",
+        payload: {
+          threadId: "thread-activity-sequence",
+          activity: {
+            id: "a-final-plan",
+            tone: "info",
+            kind: "turn.plan.updated",
+            summary: "Plan updated",
+            payload: { plan: [{ step: "parent", status: "completed" }] },
+            turnId: null,
+            createdAt,
+          },
+        },
+      }),
+    ];
+
+    const next = await events.reduce<Promise<typeof afterCreate>>(
+      (statePromise, event) =>
+        statePromise.then((state) => Effect.runPromise(projectEvent(state, event))),
+      Promise.resolve(afterCreate),
+    );
+
+    expect(
+      next.threads[0]?.activities.map((activity) => ({
+        id: activity.id,
+        sequence: activity.sequence,
+      })),
+    ).toEqual([
+      { id: "z-stale-plan", sequence: 2 },
+      { id: "a-final-plan", sequence: 3 },
+    ]);
+  });
+
   it("fails when event payload cannot be decoded by runtime schema", async () => {
     const now = "2026-01-01T00:00:00.000Z";
     const model = createEmptyReadModel(now);
