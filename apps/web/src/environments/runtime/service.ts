@@ -62,6 +62,7 @@ import {
   selectThreadsAcrossEnvironments,
 } from "~/store";
 import { useTerminalStateStore } from "~/terminalStateStore";
+import { deriveThreadVisitedSeedAt } from "~/threadReadState.logic";
 import { useUiStateStore } from "~/uiStateStore";
 import type { WsProtocolCloseContext } from "../../rpc/protocol";
 import { getServerConfig } from "../../rpc/serverState";
@@ -932,7 +933,7 @@ function syncThreadUiFromStore() {
   useUiStateStore.getState().syncThreads(
     threads.map((thread) => ({
       key: scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-      seedVisitedAt: thread.updatedAt ?? thread.createdAt,
+      seedVisitedAt: deriveThreadVisitedSeedAt(thread),
     })),
   );
   markPromotedDraftThreadsByRef(
@@ -1010,7 +1011,7 @@ function applyRecoveredEventBatch(
     useUiStateStore.getState().syncThreads(
       threads.map((thread) => ({
         key: scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-        seedVisitedAt: thread.updatedAt ?? thread.createdAt,
+        seedVisitedAt: deriveThreadVisitedSeedAt(thread),
       })),
     );
   }

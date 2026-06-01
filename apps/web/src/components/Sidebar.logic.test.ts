@@ -37,17 +37,15 @@ import {
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
 
-function makeLatestTurn(overrides?: {
-  completedAt?: string | null;
-  startedAt?: string | null;
-}): OrchestrationLatestTurn {
+function makeLatestTurn(overrides: Partial<OrchestrationLatestTurn> = {}): OrchestrationLatestTurn {
   return {
     turnId: "turn-1" as never,
     state: "completed",
     assistantMessageId: null,
     requestedAt: "2026-03-09T10:00:00.000Z",
-    startedAt: overrides?.startedAt ?? "2026-03-09T10:00:00.000Z",
-    completedAt: overrides?.completedAt ?? "2026-03-09T10:05:00.000Z",
+    startedAt: "2026-03-09T10:00:00.000Z",
+    completedAt: "2026-03-09T10:05:00.000Z",
+    ...overrides,
   };
 }
 
@@ -64,6 +62,22 @@ describe("hasUnseenCompletion", () => {
         session: null,
       }),
     ).toBe(true);
+  });
+
+  it("returns false for interrupted or error turns even when completedAt is newer", () => {
+    for (const state of ["interrupted", "error"] as const) {
+      expect(
+        hasUnseenCompletion({
+          hasActionableProposedPlan: false,
+          hasPendingApprovals: false,
+          hasPendingUserInput: false,
+          interactionMode: "default",
+          latestTurn: makeLatestTurn({ state }),
+          lastVisitedAt: "2026-03-09T10:04:00.000Z",
+          session: null,
+        }),
+      ).toBe(false);
+    }
   });
 });
 
@@ -570,6 +584,27 @@ describe("resolveThreadStatusPill", () => {
       }),
     ).toMatchObject({ label: "Completed", pulse: false });
   });
+
+  it.each(["interrupted", "error"] as const)(
+    "does not show completed for a %s latest turn with completedAt",
+    (state) => {
+      expect(
+        resolveThreadStatusPill({
+          thread: {
+            ...baseThread,
+            interactionMode: "default",
+            latestTurn: makeLatestTurn({ state }),
+            lastVisitedAt: "2026-03-09T10:04:00.000Z",
+            session: {
+              ...baseThread.session,
+              status: "ready",
+              orchestrationStatus: "ready",
+            },
+          },
+        }),
+      ).toBeNull();
+    },
+  );
 });
 
 describe("resolveThreadRowClassName", () => {
