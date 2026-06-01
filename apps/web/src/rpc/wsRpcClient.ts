@@ -320,13 +320,21 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.subscribe(
           (client) => client[ORCHESTRATION_WS_METHODS.subscribeShell]({}),
           listener,
-          { ...options, tag: ORCHESTRATION_WS_METHODS.subscribeShell },
+          {
+            ...options,
+            tag: ORCHESTRATION_WS_METHODS.subscribeShell,
+            retryNonTransportErrors: true,
+          },
         ),
       subscribeThread: (input, listener, options) =>
         transport.subscribe(
           (client) => client[ORCHESTRATION_WS_METHODS.subscribeThread](input),
           listener,
-          { ...options, tag: ORCHESTRATION_WS_METHODS.subscribeThread },
+          {
+            ...options,
+            tag: ORCHESTRATION_WS_METHODS.subscribeThread,
+            retryNonTransportErrors: true,
+          },
         ),
     },
   };

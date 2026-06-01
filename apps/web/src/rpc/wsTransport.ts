@@ -24,6 +24,7 @@ interface SubscribeOptions {
   readonly retryDelay?: Duration.Input;
   readonly onResubscribe?: () => void;
   readonly tag?: string;
+  readonly retryNonTransportErrors?: boolean;
 }
 
 interface RequestOptions {
@@ -172,7 +173,10 @@ export class WsTransport {
           }
 
           const formattedError = formatErrorMessage(error);
-          if (!isTransportConnectionErrorMessage(formattedError)) {
+          const shouldRetry =
+            isTransportConnectionErrorMessage(formattedError) ||
+            options?.retryNonTransportErrors === true;
+          if (!shouldRetry) {
             console.warn("WebSocket RPC subscription failed", {
               error: formattedError,
             });

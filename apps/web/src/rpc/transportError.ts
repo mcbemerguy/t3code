@@ -3,6 +3,7 @@ const TRANSPORT_ERROR_PATTERNS = [
   /\bSocketOpenError\b/i,
   /Unable to connect to the T3 server WebSocket\./i,
   /\bping timeout\b/i,
+  /All fibers interrupted without error/i,
 ] as const;
 
 export function isTransportConnectionErrorMessage(message: string | null | undefined): boolean {
