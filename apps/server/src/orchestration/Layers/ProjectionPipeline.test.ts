@@ -175,6 +175,95 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
   );
 });
 
+it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-interrupt-updated-at-")))(
+  "OrchestrationProjectionPipeline",
+  (it) => {
+    it.effect(
+      "advances thread updated_at for interrupt requests without changing latest turn ownership",
+      () =>
+        Effect.gen(function* () {
+          const projectionPipeline = yield* OrchestrationProjectionPipeline;
+          const eventStore = yield* OrchestrationEventStore;
+          const sql = yield* SqlClient.SqlClient;
+          const createdAt = "2026-02-26T13:00:01.000Z";
+          const interruptedAt = "2026-02-26T13:00:02.000Z";
+          const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+            eventStore
+              .append(event)
+              .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+          yield* appendAndProject({
+            type: "thread.created",
+            eventId: EventId.make("evt-interrupt-updated-at-1"),
+            aggregateKind: "thread",
+            aggregateId: ThreadId.make("thread-interrupt-updated-at"),
+            occurredAt: createdAt,
+            commandId: CommandId.make("cmd-interrupt-updated-at-1"),
+            causationEventId: null,
+            correlationId: CorrelationId.make("cmd-interrupt-updated-at-1"),
+            metadata: {},
+            payload: {
+              threadId: ThreadId.make("thread-interrupt-updated-at"),
+              projectId: ProjectId.make("project-interrupt-updated-at"),
+              title: "Thread Interrupt Updated At",
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("codex"),
+                model: "gpt-5-codex",
+              },
+              runtimeMode: "full-access",
+              branch: null,
+              worktreePath: null,
+              createdAt,
+              updatedAt: createdAt,
+            },
+          });
+
+          yield* appendAndProject({
+            type: "thread.turn-interrupt-requested",
+            eventId: EventId.make("evt-interrupt-updated-at-2"),
+            aggregateKind: "thread",
+            aggregateId: ThreadId.make("thread-interrupt-updated-at"),
+            occurredAt: interruptedAt,
+            commandId: CommandId.make("cmd-interrupt-updated-at-2"),
+            causationEventId: null,
+            correlationId: CorrelationId.make("cmd-interrupt-updated-at-2"),
+            metadata: {},
+            payload: {
+              threadId: ThreadId.make("thread-interrupt-updated-at"),
+              turnId: TurnId.make("turn-interrupt-updated-at"),
+              createdAt: interruptedAt,
+            },
+          });
+
+          const threadRows = yield* sql<{
+            readonly updatedAt: string;
+            readonly latestTurnId: string | null;
+          }>`
+            SELECT
+              updated_at AS "updatedAt",
+              latest_turn_id AS "latestTurnId"
+            FROM projection_threads
+            WHERE thread_id = 'thread-interrupt-updated-at'
+          `;
+          assert.deepEqual(threadRows, [{ updatedAt: interruptedAt, latestTurnId: null }]);
+
+          const turnRows = yield* sql<{
+            readonly state: string;
+            readonly completedAt: string | null;
+          }>`
+            SELECT
+              state,
+              completed_at AS "completedAt"
+            FROM projection_turns
+            WHERE thread_id = 'thread-interrupt-updated-at'
+              AND turn_id = 'turn-interrupt-updated-at'
+          `;
+          assert.deepEqual(turnRows, [{ state: "interrupted", completedAt: interruptedAt }]);
+        }),
+    );
+  },
+);
+
 it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-activity-sequence-")))(
   "OrchestrationProjectionPipeline",
   (it) => {

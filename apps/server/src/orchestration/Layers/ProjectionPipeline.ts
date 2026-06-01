@@ -692,6 +692,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         case "thread.message-sent":
         case "thread.message-user-delivery-failed":
         case "thread.turn-start-requested":
+        case "thread.turn-interrupt-requested":
         case "thread.proposed-plan-upserted":
         case "thread.activity-appended":
         case "thread.approval-response-requested":
