@@ -439,6 +439,19 @@ function attachThreadDetailSubscriptionsForEnvironment(environmentId: Environmen
   }
 }
 
+function refreshThreadDetailSubscriptionsForEnvironment(environmentId: EnvironmentId): void {
+  for (const entry of threadDetailSubscriptions.values()) {
+    if (entry.environmentId !== environmentId) {
+      continue;
+    }
+    entry.unsubscribe();
+    entry.unsubscribe = NOOP;
+    if (!attachThreadDetailSubscription(entry)) {
+      watchThreadDetailSubscriptionConnection(entry);
+    }
+  }
+}
+
 function reconcileThreadDetailSubscriptionsForEnvironment(
   environmentId: EnvironmentId,
   threadIds: ReadonlyArray<ThreadId>,
@@ -1284,6 +1297,7 @@ function createPrimaryEnvironmentConnection(): EnvironmentConnection {
       kind: "primary",
       knownEnvironment,
       client: createPrimaryEnvironmentClient(knownEnvironment),
+      onRecovered: refreshThreadDetailSubscriptionsForEnvironment,
       ...createEnvironmentConnectionHandlers(),
     }),
   );
@@ -1361,6 +1375,7 @@ async function ensureSavedEnvironmentConnection(
           environmentId: activeRecord.environmentId,
         },
         client,
+        onRecovered: refreshThreadDetailSubscriptionsForEnvironment,
         refreshMetadata: async () => {
           await refreshSavedEnvironmentMetadata(
             activeRecord.environmentId,

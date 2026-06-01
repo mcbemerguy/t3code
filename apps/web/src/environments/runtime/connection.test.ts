@@ -200,6 +200,7 @@ describe("createEnvironmentConnection", () => {
     const environmentId = EnvironmentId.make("env-1");
     const { client, emitShellSnapshot } = createTestClient();
     const syncShellSnapshot = vi.fn();
+    const onRecovered = vi.fn();
 
     const connection = createEnvironmentConnection({
       kind: "saved",
@@ -217,6 +218,7 @@ describe("createEnvironmentConnection", () => {
       applyShellEvent: vi.fn(),
       syncShellSnapshot,
       applyTerminalEvent: vi.fn(),
+      onRecovered,
     });
 
     await connection.ensureBootstrapped();
@@ -227,6 +229,7 @@ describe("createEnvironmentConnection", () => {
 
     emitShellSnapshot(2);
     await reconnectPromise;
+    await Promise.resolve();
 
     expect(client.reconnect).toHaveBeenCalledTimes(1);
     expect(syncShellSnapshot).toHaveBeenCalledTimes(2);
@@ -234,6 +237,49 @@ describe("createEnvironmentConnection", () => {
       expect.objectContaining({ snapshotSequence: 2 }),
       environmentId,
     );
+    expect(onRecovered).toHaveBeenCalledOnce();
+    expect(onRecovered).toHaveBeenCalledWith(environmentId);
+
+    await connection.dispose();
+  });
+
+  it("runs the recovery hook after a reconnect shell snapshot", async () => {
+    const environmentId = EnvironmentId.make("env-1");
+    const { client, emitShellSnapshot } = createTestClient();
+    const onRecovered = vi.fn(async () => undefined);
+
+    const connection = createEnvironmentConnection({
+      kind: "saved",
+      knownEnvironment: {
+        id: "env-1",
+        label: "Remote env",
+        source: "manual",
+        target: {
+          httpBaseUrl: "http://example.test",
+          wsBaseUrl: "ws://example.test",
+        },
+        environmentId,
+      },
+      client,
+      onRecovered,
+      applyShellEvent: vi.fn(),
+      syncShellSnapshot: vi.fn(),
+      applyTerminalEvent: vi.fn(),
+    });
+
+    await connection.ensureBootstrapped();
+    expect(onRecovered).not.toHaveBeenCalled();
+
+    const reconnectPromise = connection.reconnect();
+    await Promise.resolve();
+    expect(onRecovered).not.toHaveBeenCalled();
+
+    emitShellSnapshot(2);
+    await reconnectPromise;
+    await Promise.resolve();
+
+    expect(onRecovered).toHaveBeenCalledOnce();
+    expect(onRecovered).toHaveBeenCalledWith(environmentId);
 
     await connection.dispose();
   });

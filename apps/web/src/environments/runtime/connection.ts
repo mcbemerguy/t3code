@@ -39,6 +39,7 @@ interface EnvironmentConnectionInput extends OrchestrationHandlers {
   readonly refreshMetadata?: () => Promise<void>;
   readonly onConfigSnapshot?: (config: ServerConfig) => void;
   readonly onWelcome?: (payload: ServerLifecycleWelcomePayload) => void;
+  readonly onRecovered?: (environmentId: EnvironmentId) => void | Promise<void>;
 }
 
 function createBootstrapGate() {
@@ -82,6 +83,8 @@ export function createEnvironmentConnection(
   }
 
   let disposed = false;
+  let recoverAfterNextShellSnapshot = false;
+  let recoveryChain: Promise<void> = Promise.resolve();
   const bootstrapGate = createBootstrapGate();
   const shouldObserveLifecycle = input.kind === "saved" || input.onWelcome !== undefined;
   const shouldObserveConfig = input.kind === "saved" || input.onConfigSnapshot !== undefined;
@@ -124,11 +127,30 @@ export function createEnvironmentConnection(
       )
     : () => undefined;
 
+  const runRecoveredHook = () => {
+    if (disposed || !input.onRecovered) {
+      return;
+    }
+    recoveryChain = recoveryChain
+      .catch(() => undefined)
+      .then(() => Promise.resolve(input.onRecovered?.(environmentId)))
+      .catch((error) => {
+        console.warn("Environment post-reconnect recovery failed", {
+          environmentId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  };
+
   const unsubShell = input.client.orchestration.subscribeShell(
     (item: Parameters<Parameters<WsRpcClient["orchestration"]["subscribeShell"]>[0]>[0]) => {
       if (item.kind === "snapshot") {
         input.syncShellSnapshot(item.snapshot, environmentId);
         bootstrapGate.resolve();
+        if (recoverAfterNextShellSnapshot) {
+          recoverAfterNextShellSnapshot = false;
+          runRecoveredHook();
+        }
         return;
       }
       input.applyShellEvent(item, environmentId);
@@ -138,6 +160,7 @@ export function createEnvironmentConnection(
         if (disposed) {
           return;
         }
+        recoverAfterNextShellSnapshot = true;
         bootstrapGate.reset();
       },
     },
@@ -164,6 +187,7 @@ export function createEnvironmentConnection(
     client: input.client,
     ensureBootstrapped: () => bootstrapGate.wait(),
     reconnect: async () => {
+      recoverAfterNextShellSnapshot = true;
       bootstrapGate.reset();
       try {
         await input.client.reconnect();
