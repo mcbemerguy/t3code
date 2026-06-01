@@ -2,12 +2,11 @@ import { EnvironmentId } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import { createEnvironmentConnection } from "./connection";
-import type { WsRpcClient } from "~/rpc/wsRpcClient";
+import type { WsRpcClient } from "@t3tools/client-runtime";
 
-function createTestClient() {
+function createTestClient(config?: { readonly emitInitialSnapshot?: boolean }) {
   const lifecycleListeners = new Set<(event: any) => void>();
   const configListeners = new Set<(event: any) => void>();
-  const terminalListeners = new Set<(event: any) => void>();
   const shellListeners = new Set<(event: any) => void>();
   let shellResubscribe: (() => void) | undefined;
 
@@ -44,17 +43,19 @@ function createTestClient() {
         (listener: (event: any) => void, options?: { onResubscribe?: () => void }) => {
           shellListeners.add(listener);
           shellResubscribe = options?.onResubscribe;
-          queueMicrotask(() => {
-            listener({
-              kind: "snapshot",
-              snapshot: {
-                snapshotSequence: 1,
-                projects: [],
-                threads: [],
-                updatedAt: "2026-04-12T00:00:00.000Z",
-              },
+          if (config?.emitInitialSnapshot !== false) {
+            queueMicrotask(() => {
+              listener({
+                kind: "snapshot",
+                snapshot: {
+                  snapshotSequence: 1,
+                  projects: [],
+                  threads: [],
+                  updatedAt: "2026-04-12T00:00:00.000Z",
+                },
+              });
             });
-          });
+          }
           return () => {
             shellListeners.delete(listener);
             if (shellResubscribe === options?.onResubscribe) {
@@ -67,15 +68,14 @@ function createTestClient() {
     },
     terminal: {
       open: vi.fn(async () => undefined),
+      attach: vi.fn(() => () => undefined),
       write: vi.fn(async () => undefined),
       resize: vi.fn(async () => undefined),
       clear: vi.fn(async () => undefined),
       restart: vi.fn(async () => undefined),
       close: vi.fn(async () => undefined),
-      onEvent: (listener: (event: any) => void) => {
-        terminalListeners.add(listener);
-        return () => terminalListeners.delete(listener);
-      },
+      onEvent: vi.fn(() => () => undefined),
+      onMetadata: vi.fn(() => () => undefined),
     },
     projects: {
       searchEntries: vi.fn(async () => []),
@@ -89,10 +89,16 @@ function createTestClient() {
       resolvePullRequest: vi.fn(async () => undefined),
       preparePullRequestThread: vi.fn(async () => undefined),
     },
+    review: {
+      getDiffPreview: vi.fn(async () => undefined),
+    },
   } as unknown as WsRpcClient;
 
   return {
     client,
+    emitShellResubscribe: () => {
+      shellResubscribe?.();
+    },
     emitWelcome: (environmentId: EnvironmentId) => {
       for (const listener of lifecycleListeners) {
         listener({
@@ -154,7 +160,6 @@ describe("createEnvironmentConnection", () => {
       client,
       applyShellEvent: vi.fn(),
       syncShellSnapshot,
-      applyTerminalEvent: vi.fn(),
     });
 
     await connection.ensureBootstrapped();
@@ -186,7 +191,6 @@ describe("createEnvironmentConnection", () => {
       client,
       applyShellEvent: vi.fn(),
       syncShellSnapshot: vi.fn(),
-      applyTerminalEvent: vi.fn(),
     });
 
     expect(() => emitWelcome(EnvironmentId.make("env-2"))).toThrow(
@@ -284,6 +288,49 @@ describe("createEnvironmentConnection", () => {
     await connection.dispose();
   });
 
+  it("keeps reconnect waiting when shell resubscribe starts after reconnect awaits the gate", async () => {
+    const environmentId = EnvironmentId.make("env-1");
+    const { client, emitShellResubscribe, emitShellSnapshot } = createTestClient();
+
+    vi.mocked(client.reconnect).mockResolvedValueOnce(undefined);
+
+    const connection = createEnvironmentConnection({
+      kind: "saved",
+      knownEnvironment: {
+        id: "env-1",
+        label: "Remote env",
+        source: "manual",
+        target: {
+          httpBaseUrl: "http://example.test",
+          wsBaseUrl: "ws://example.test",
+        },
+        environmentId,
+      },
+      client,
+      onRecovered: vi.fn(),
+      applyShellEvent: vi.fn(),
+      syncShellSnapshot: vi.fn(),
+      applyTerminalEvent: vi.fn(),
+    });
+
+    await connection.ensureBootstrapped();
+
+    const reconnectPromise = connection.reconnect();
+    await Promise.resolve();
+
+    emitShellResubscribe();
+    emitShellSnapshot(2);
+
+    await expect(
+      Promise.race([
+        reconnectPromise.then(() => "resolved" as const),
+        new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 0)),
+      ]),
+    ).resolves.toBe("resolved");
+
+    await connection.dispose();
+  });
+
   it("skips primary lifecycle/config subscriptions when no handlers are registered", async () => {
     const environmentId = EnvironmentId.make("env-1");
     const { client } = createTestClient();
@@ -311,5 +358,31 @@ describe("createEnvironmentConnection", () => {
     expect(client.orchestration.subscribeShell).toHaveBeenCalledOnce();
 
     await connection.dispose();
+  });
+
+  it("rejects bootstrap waits when a pending connection is disposed", async () => {
+    const environmentId = EnvironmentId.make("env-1");
+    const { client } = createTestClient({ emitInitialSnapshot: false });
+    const connection = createEnvironmentConnection({
+      kind: "saved",
+      knownEnvironment: {
+        id: "env-1",
+        label: "Remote env",
+        source: "manual",
+        target: {
+          httpBaseUrl: "http://example.test",
+          wsBaseUrl: "ws://example.test",
+        },
+        environmentId,
+      },
+      client,
+      applyShellEvent: vi.fn(),
+      syncShellSnapshot: vi.fn(),
+    });
+    const pendingBootstrap = connection.ensureBootstrapped();
+
+    await connection.dispose();
+
+    await expect(pendingBootstrap).rejects.toThrow("was disposed before it finished bootstrapping");
   });
 });

@@ -1,11 +1,14 @@
 import { QueryClient } from "@tanstack/react-query";
+import type { WsRpcClient } from "@t3tools/client-runtime";
 import {
+  DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
   TurnId,
   type OrchestrationShellSnapshot,
+  type ServerConfig,
 } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -20,6 +23,8 @@ const mockReadSavedEnvironmentBearerToken = vi.fn();
 const mockSavedEnvironmentRegistrySubscribe = vi.fn();
 const mockGetPrimaryKnownEnvironment = vi.hoisted(() => vi.fn());
 const mockFetchRemoteSessionState = vi.fn();
+const mockResolveRemoteWebSocketConnectionUrl = vi.fn(async () => "ws://remote.example.test/ws");
+const mockRemoteHttpRunPromise = vi.fn((effect: Promise<unknown>) => effect);
 const mockConnectionReconnects: Array<ReturnType<typeof vi.fn>> = [];
 let savedEnvironmentRegistryListener: (() => void) | null = null;
 
@@ -27,16 +32,129 @@ function MockWsTransport() {
   return undefined;
 }
 
+function makeServerConfig(): ServerConfig {
+  return {
+    environment: {
+      environmentId: EnvironmentId.make("env-remote"),
+      label: "Remote env",
+      platform: { os: "darwin", arch: "arm64" },
+      serverVersion: "0.0.0-test",
+      capabilities: { repositoryIdentity: true },
+    },
+    auth: {
+      policy: "loopback-browser",
+      bootstrapMethods: ["one-time-token"],
+      sessionMethods: ["browser-session-cookie", "bearer-session-token"],
+      sessionCookieName: "t3_session",
+    },
+    cwd: "/tmp/workspace",
+    keybindingsConfigPath: "/tmp/workspace/.config/keybindings.json",
+    keybindings: [],
+    issues: [],
+    providers: [],
+    availableEditors: ["cursor"],
+    observability: {
+      logsDirectoryPath: "/tmp/workspace/.config/logs",
+      localTracingEnabled: true,
+      otlpTracesEnabled: false,
+      otlpMetricsEnabled: false,
+    },
+    settings: DEFAULT_SERVER_SETTINGS,
+  };
+}
+
+function makeWsRpcClient(options?: {
+  readonly isHeartbeatFresh?: WsRpcClient["isHeartbeatFresh"];
+}): WsRpcClient {
+  return {
+    dispose: async () => undefined,
+    reconnect: async () => undefined,
+    isHeartbeatFresh: options?.isHeartbeatFresh ?? vi.fn(() => true),
+    orchestration: {
+      dispatchCommand: vi.fn(),
+      getTurnDiff: vi.fn(),
+      getFullThreadDiff: vi.fn(),
+      getArchivedShellSnapshot: vi.fn(),
+      subscribeShell: vi.fn(() => () => undefined),
+      subscribeThread: mockSubscribeThread,
+    },
+    terminal: {
+      open: vi.fn(),
+      attach: vi.fn(() => () => undefined),
+      write: vi.fn(),
+      resize: vi.fn(),
+      clear: vi.fn(),
+      restart: vi.fn(),
+      close: vi.fn(),
+      onEvent: vi.fn(() => () => undefined),
+      onMetadata: vi.fn(() => () => undefined),
+    },
+    projects: {
+      searchEntries: vi.fn(),
+      writeFile: vi.fn(),
+    },
+    filesystem: {
+      browse: vi.fn(),
+    },
+    sourceControl: {
+      lookupRepository: vi.fn(),
+      cloneRepository: vi.fn(),
+      publishRepository: vi.fn(),
+    },
+    shell: {
+      openInEditor: vi.fn(),
+    },
+    vcs: {
+      pull: vi.fn(),
+      refreshStatus: vi.fn(),
+      onStatus: vi.fn(() => () => undefined),
+      listRefs: vi.fn(),
+      createWorktree: vi.fn(),
+      removeWorktree: vi.fn(),
+      createRef: vi.fn(),
+      switchRef: vi.fn(),
+      init: vi.fn(),
+    },
+    git: {
+      runStackedAction: vi.fn(),
+      resolvePullRequest: vi.fn(),
+      preparePullRequestThread: vi.fn(),
+    },
+    customAcp: {
+      listSessions: vi.fn(),
+      importSession: vi.fn(),
+    },
+    review: {
+      getDiffPreview: vi.fn(),
+    },
+    server: {
+      getConfig: vi.fn(async () => makeServerConfig()),
+      refreshProviders: vi.fn(),
+      discoverSourceControl: vi.fn(),
+      updateProvider: vi.fn(),
+      upsertKeybinding: vi.fn(),
+      removeKeybinding: vi.fn(),
+      getSettings: vi.fn(),
+      updateSettings: vi.fn(),
+      subscribeConfig: vi.fn(() => () => undefined),
+      subscribeLifecycle: vi.fn(() => () => undefined),
+      subscribeAuthAccess: vi.fn(() => () => undefined),
+      getTraceDiagnostics: vi.fn(),
+      getProcessDiagnostics: vi.fn(),
+      getProcessResourceHistory: vi.fn(),
+      signalProcess: vi.fn(),
+    },
+  };
+}
+
 vi.mock("../primary", () => ({
   getPrimaryKnownEnvironment: mockGetPrimaryKnownEnvironment,
 }));
 
-vi.mock("../remote/api", () => ({
-  bootstrapRemoteBearerSession: vi.fn(),
-  fetchRemoteEnvironmentDescriptor: vi.fn(),
-  fetchRemoteSessionState: mockFetchRemoteSessionState,
-  isRemoteEnvironmentAuthHttpError: vi.fn(() => false),
-  resolveRemoteWebSocketConnectionUrl: vi.fn(async () => "ws://remote.example.test/ws"),
+vi.mock("../../lib/runtime", () => ({
+  remoteHttpRuntime: {
+    runPromise: mockRemoteHttpRunPromise,
+  },
 }));
 
 vi.mock("./catalog", () => ({
@@ -66,13 +184,21 @@ vi.mock("./catalog", () => ({
   writeSavedEnvironmentBearerToken: vi.fn(),
 }));
 
-vi.mock("./connection", () => ({
+vi.mock("./connection", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./connection")>()),
   createEnvironmentConnection: mockCreateEnvironmentConnection,
 }));
 
-vi.mock("../../rpc/wsRpcClient", () => ({
-  createWsRpcClient: mockCreateWsRpcClient,
-}));
+vi.mock("@t3tools/client-runtime", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@t3tools/client-runtime")>();
+  return {
+    ...actual,
+    createWsRpcClient: mockCreateWsRpcClient,
+    fetchRemoteSessionState: mockFetchRemoteSessionState,
+    isRemoteEnvironmentAuthHttpError: vi.fn(() => false),
+    resolveRemoteWebSocketConnectionUrl: mockResolveRemoteWebSocketConnectionUrl,
+  };
+});
 
 vi.mock("../../rpc/wsTransport", () => ({
   WsTransport: MockWsTransport,
@@ -164,26 +290,21 @@ describe("retainThreadDetailSubscription", () => {
 
     mockThreadUnsubscribe.mockImplementation(() => undefined);
     mockSubscribeThread.mockImplementation(() => mockThreadUnsubscribe);
-    mockCreateWsRpcClient.mockReturnValue({
-      server: {
-        getConfig: vi.fn(async () => ({
+    mockCreateWsRpcClient.mockImplementation(() => makeWsRpcClient());
+    mockCreateEnvironmentConnection.mockImplementation((input) => {
+      const reconnect = vi.fn(async () => undefined);
+      mockConnectionReconnects.push(reconnect);
+      queueMicrotask(() => {
+        input.onConfigSnapshot?.({
           environment: {
-            environmentId: EnvironmentId.make("env-remote"),
-            label: "Remote env",
+            environmentId: input.knownEnvironment.environmentId,
+            label: input.knownEnvironment.label,
             platform: { os: "darwin", arch: "arm64" },
             serverVersion: "0.0.0-test",
             capabilities: { repositoryIdentity: true },
           },
-        })),
-      },
-      isHeartbeatFresh: vi.fn(() => true),
-      orchestration: {
-        subscribeThread: mockSubscribeThread,
-      },
-    });
-    mockCreateEnvironmentConnection.mockImplementation((input) => {
-      const reconnect = vi.fn(async () => undefined);
-      mockConnectionReconnects.push(reconnect);
+        });
+      });
       return {
         kind: input.kind,
         environmentId: input.knownEnvironment.environmentId,
@@ -353,13 +474,13 @@ describe("retainThreadDetailSubscription", () => {
     const stop = startEnvironmentConnectionService(new QueryClient());
     savedEnvironmentRegistryListener?.();
     await vi.waitFor(() => {
-      expect(mockCreateEnvironmentConnection).toHaveBeenCalledTimes(2);
       expect(
         listEnvironmentConnections().some(
           (connection) => connection.environmentId === environmentId,
         ),
       ).toBe(true);
     });
+    const createConnectionCallsBeforeReconnect = mockCreateEnvironmentConnection.mock.calls.length;
 
     const release = retainThreadDetailSubscription(environmentId, threadId);
     expect(mockSubscribeThread).toHaveBeenCalledTimes(1);
@@ -374,7 +495,9 @@ describe("retainThreadDetailSubscription", () => {
     await vi.advanceTimersByTimeAsync(200);
     await reconnectPromise;
     await vi.waitFor(() => {
-      expect(mockCreateEnvironmentConnection).toHaveBeenCalledTimes(3);
+      expect(mockCreateEnvironmentConnection).toHaveBeenCalledTimes(
+        createConnectionCallsBeforeReconnect + 1,
+      );
       expect(mockSubscribeThread).toHaveBeenCalledTimes(2);
     });
 
@@ -432,23 +555,9 @@ describe("retainThreadDetailSubscription", () => {
       addEventListener: windowTarget.addEventListener.bind(windowTarget),
       removeEventListener: windowTarget.removeEventListener.bind(windowTarget),
     });
-    mockCreateWsRpcClient.mockReturnValue({
-      server: {
-        getConfig: vi.fn(async () => ({
-          environment: {
-            environmentId: EnvironmentId.make("env-remote"),
-            label: "Remote env",
-            platform: { os: "darwin", arch: "arm64" },
-            serverVersion: "0.0.0-test",
-            capabilities: { repositoryIdentity: true },
-          },
-        })),
-      },
-      isHeartbeatFresh: vi.fn(() => false),
-      orchestration: {
-        subscribeThread: mockSubscribeThread,
-      },
-    });
+    mockCreateWsRpcClient.mockImplementation(() =>
+      makeWsRpcClient({ isHeartbeatFresh: vi.fn(() => false) }),
+    );
 
     const { resetEnvironmentServiceForTests, startEnvironmentConnectionService } =
       await import("./service");

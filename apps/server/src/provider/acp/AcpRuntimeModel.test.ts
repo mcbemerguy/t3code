@@ -90,6 +90,7 @@ describe("AcpRuntimeModel", () => {
         toolCall: {
           toolCallId: "tool-1",
           kind: "execute",
+          itemType: "command_execution",
           title: "Ran command",
           status: "pending",
           command: "bun run typecheck",
@@ -158,6 +159,7 @@ describe("AcpRuntimeModel", () => {
       expect(mergeToolCallState(createdEvent.toolCall, updatedEvent.toolCall)).toMatchObject({
         toolCallId: "tool-1",
         status: "completed",
+        itemType: "command_execution",
         title: "Ran command",
         detail: "bun run typecheck",
         command: "bun run typecheck",

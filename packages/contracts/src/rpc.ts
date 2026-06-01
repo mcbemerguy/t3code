@@ -41,6 +41,11 @@ import {
   VcsStatusResult,
   VcsStatusStreamEvent,
 } from "./git.ts";
+import {
+  ReviewDiffPreviewError,
+  ReviewDiffPreviewInput,
+  ReviewDiffPreviewResult,
+} from "./review.ts";
 import { KeybindingsConfigError } from "./keybindings.ts";
 import {
   ClientOrchestrationCommand,
@@ -65,10 +70,13 @@ import {
   ProjectWriteFileResult,
 } from "./project.ts";
 import {
+  TerminalAttachInput,
+  TerminalAttachStreamEvent,
   TerminalClearInput,
   TerminalCloseInput,
   TerminalError,
   TerminalEvent,
+  TerminalMetadataStreamEvent,
   TerminalOpenInput,
   TerminalResizeInput,
   TerminalRestartInput,
@@ -135,8 +143,12 @@ export const WS_METHODS = {
   gitResolvePullRequest: "git.resolvePullRequest",
   gitPreparePullRequestThread: "git.preparePullRequestThread",
 
+  // Review methods
+  reviewGetDiffPreview: "review.getDiffPreview",
+
   // Terminal methods
   terminalOpen: "terminal.open",
+  terminalAttach: "terminal.attach",
   terminalWrite: "terminal.write",
   terminalResize: "terminal.resize",
   terminalClear: "terminal.clear",
@@ -169,6 +181,7 @@ export const WS_METHODS = {
   // Streaming subscriptions
   subscribeVcsStatus: "subscribeVcsStatus",
   subscribeTerminalEvents: "subscribeTerminalEvents",
+  subscribeTerminalMetadata: "subscribeTerminalMetadata",
   subscribeServerConfig: "subscribeServerConfig",
   subscribeServerLifecycle: "subscribeServerLifecycle",
   subscribeAuthAccess: "subscribeAuthAccess",
@@ -382,10 +395,28 @@ export const WsVcsInitRpc = Rpc.make(WS_METHODS.vcsInit, {
   error: VcsError,
 });
 
+/**
+ * Ephemeral live diff preview for compact/mobile surfaces.
+ * Not the persisted T3 Review model. Future review sessions should use
+ * review.open* + review.getSnapshot.
+ */
+export const WsReviewGetDiffPreviewRpc = Rpc.make(WS_METHODS.reviewGetDiffPreview, {
+  payload: ReviewDiffPreviewInput,
+  success: ReviewDiffPreviewResult,
+  error: ReviewDiffPreviewError,
+});
+
 export const WsTerminalOpenRpc = Rpc.make(WS_METHODS.terminalOpen, {
   payload: TerminalOpenInput,
   success: TerminalSessionSnapshot,
   error: TerminalError,
+});
+
+export const WsTerminalAttachRpc = Rpc.make(WS_METHODS.terminalAttach, {
+  payload: TerminalAttachInput,
+  success: TerminalAttachStreamEvent,
+  error: TerminalError,
+  stream: true,
 });
 
 export const WsTerminalWriteRpc = Rpc.make(WS_METHODS.terminalWrite, {
@@ -476,6 +507,12 @@ export const WsSubscribeTerminalEventsRpc = Rpc.make(WS_METHODS.subscribeTermina
   stream: true,
 });
 
+export const WsSubscribeTerminalMetadataRpc = Rpc.make(WS_METHODS.subscribeTerminalMetadata, {
+  payload: Schema.Struct({}),
+  success: TerminalMetadataStreamEvent,
+  stream: true,
+});
+
 export const WsSubscribeServerConfigRpc = Rpc.make(WS_METHODS.subscribeServerConfig, {
   payload: Schema.Struct({}),
   success: ServerConfigStreamEvent,
@@ -529,13 +566,16 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsCreateRefRpc,
   WsVcsSwitchRefRpc,
   WsVcsInitRpc,
+  WsReviewGetDiffPreviewRpc,
   WsTerminalOpenRpc,
+  WsTerminalAttachRpc,
   WsTerminalWriteRpc,
   WsTerminalResizeRpc,
   WsTerminalClearRpc,
   WsTerminalRestartRpc,
   WsTerminalCloseRpc,
   WsSubscribeTerminalEventsRpc,
+  WsSubscribeTerminalMetadataRpc,
   WsSubscribeServerConfigRpc,
   WsSubscribeServerLifecycleRpc,
   WsSubscribeAuthAccessRpc,
