@@ -817,35 +817,6 @@ describe("WsTransport (web instrumentation)", () => {
     await transport.dispose();
   });
 
-  it("keeps retrying selected stream subscriptions after non-transport failures", async () => {
-    const transport = createTransport("ws://localhost:3020");
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    let attempts = 0;
-
-    const unsubscribe = transport.subscribe(
-      () =>
-        Stream.suspend(() => {
-          attempts += 1;
-          return Stream.fail(new Error("transient stream reset"));
-        }),
-      vi.fn(),
-      { retryDelay: 10, retryNonTransportErrors: true },
-    );
-
-    await waitFor(() => {
-      expect(sockets).toHaveLength(1);
-    });
-
-    getSocket().open();
-
-    await waitFor(() => {
-      expect(attempts).toBeGreaterThanOrEqual(2);
-    });
-
-    unsubscribe();
-    await transport.dispose();
-  });
-
   it("logs a transport disconnect once even when multiple subscriptions fail together", async () => {
     const transport = createTransport("ws://localhost:3020");
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);

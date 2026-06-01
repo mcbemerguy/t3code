@@ -86,32 +86,48 @@ export class EnvironmentConnectionDisposedError extends Error {
 }
 
 function createBootstrapGate() {
-  let resolve: (() => void) | null = null;
-  let reject: ((error: unknown) => void) | null = null;
-  const makePromise = () => {
-    const nextPromise = new Promise<void>((nextResolve, nextReject) => {
+  interface GateGeneration {
+    readonly promise: Promise<void>;
+    readonly resolve: () => void;
+    readonly reject: (error: unknown) => void;
+  }
+
+  const makeGeneration = (): GateGeneration => {
+    let resolve!: () => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<void>((nextResolve, nextReject) => {
       resolve = nextResolve;
       reject = nextReject;
     });
-    void nextPromise.catch(() => undefined);
-    return nextPromise;
+    void promise.catch(() => undefined);
+    return { promise, resolve, reject };
   };
-  let promise = makePromise();
+
+  let generation = 0;
+  let current = makeGeneration();
 
   return {
-    wait: () => promise,
+    wait: async () => {
+      for (;;) {
+        const observedGeneration = generation;
+        const observedGate = current;
+        await observedGate.promise;
+        if (observedGeneration === generation) {
+          return;
+        }
+      }
+    },
     resolve: () => {
-      resolve?.();
-      resolve = null;
-      reject = null;
+      current.resolve();
     },
     reject: (error: unknown) => {
-      reject?.(error);
-      resolve = null;
-      reject = null;
+      current.reject(error);
     },
     reset: () => {
-      promise = makePromise();
+      const previous = current;
+      generation += 1;
+      current = makeGeneration();
+      previous.resolve();
     },
   };
 }

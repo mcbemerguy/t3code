@@ -171,16 +171,29 @@ describe("createWsRpcClient", () => {
     client.terminal.onMetadata(listener);
     client.vcs.onStatus({ cwd: "/repo" }, listener);
     client.server.subscribeConfig(listener);
+    client.orchestration.subscribeShell(listener);
     client.orchestration.subscribeThread({ threadId: ThreadId.make("thread-1") }, listener);
 
     const subscribeCalls = subscribe.mock.calls as unknown as Array<
-      readonly [unknown, unknown, { readonly tag?: string }?]
+      readonly [
+        unknown,
+        unknown,
+        { readonly retryNonTransportErrors?: boolean; readonly tag?: string }?,
+      ]
     >;
     expect(subscribeCalls.map((call) => call[2]?.tag)).toEqual([
       WS_METHODS.subscribeTerminalMetadata,
       WS_METHODS.subscribeVcsStatus,
       WS_METHODS.subscribeServerConfig,
+      ORCHESTRATION_WS_METHODS.subscribeShell,
       ORCHESTRATION_WS_METHODS.subscribeThread,
+    ]);
+    expect(subscribeCalls.map((call) => call[2]?.retryNonTransportErrors)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
     ]);
   });
 });

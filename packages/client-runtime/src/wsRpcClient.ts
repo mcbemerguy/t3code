@@ -27,15 +27,12 @@ interface StreamSubscriptionOptions {
 function subscriptionOptions(
   options: StreamSubscriptionOptions | undefined,
   tag: string,
-  extra?: { readonly retryNonTransportErrors?: boolean },
 ): StreamSubscriptionOptions & {
   readonly tag: string;
-  readonly retryNonTransportErrors?: boolean;
 } {
   return {
     ...options,
     tag,
-    ...extra,
   };
 }
 
@@ -360,17 +357,13 @@ export function createWsRpcClient(
         transport.subscribe(
           (client) => client[ORCHESTRATION_WS_METHODS.subscribeShell]({}),
           listener,
-          subscriptionOptions(options, ORCHESTRATION_WS_METHODS.subscribeShell, {
-            retryNonTransportErrors: true,
-          }),
+          subscriptionOptions(options, ORCHESTRATION_WS_METHODS.subscribeShell),
         ),
       subscribeThread: (input, listener, options) =>
         transport.subscribe(
           (client) => client[ORCHESTRATION_WS_METHODS.subscribeThread](input),
           listener,
-          subscriptionOptions(options, ORCHESTRATION_WS_METHODS.subscribeThread, {
-            retryNonTransportErrors: true,
-          }),
+          subscriptionOptions(options, ORCHESTRATION_WS_METHODS.subscribeThread),
         ),
     },
   };
