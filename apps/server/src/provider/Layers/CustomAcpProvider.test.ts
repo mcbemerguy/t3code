@@ -806,6 +806,47 @@ describe("Custom ACP provider", () => {
     });
   });
 
+  it.effect("ignores duplicate workflow replay events without rewinding the resume cursor", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({
+            T3_ACP_ENABLE_PI_WORKFLOWS: "1",
+            T3_ACP_EMIT_WORKFLOW_REPLAY_ON_LOAD: "1",
+            T3_ACP_WORKFLOW_REPLAY_SEQUENCE: "3",
+          }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-workflow-duplicate-replay");
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: {
+          schemaVersion: 2,
+          provider: customAcpDriver,
+          sessionId: "mock-session-1",
+          workflows: {
+            activeRuns: [{ runId: "workflow-run-1", lastSequence: 7, status: "interrupted" }],
+          },
+        },
+      });
+
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
+      const sessions = yield* adapter.listSessions();
+      const currentSession = sessions.find((session) => session.threadId === threadId);
+      assert.isDefined(currentSession);
+      assert.deepStrictEqual(
+        parseCustomAcpResume(customAcpDriver, currentSession!.resumeCursor)?.activeWorkflowRuns,
+        [{ runId: "workflow-run-1", lastSequence: 7, status: "interrupted" }],
+      );
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect(
     "uses ACP cancel instead of metadata-only Pi workflow pause on workflow interrupt",
     () =>

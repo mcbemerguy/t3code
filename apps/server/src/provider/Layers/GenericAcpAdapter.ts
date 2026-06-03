@@ -936,8 +936,11 @@ export function makeGenericAcpAdapter(
                     const previous = ctx.workflowRuns.get(event.runId);
                     const duplicate =
                       previous !== undefined && event.sequence <= previous.lastSequence;
-                    if (duplicate) ctx.duplicateWorkflowEventRuns.add(event.runId);
-                    else ctx.duplicateWorkflowEventRuns.delete(event.runId);
+                    if (duplicate) {
+                      ctx.duplicateWorkflowEventRuns.add(event.runId);
+                      return;
+                    }
+                    ctx.duplicateWorkflowEventRuns.delete(event.runId);
                     const run = workflowRunFromRecord(
                       event.runId,
                       event.sequence,
@@ -951,7 +954,7 @@ export function makeGenericAcpAdapter(
                     });
                     if (!cursor) return;
                     upsertWorkflowRunCursor(ctx, run, cursor);
-                    if (!duplicate) yield* emitWorkflowRunUpdated(ctx, cursor, event.rawPayload);
+                    yield* emitWorkflowRunUpdated(ctx, cursor, event.rawPayload);
                     return;
                   }
                   case "TokenUsageUpdated":
