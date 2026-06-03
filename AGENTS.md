@@ -31,6 +31,10 @@ Long term maintainability is a core priority. If you add new functionality, firs
 - `packages/contracts`: Shared effect/Schema schemas and TypeScript contracts for provider events, WebSocket protocol, and model/session types. Keep this package schema-only — no runtime logic.
 - `packages/shared`: Shared runtime utilities consumed by both server and web. Uses explicit subpath exports (e.g. `@t3tools/shared/git`) — no barrel index.
 
+## Custom ACP / Pi workflow recovery
+
+When working on Custom ACP workflow recovery, read `docs/providers/custom-acp.md` and the Pi smoke checklist at `../../agent/extensions/workflows/scripts/recovery-smoke.md`. Keep Stop mapped to standard ACP `session/cancel` for active turns; route Pi-specific Continue/Resume, Interrupt/Pause, and Abort through the provider workflow-control seam instead of assistant-text instructions.
+
 ## Codex App Server (Important)
 
 T3 Code is currently Codex-first. The server starts `codex app-server` (JSON-RPC over stdio) per provider session, then streams structured events to the browser through WebSocket push messages.
