@@ -6,7 +6,9 @@ import {
   makeCustomAcpResumeCursor,
   parseCustomAcpResume,
   parsePiWorkflowEventNotification,
+  workflowCursorFromResumeRun,
   workflowMetaFromRawPayload,
+  workflowRunFromRecord,
 } from "./PiWorkflowExtension.ts";
 
 const provider = ProviderDriverKind.make("customAcp");
@@ -78,6 +80,76 @@ describe("Pi workflow ACP extension helpers", () => {
       runId: "run-1",
       sequence: 9,
       record: { type: "step_start", runId: "run-1", sequence: 9 },
+    });
+  });
+
+  it("preserves run cursor state across step events with step-local statuses", () => {
+    const previous = {
+      runId: "run-1",
+      lastSequence: 3,
+      runDir: "/tmp/run-1",
+      auditPath: "/tmp/run-1/audit.md",
+      status: "running",
+    };
+
+    const run = workflowRunFromRecord(
+      "run-1",
+      4,
+      { type: "step_end", stepId: "code", status: "completed" },
+      previous,
+    );
+    const cursor = workflowCursorFromResumeRun({
+      run,
+      capabilities: {
+        interruptMethod: "_pi/workflows/interrupt",
+        abortMethod: "_pi/workflows/abort",
+      },
+      updatedAt: "2026-06-03T00:00:00.000Z",
+    });
+
+    expect(cursor).toMatchObject({
+      runId: "run-1",
+      status: "running",
+      terminal: false,
+      lastSequence: 4,
+      runDir: "/tmp/run-1",
+      auditPath: "/tmp/run-1/audit.md",
+      actions: ["interrupt", "abort"],
+    });
+  });
+
+  it("promotes recovering runs back to running on resumed step activity", () => {
+    const run = workflowRunFromRecord(
+      "run-1",
+      5,
+      { type: "step_start", stepId: "code", status: "running" },
+      {
+        runId: "run-1",
+        lastSequence: 4,
+        status: "recovering",
+      },
+    );
+
+    expect(run).toMatchObject({
+      runId: "run-1",
+      lastSequence: 5,
+      status: "running",
+    });
+  });
+
+  it("uses run-level terminal events to close workflow cursors", () => {
+    const run = workflowRunFromRecord("run-1", 9, { type: "run_end", status: "completed" });
+    const cursor = workflowCursorFromResumeRun({
+      run,
+      capabilities: { resumeMethod: "_pi/workflows/resume" },
+      updatedAt: "2026-06-03T00:00:00.000Z",
+    });
+
+    expect(cursor).toMatchObject({
+      runId: "run-1",
+      status: "completed",
+      terminal: true,
+      actions: [],
     });
   });
 

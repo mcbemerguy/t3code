@@ -219,11 +219,35 @@ export function workflowMetaFromRawPayload(rawPayload: unknown): { runId: string
   return runId ? { runId } : undefined;
 }
 
-export function workflowStatusFromRecord(record: Record<string, unknown>): string | undefined {
+export function workflowStatusFromRecord(
+  record: Record<string, unknown>,
+  previousStatus?: string,
+): string | undefined {
   const explicit = stringField(record.status);
-  if (explicit) return explicit;
-  if (record.type === "run_start") return "running";
-  return undefined;
+  const type = stringField(record.type);
+  switch (type) {
+    case "run_start":
+      return "running";
+    case "run_end":
+      return explicit ?? "completed";
+    case "run_paused":
+      return explicit ?? "paused";
+    case "run_interrupted":
+      return explicit ?? "interrupted";
+    case "run_aborted":
+      return explicit ?? "aborted";
+    case "run_resume_requested":
+      return explicit ?? "recovering";
+    case "workflow_redo_requested":
+      return explicit ?? previousStatus;
+    case "step_start":
+    case "step_update":
+      return previousStatus === "recovering" && explicit === "running" ? "running" : previousStatus;
+    case undefined:
+      return explicit ?? previousStatus;
+    default:
+      return previousStatus;
+  }
 }
 
 export function isTerminalWorkflowStatus(status: string | undefined): boolean {
@@ -328,12 +352,16 @@ export function workflowRunFromRecord(
   runId: string,
   sequence: number,
   record: Record<string, unknown>,
+  previous?: PiWorkflowResumeRun,
 ): PiWorkflowResumeRun {
+  const status = workflowStatusFromRecord(record, previous?.status);
+  const runDir = stringField(record.runDir) ?? previous?.runDir;
+  const auditPath = stringField(record.auditPath) ?? previous?.auditPath;
   return {
     runId,
     lastSequence: sequence,
-    ...(stringField(record.runDir) ? { runDir: stringField(record.runDir)! } : {}),
-    ...(stringField(record.auditPath) ? { auditPath: stringField(record.auditPath)! } : {}),
-    ...(workflowStatusFromRecord(record) ? { status: workflowStatusFromRecord(record)! } : {}),
+    ...(runDir ? { runDir } : {}),
+    ...(auditPath ? { auditPath } : {}),
+    ...(status ? { status } : {}),
   };
 }

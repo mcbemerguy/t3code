@@ -911,17 +911,31 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       );
     }
     const result = yield* routed.adapter.controlWorkflowRun(input);
-    yield* directory.upsert({
-      threadId: input.threadId,
-      provider: routed.adapter.provider,
-      providerInstanceId: routed.instanceId,
-      status: "running",
-      runtimePayload: {
-        activeTurnId: null,
-        lastRuntimeEvent: "provider.controlWorkflowRun",
-        lastRuntimeEventAt: yield* nowIso,
-      },
-    });
+    const lastRuntimeEventAt = yield* nowIso;
+    const activeSessions = yield* routed.adapter.listSessions();
+    const activeSession = activeSessions.find((session) => session.threadId === input.threadId);
+    if (activeSession) {
+      yield* upsertSessionBinding(
+        { ...activeSession, providerInstanceId: routed.instanceId },
+        input.threadId,
+        {
+          lastRuntimeEvent: "provider.controlWorkflowRun",
+          lastRuntimeEventAt,
+        },
+      );
+    } else {
+      yield* directory.upsert({
+        threadId: input.threadId,
+        provider: routed.adapter.provider,
+        providerInstanceId: routed.instanceId,
+        status: "running",
+        runtimePayload: {
+          activeTurnId: null,
+          lastRuntimeEvent: "provider.controlWorkflowRun",
+          lastRuntimeEventAt,
+        },
+      });
+    }
     return result;
   });
 

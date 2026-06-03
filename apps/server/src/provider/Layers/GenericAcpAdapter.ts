@@ -77,6 +77,7 @@ import {
   parseCustomAcpResume,
   type PiWorkflowCapabilities,
   type PiWorkflowResumeRun,
+  PI_WORKFLOWS_EVENTS_METHOD,
   workflowCursorFromControlResponse,
   workflowCursorFromResumeRun,
   workflowMetaFromRawPayload,
@@ -928,7 +929,7 @@ export function makeGenericAcpAdapter(
                   case "WorkflowEventObserved": {
                     yield* logNative(
                       ctx.threadId,
-                      ctx.piWorkflowCapabilities?.eventsMethod ?? "_pi/workflows/events",
+                      ctx.piWorkflowCapabilities?.eventsMethod ?? PI_WORKFLOWS_EVENTS_METHOD,
                       event.rawPayload,
                       "acp.extension",
                     );
@@ -937,7 +938,12 @@ export function makeGenericAcpAdapter(
                       previous !== undefined && event.sequence <= previous.lastSequence;
                     if (duplicate) ctx.duplicateWorkflowEventRuns.add(event.runId);
                     else ctx.duplicateWorkflowEventRuns.delete(event.runId);
-                    const run = workflowRunFromRecord(event.runId, event.sequence, event.record);
+                    const run = workflowRunFromRecord(
+                      event.runId,
+                      event.sequence,
+                      event.record,
+                      previous,
+                    );
                     const cursor = workflowCursorFromResumeRun({
                       run,
                       capabilities: ctx.piWorkflowCapabilities,
@@ -1424,7 +1430,6 @@ export function makeGenericAcpAdapter(
       provider,
       capabilities: {
         sessionModelSwitch: "in-session",
-        workflowControl: { actions: ["continue", "resume", "interrupt", "pause", "abort"] },
       },
       startSession,
       sendTurn,
