@@ -281,6 +281,38 @@ export const OrchestrationSessionStatus = Schema.Literals([
 ]);
 export type OrchestrationSessionStatus = typeof OrchestrationSessionStatus.Type;
 
+export const ProviderWorkflowRunStatus = Schema.Literals([
+  "running",
+  "paused",
+  "interrupted",
+  "recovering",
+  "completed",
+  "failed",
+  "aborted",
+]);
+export type ProviderWorkflowRunStatus = typeof ProviderWorkflowRunStatus.Type;
+
+export const ProviderWorkflowControlAction = Schema.Literals([
+  "continue",
+  "resume",
+  "interrupt",
+  "pause",
+  "abort",
+]);
+export type ProviderWorkflowControlAction = typeof ProviderWorkflowControlAction.Type;
+
+export const ProviderWorkflowRunCursor = Schema.Struct({
+  runId: TrimmedNonEmptyString,
+  status: ProviderWorkflowRunStatus,
+  terminal: Schema.Boolean,
+  lastSequence: NonNegativeInt,
+  runDir: Schema.optional(TrimmedNonEmptyString),
+  auditPath: Schema.optional(TrimmedNonEmptyString),
+  actions: Schema.Array(ProviderWorkflowControlAction),
+  updatedAt: IsoDateTime,
+});
+export type ProviderWorkflowRunCursor = typeof ProviderWorkflowRunCursor.Type;
+
 export const OrchestrationSession = Schema.Struct({
   threadId: ThreadId,
   status: OrchestrationSessionStatus,
@@ -289,6 +321,7 @@ export const OrchestrationSession = Schema.Struct({
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
+  workflowRuns: Schema.optional(Schema.Array(ProviderWorkflowRunCursor)),
   updatedAt: IsoDateTime,
 });
 export type OrchestrationSession = typeof OrchestrationSession.Type;
@@ -648,6 +681,16 @@ const ThreadTurnInterruptCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadWorkflowControlCommand = Schema.Struct({
+  type: Schema.Literal("thread.workflow.control"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  runId: TrimmedNonEmptyString,
+  action: ProviderWorkflowControlAction,
+  continuationMessage: Schema.optional(TrimmedNonEmptyString),
+  createdAt: IsoDateTime,
+});
+
 const ThreadApprovalRespondCommand = Schema.Struct({
   type: Schema.Literal("thread.approval.respond"),
   commandId: CommandId,
@@ -695,6 +738,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadTurnStartCommand,
   ThreadMessageUserRetryDeliveryCommand,
   ThreadTurnInterruptCommand,
+  ThreadWorkflowControlCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
@@ -717,6 +761,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ClientThreadTurnStartCommand,
   ThreadMessageUserRetryDeliveryCommand,
   ThreadTurnInterruptCommand,
+  ThreadWorkflowControlCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
@@ -844,6 +889,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.message-user-delivery-failed",
   "thread.turn-start-requested",
   "thread.turn-interrupt-requested",
+  "thread.workflow-control-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
   "thread.checkpoint-revert-requested",
@@ -983,6 +1029,14 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
 export const ThreadTurnInterruptRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   turnId: Schema.optional(TurnId),
+  createdAt: IsoDateTime,
+});
+
+export const ThreadWorkflowControlRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  runId: TrimmedNonEmptyString,
+  action: ProviderWorkflowControlAction,
+  continuationMessage: Schema.optional(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
 });
 
@@ -1133,6 +1187,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.turn-interrupt-requested"),
     payload: ThreadTurnInterruptRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.workflow-control-requested"),
+    payload: ThreadWorkflowControlRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

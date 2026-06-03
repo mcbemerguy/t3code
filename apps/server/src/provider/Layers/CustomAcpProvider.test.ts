@@ -806,57 +806,112 @@ describe("Custom ACP provider", () => {
     });
   });
 
-  it.effect("requests Pi workflow pause instead of ACP cancel on first workflow interrupt", () =>
-    Effect.gen(function* () {
-      const requestLog = yield* Effect.promise(() => tempFile("workflow-pause.jsonl"));
-      const adapter = yield* makeGenericAcpAdapter(
-        makeCustomAcpSettings({
-          env: envText({
-            T3_ACP_ENABLE_PI_WORKFLOWS: "1",
-            T3_ACP_REQUEST_LOG_PATH: requestLog,
+  it.effect(
+    "uses ACP cancel instead of metadata-only Pi workflow pause on workflow interrupt",
+    () =>
+      Effect.gen(function* () {
+        const requestLog = yield* Effect.promise(() => tempFile("workflow-interrupt-cancel.jsonl"));
+        const adapter = yield* makeGenericAcpAdapter(
+          makeCustomAcpSettings({
+            env: envText({
+              T3_ACP_ENABLE_PI_WORKFLOWS: "1",
+              T3_ACP_REQUEST_LOG_PATH: requestLog,
+            }),
           }),
-        }),
-        { instanceId: customAcpInstanceId },
-      );
-      const threadId = ThreadId.make("custom-acp-workflow-pause-interrupt");
+          { instanceId: customAcpInstanceId },
+        );
+        const threadId = ThreadId.make("custom-acp-workflow-pause-interrupt");
 
-      yield* adapter.startSession({
-        threadId,
-        provider: customAcpDriver,
-        cwd: process.cwd(),
-        runtimeMode: "full-access",
-        resumeCursor: {
-          schemaVersion: 2,
+        yield* adapter.startSession({
+          threadId,
           provider: customAcpDriver,
-          sessionId: "mock-session-1",
-          workflows: {
-            activeRuns: [{ runId: "workflow-run-1", lastSequence: 7 }],
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          resumeCursor: {
+            schemaVersion: 2,
+            provider: customAcpDriver,
+            sessionId: "mock-session-1",
+            workflows: {
+              activeRuns: [{ runId: "workflow-run-1", lastSequence: 7 }],
+            },
           },
-        },
-      });
+        });
 
-      yield* adapter.interruptTurn(threadId);
-      const sessions = yield* adapter.listSessions();
-      const currentSession = sessions.find((session) => session.threadId === threadId);
-      assert.isDefined(currentSession);
-      assert.deepStrictEqual(
-        parseCustomAcpResume(customAcpDriver, currentSession!.resumeCursor)?.activeWorkflowRuns,
-        [{ runId: "workflow-run-1", lastSequence: 7, status: "paused" }],
-      );
-      yield* adapter.stopSession(threadId);
+        yield* adapter.interruptTurn(threadId);
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
+        const sessions = yield* adapter.listSessions();
+        const currentSession = sessions.find((session) => session.threadId === threadId);
+        assert.isDefined(currentSession);
+        assert.deepStrictEqual(
+          parseCustomAcpResume(customAcpDriver, currentSession!.resumeCursor)?.activeWorkflowRuns,
+          [{ runId: "workflow-run-1", lastSequence: 7 }],
+        );
+        yield* adapter.stopSession(threadId);
 
-      const entries = yield* Effect.promise(() => readJsonLines(requestLog));
-      const methods = jsonRpcMethods(entries);
-      assert.include(methods, "_pi/workflows/pause");
-      assert.notInclude(methods, "session/cancel");
-      expect(
-        entries.some(
-          (entry) =>
-            entry.method === "_pi/workflows/pause" &&
-            (entry.params as Record<string, unknown> | undefined)?.runId === "workflow-run-1",
-        ),
-      ).toBe(true);
-    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+        const entries = yield* Effect.promise(() => readJsonLines(requestLog));
+        const methods = jsonRpcMethods(entries);
+        assert.include(methods, "session/cancel");
+        assert.notInclude(methods, "_pi/workflows/pause");
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "routes Pi workflow resume, interrupt, and abort actions through provider controls",
+    () =>
+      Effect.gen(function* () {
+        const requestLog = yield* Effect.promise(() => tempFile("workflow-control-actions.jsonl"));
+        const adapter = yield* makeGenericAcpAdapter(
+          makeCustomAcpSettings({
+            env: envText({
+              T3_ACP_ENABLE_PI_WORKFLOWS: "1",
+              T3_ACP_REQUEST_LOG_PATH: requestLog,
+            }),
+          }),
+          { instanceId: customAcpInstanceId },
+        );
+        const threadId = ThreadId.make("custom-acp-workflow-control-actions");
+
+        yield* adapter.startSession({
+          threadId,
+          provider: customAcpDriver,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          resumeCursor: {
+            schemaVersion: 2,
+            provider: customAcpDriver,
+            sessionId: "mock-session-1",
+            workflows: {
+              activeRuns: [{ runId: "workflow-run-1", lastSequence: 7, status: "interrupted" }],
+            },
+          },
+        });
+
+        const resumed = yield* adapter.controlWorkflowRun!({
+          threadId,
+          runId: "workflow-run-1",
+          action: "continue",
+        });
+        assert.equal(resumed.run.status, "recovering");
+        const interrupted = yield* adapter.controlWorkflowRun!({
+          threadId,
+          runId: "workflow-run-1",
+          action: "interrupt",
+        });
+        assert.equal(interrupted.run.status, "interrupted");
+        const aborted = yield* adapter.controlWorkflowRun!({
+          threadId,
+          runId: "workflow-run-1",
+          action: "abort",
+        });
+        assert.equal(aborted.run.status, "aborted");
+        assert.equal(aborted.run.terminal, true);
+        yield* adapter.stopSession(threadId);
+
+        const methods = jsonRpcMethods(yield* Effect.promise(() => readJsonLines(requestLog)));
+        assert.include(methods, "_pi/workflows/resume");
+        assert.include(methods, "_pi/workflows/interrupt");
+        assert.include(methods, "_pi/workflows/abort");
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
   it.effect("fails strict custom ACP resume visibly instead of falling back to session/new", () =>

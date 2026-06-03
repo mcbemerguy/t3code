@@ -19,6 +19,8 @@ import {
   ProviderRequestKind,
   ProviderSandboxMode,
   ProviderUserInputAnswers,
+  ProviderWorkflowControlAction,
+  ProviderWorkflowRunCursor,
   RuntimeMode,
 } from "./orchestration.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
@@ -43,6 +45,7 @@ export const ProviderSession = Schema.Struct({
   model: Schema.optional(TrimmedNonEmptyString),
   threadId: ThreadId,
   resumeCursor: Schema.optional(Schema.Unknown),
+  workflowRuns: Schema.optional(Schema.Array(ProviderWorkflowRunCursor)),
   activeTurnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -106,6 +109,19 @@ export const ProviderStopSessionInput = Schema.Struct({
   threadId: ThreadId,
 });
 export type ProviderStopSessionInput = typeof ProviderStopSessionInput.Type;
+
+export const ProviderWorkflowControlInput = Schema.Struct({
+  threadId: ThreadId,
+  runId: TrimmedNonEmptyString,
+  action: ProviderWorkflowControlAction,
+  continuationMessage: Schema.optional(TrimmedNonEmptyString),
+});
+export type ProviderWorkflowControlInput = typeof ProviderWorkflowControlInput.Type;
+
+export const ProviderWorkflowControlResult = Schema.Struct({
+  run: ProviderWorkflowRunCursor,
+});
+export type ProviderWorkflowControlResult = typeof ProviderWorkflowControlResult.Type;
 
 export const ProviderRespondToRequestInput = Schema.Struct({
   threadId: ThreadId,

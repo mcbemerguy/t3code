@@ -22,6 +22,8 @@ import type {
   ProviderSession,
   ProviderSessionStartInput,
   ProviderStopSessionInput,
+  ProviderWorkflowControlInput,
+  ProviderWorkflowControlResult,
   ThreadId,
   ProviderTurnStartResult,
 } from "@t3tools/contracts";
@@ -83,6 +85,10 @@ export interface ProviderServiceShape {
   readonly stopSession: (
     input: ProviderStopSessionInput,
   ) => Effect.Effect<void, ProviderServiceError>;
+
+  readonly controlWorkflowRun?: (
+    input: ProviderWorkflowControlInput,
+  ) => Effect.Effect<ProviderWorkflowControlResult, ProviderServiceError>;
 
   /**
    * List active provider sessions.

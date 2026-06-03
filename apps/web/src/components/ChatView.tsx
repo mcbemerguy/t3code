@@ -9,6 +9,7 @@ import {
   type ProjectId,
   type ProviderApprovalDecision,
   ProviderInstanceId,
+  type ProviderWorkflowControlAction,
   type ServerProvider,
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
@@ -3248,6 +3249,30 @@ export default function ChatView(props: ChatViewProps) {
     });
   };
 
+  const activeWorkflowRuns = (activeThread?.session?.workflowRuns ?? []).filter(
+    (run) => !run.terminal && run.actions.length > 0,
+  );
+
+  const onWorkflowControl = async (runId: string, action: ProviderWorkflowControlAction) => {
+    const api = readEnvironmentApi(environmentId);
+    if (!api || !activeThread) return;
+    await api.orchestration
+      .dispatchCommand({
+        type: "thread.workflow.control",
+        commandId: newCommandId(),
+        threadId: activeThread.id,
+        runId,
+        action,
+        createdAt: new Date().toISOString(),
+      })
+      .catch((err: unknown) => {
+        setThreadError(
+          activeThread.id,
+          err instanceof Error ? err.message : "Failed to control workflow.",
+        );
+      });
+  };
+
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
       const api = readEnvironmentApi(environmentId);
@@ -3938,6 +3963,35 @@ export default function ChatView(props: ChatViewProps) {
             <div className="relative isolate">
               <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
               <div className="relative z-10">
+                {activeWorkflowRuns.length > 0 ? (
+                  <div className="mb-2 rounded-xl border border-border/60 bg-card/90 px-3 py-2 text-xs shadow-sm">
+                    <div className="mb-2 font-medium text-foreground">Workflow controls</div>
+                    <div className="flex flex-wrap gap-2">
+                      {activeWorkflowRuns.map((run) =>
+                        run.actions.map((action) => (
+                          <Button
+                            key={`${run.runId}:${action}`}
+                            type="button"
+                            size="xs"
+                            variant={action === "abort" ? "destructive" : "outline"}
+                            onClick={() => void onWorkflowControl(run.runId, action)}
+                          >
+                            {action === "continue"
+                              ? "Continue"
+                              : action === "resume"
+                                ? "Resume"
+                                : action === "interrupt"
+                                  ? "Interrupt"
+                                  : action === "pause"
+                                    ? "Pause"
+                                    : "Abort"}
+                            <span className="ml-1 text-muted-foreground">{run.runId}</span>
+                          </Button>
+                        )),
+                      )}
+                    </div>
+                  </div>
+                ) : null}
                 <ChatComposer
                   composerRef={composerRef}
                   composerDraftTarget={composerDraftTarget}

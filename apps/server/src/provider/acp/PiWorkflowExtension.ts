@@ -1,4 +1,9 @@
-import type { ProviderDriverKind } from "@t3tools/contracts";
+import type {
+  ProviderDriverKind,
+  ProviderWorkflowControlAction,
+  ProviderWorkflowRunCursor,
+  ProviderWorkflowRunStatus,
+} from "@t3tools/contracts";
 
 export const CUSTOM_ACP_RESUME_VERSION = 2 as const;
 export const LEGACY_CUSTOM_ACP_RESUME_VERSION = 1 as const;
@@ -7,6 +12,7 @@ export const PI_WORKFLOWS_LIST_METHOD = "_pi/workflows/list";
 export const PI_WORKFLOWS_GET_METHOD = "_pi/workflows/get";
 export const PI_WORKFLOWS_EVENTS_METHOD = "_pi/workflows/events";
 export const PI_WORKFLOWS_RESUME_METHOD = "_pi/workflows/resume";
+export const PI_WORKFLOWS_INTERRUPT_METHOD = "_pi/workflows/interrupt";
 export const PI_WORKFLOWS_PAUSE_METHOD = "_pi/workflows/pause";
 export const PI_WORKFLOWS_ABORT_METHOD = "_pi/workflows/abort";
 
@@ -15,6 +21,7 @@ const DEFAULT_WORKFLOW_METHODS = [
   PI_WORKFLOWS_GET_METHOD,
   PI_WORKFLOWS_EVENTS_METHOD,
   PI_WORKFLOWS_RESUME_METHOD,
+  PI_WORKFLOWS_INTERRUPT_METHOD,
   PI_WORKFLOWS_PAUSE_METHOD,
   PI_WORKFLOWS_ABORT_METHOD,
 ] as const;
@@ -38,6 +45,7 @@ export interface PiWorkflowCapabilities {
   readonly getMethod?: string;
   readonly eventsMethod?: string;
   readonly resumeMethod?: string;
+  readonly interruptMethod?: string;
   readonly pauseMethod?: string;
   readonly abortMethod?: string;
 }
@@ -113,13 +121,16 @@ export function makeCustomAcpResumeCursor(input: {
 }): Record<string, unknown> {
   const activeRuns = (input.activeWorkflowRuns ?? [])
     .filter((run) => run.runId.trim())
-    .map((run) => ({
-      runId: run.runId,
-      lastSequence: run.lastSequence,
-      ...(run.runDir ? { runDir: run.runDir } : {}),
-      ...(run.auditPath ? { auditPath: run.auditPath } : {}),
-      ...(run.status ? { status: run.status } : {}),
-    }));
+    .map((run) => {
+      const activeRun: Record<string, unknown> = {
+        runId: run.runId,
+        lastSequence: run.lastSequence,
+      };
+      if (run.runDir) activeRun.runDir = run.runDir;
+      if (run.auditPath) activeRun.auditPath = run.auditPath;
+      if (run.status) activeRun.status = run.status;
+      return activeRun;
+    });
   return {
     schemaVersion: CUSTOM_ACP_RESUME_VERSION,
     provider: input.provider,
@@ -158,6 +169,7 @@ export function extractPiWorkflowCapabilities(
     getMethod?: string;
     eventsMethod?: string;
     resumeMethod?: string;
+    interruptMethod?: string;
     pauseMethod?: string;
     abortMethod?: string;
   } = {};
@@ -166,12 +178,14 @@ export function extractPiWorkflowCapabilities(
   const eventsMethod =
     stringField(meta.workflowEventsMethod) ?? methodFromList(methods, PI_WORKFLOWS_EVENTS_METHOD);
   const resumeMethod = methodFromList(methods, PI_WORKFLOWS_RESUME_METHOD);
+  const interruptMethod = methodFromList(methods, PI_WORKFLOWS_INTERRUPT_METHOD);
   const pauseMethod = methodFromList(methods, PI_WORKFLOWS_PAUSE_METHOD);
   const abortMethod = methodFromList(methods, PI_WORKFLOWS_ABORT_METHOD);
   if (listMethod) capabilities.listMethod = listMethod;
   if (getMethod) capabilities.getMethod = getMethod;
   if (eventsMethod) capabilities.eventsMethod = eventsMethod;
   if (resumeMethod) capabilities.resumeMethod = resumeMethod;
+  if (interruptMethod) capabilities.interruptMethod = interruptMethod;
   if (pauseMethod) capabilities.pauseMethod = pauseMethod;
   if (abortMethod) capabilities.abortMethod = abortMethod;
   return capabilities;
@@ -214,6 +228,100 @@ export function workflowStatusFromRecord(record: Record<string, unknown>): strin
 
 export function isTerminalWorkflowStatus(status: string | undefined): boolean {
   return status === "completed" || status === "failed" || status === "aborted";
+}
+
+export function workflowActionsForStatus(
+  status: string | undefined,
+  capabilities: PiWorkflowCapabilities | undefined,
+): ReadonlyArray<ProviderWorkflowControlAction> {
+  if (isTerminalWorkflowStatus(status)) return [];
+  const actions: ProviderWorkflowControlAction[] = [];
+  if (status === "interrupted" || status === "paused" || status === "recovering") {
+    if (capabilities?.resumeMethod) actions.push("continue");
+  }
+  if (status === "running") {
+    if (capabilities?.interruptMethod) actions.push("interrupt");
+    else if (capabilities?.pauseMethod) actions.push("pause");
+  }
+  if (capabilities?.abortMethod) actions.push("abort");
+  return actions;
+}
+
+export function workflowCursorFromResumeRun(input: {
+  readonly run: PiWorkflowResumeRun;
+  readonly capabilities: PiWorkflowCapabilities | undefined;
+  readonly updatedAt: string;
+}): ProviderWorkflowRunCursor | undefined {
+  const status = stringField(input.run.status) ?? "running";
+  return workflowCursorFromFields({
+    runId: input.run.runId,
+    status,
+    lastSequence: input.run.lastSequence,
+    ...(input.run.runDir ? { runDir: input.run.runDir } : {}),
+    ...(input.run.auditPath ? { auditPath: input.run.auditPath } : {}),
+    capabilities: input.capabilities,
+    updatedAt: input.updatedAt,
+  });
+}
+
+export function workflowCursorFromControlResponse(input: {
+  readonly runId: string;
+  readonly lastSequence: number;
+  readonly raw: unknown;
+  readonly capabilities: PiWorkflowCapabilities | undefined;
+  readonly updatedAt: string;
+}): ProviderWorkflowRunCursor | undefined {
+  const rawRun = isRecord(input.raw) && isRecord(input.raw.run) ? input.raw.run : undefined;
+  const runDir = stringField(rawRun?.runDir);
+  const auditPath = stringField(rawRun?.auditPath);
+  return workflowCursorFromFields({
+    runId: stringField(rawRun?.runId) ?? stringField(rawRun?.id) ?? input.runId,
+    status: stringField(rawRun?.status) ?? "running",
+    lastSequence: numberField(rawRun?.lastSequence) ?? input.lastSequence,
+    ...(runDir ? { runDir } : {}),
+    ...(auditPath ? { auditPath } : {}),
+    capabilities: input.capabilities,
+    updatedAt: input.updatedAt,
+  });
+}
+
+function workflowCursorFromFields(input: {
+  readonly runId: string;
+  readonly status: string;
+  readonly lastSequence: number;
+  readonly runDir?: string;
+  readonly auditPath?: string;
+  readonly capabilities: PiWorkflowCapabilities | undefined;
+  readonly updatedAt: string;
+}): ProviderWorkflowRunCursor | undefined {
+  const runId = stringField(input.runId);
+  if (!runId) return undefined;
+  const status = normalizeWorkflowStatus(input.status);
+  return {
+    runId,
+    status,
+    terminal: isTerminalWorkflowStatus(status),
+    lastSequence: input.lastSequence,
+    ...(input.runDir ? { runDir: input.runDir } : {}),
+    ...(input.auditPath ? { auditPath: input.auditPath } : {}),
+    actions: workflowActionsForStatus(status, input.capabilities),
+    updatedAt: input.updatedAt,
+  };
+}
+
+function normalizeWorkflowStatus(status: string): ProviderWorkflowRunStatus {
+  switch (status) {
+    case "paused":
+    case "interrupted":
+    case "recovering":
+    case "completed":
+    case "failed":
+    case "aborted":
+      return status;
+    case "running":
+    default:
+      return "running";
+  }
 }
 
 export function workflowRunFromRecord(

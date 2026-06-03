@@ -15,6 +15,9 @@ import type {
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
   ProviderActiveTurnInput,
+  ProviderWorkflowControlAction,
+  ProviderWorkflowControlInput,
+  ProviderWorkflowControlResult,
   ProviderSession,
   ProviderSessionStartInput,
   ThreadId,
@@ -31,6 +34,9 @@ export interface ProviderAdapterCapabilities {
    * Declares whether changing the model on an existing session is supported.
    */
   readonly sessionModelSwitch: ProviderSessionModelSwitchMode;
+  readonly workflowControl?: {
+    readonly actions: ReadonlyArray<ProviderWorkflowControlAction>;
+  };
 }
 
 export interface ProviderThreadTurnSnapshot {
@@ -70,6 +76,10 @@ export interface ProviderAdapterShape<TError> {
    * Interrupt an active turn.
    */
   readonly interruptTurn: (threadId: ThreadId, turnId?: TurnId) => Effect.Effect<void, TError>;
+
+  readonly controlWorkflowRun?: (
+    input: ProviderWorkflowControlInput,
+  ) => Effect.Effect<ProviderWorkflowControlResult, TError>;
 
   /**
    * Respond to an interactive approval request.

@@ -20,6 +20,7 @@ import {
   ProviderSendTurnInput,
   ProviderSessionStartInput,
   ProviderStopSessionInput,
+  ProviderWorkflowControlInput,
   type ProviderInstanceId,
   type ProviderDriverKind,
   type ProviderRuntimeEvent,
@@ -890,6 +891,40 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
+  const controlWorkflowRun: ProviderServiceShape["controlWorkflowRun"] = Effect.fn(
+    "controlWorkflowRun",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.controlWorkflowRun",
+      schema: ProviderWorkflowControlInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.controlWorkflowRun",
+      allowRecovery: true,
+    });
+    if (!routed.adapter.controlWorkflowRun) {
+      return yield* toValidationError(
+        "ProviderService.controlWorkflowRun",
+        `Provider '${routed.adapter.provider}' does not support workflow controls.`,
+      );
+    }
+    const result = yield* routed.adapter.controlWorkflowRun(input);
+    yield* directory.upsert({
+      threadId: input.threadId,
+      provider: routed.adapter.provider,
+      providerInstanceId: routed.instanceId,
+      status: "running",
+      runtimePayload: {
+        activeTurnId: null,
+        lastRuntimeEvent: "provider.controlWorkflowRun",
+        lastRuntimeEventAt: yield* nowIso,
+      },
+    });
+    return result;
+  });
+
   const listSessions: ProviderServiceShape["listSessions"] = Effect.fn("listSessions")(
     function* () {
       const currentAdapters = yield* getAdapterEntries;
@@ -1079,6 +1114,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     respondToRequest,
     respondToUserInput,
     stopSession,
+    controlWorkflowRun,
     listSessions,
     getCapabilities,
     getInstanceInfo,

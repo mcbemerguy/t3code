@@ -328,6 +328,7 @@ const program = Effect.gen(function* () {
                             "_pi/workflows/get",
                             "_pi/workflows/events",
                             "_pi/workflows/resume",
+                            "_pi/workflows/interrupt",
                             "_pi/workflows/pause",
                             "_pi/workflows/abort",
                           ],
@@ -500,6 +501,7 @@ const program = Effect.gen(function* () {
 
   for (const method of [
     "_pi/workflows/resume",
+    "_pi/workflows/interrupt",
     "_pi/workflows/pause",
     "_pi/workflows/abort",
   ] as const) {
@@ -516,7 +518,9 @@ const program = Effect.gen(function* () {
               ? "aborted"
               : method === "_pi/workflows/pause"
                 ? "paused"
-                : "recovering",
+                : method === "_pi/workflows/interrupt"
+                  ? "interrupted"
+                  : "recovering",
         },
       });
     });
@@ -847,7 +851,9 @@ const program = Effect.gen(function* () {
               ? "aborted"
               : method === "_pi/workflows/pause"
                 ? "paused"
-                : "recovering",
+                : method === "_pi/workflows/interrupt"
+                  ? "interrupted"
+                  : "recovering",
         },
       });
     }

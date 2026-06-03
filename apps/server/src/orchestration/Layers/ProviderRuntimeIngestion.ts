@@ -17,6 +17,7 @@ import {
   type OrchestrationThread,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
+  type ProviderWorkflowRunCursor,
 } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
@@ -265,6 +266,18 @@ function orchestrationSessionStatusFromRuntimeState(
     case "error":
       return "error";
   }
+}
+
+function mergeWorkflowRunCursors(
+  existing: ReadonlyArray<ProviderWorkflowRunCursor> | undefined,
+  next: ProviderWorkflowRunCursor,
+): ReadonlyArray<ProviderWorkflowRunCursor> {
+  const byRunId = new Map((existing ?? []).map((run) => [run.runId, run] as const));
+  if (next.terminal) byRunId.delete(next.runId);
+  else byRunId.set(next.runId, next);
+  return Array.from(byRunId.values()).toSorted((left, right) =>
+    left.runId.localeCompare(right.runId),
+  );
 }
 
 function requestKindFromCanonicalRequestType(
@@ -1429,7 +1442,8 @@ const make = Effect.gen(function* () {
         event.type === "session.exited" ||
         event.type === "thread.started" ||
         event.type === "turn.started" ||
-        event.type === "turn.completed"
+        event.type === "turn.completed" ||
+        event.type === "workflow.run.updated"
       ) {
         const nextActiveTurnId =
           event.type === "turn.started"
@@ -1441,6 +1455,12 @@ const make = Effect.gen(function* () {
           switch (event.type) {
             case "session.state.changed":
               return orchestrationSessionStatusFromRuntimeState(event.payload.state);
+            case "workflow.run.updated":
+              return activeTurnId !== null
+                ? "running"
+                : thread.session?.status === "idle"
+                  ? "ready"
+                  : (thread.session?.status ?? "ready");
             case "turn.started":
               return "running";
             case "session.exited":
@@ -1501,6 +1521,10 @@ const make = Effect.gen(function* () {
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: nextActiveTurnId,
               lastError,
+              workflowRuns:
+                event.type === "workflow.run.updated"
+                  ? mergeWorkflowRunCursors(thread.session?.workflowRuns, event.payload.run)
+                  : (thread.session?.workflowRuns ?? []),
               updatedAt: now,
             },
             createdAt: now,

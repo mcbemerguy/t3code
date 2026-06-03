@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { ProviderDriverKind } from "@t3tools/contracts";
 
 import {
+  extractPiWorkflowCapabilities,
   makeCustomAcpResumeCursor,
   parseCustomAcpResume,
   parsePiWorkflowEventNotification,
@@ -38,6 +39,30 @@ describe("Pi workflow ACP extension helpers", () => {
       sessionId: "pi-session",
       requireResumeSession: true,
       activeWorkflowRuns: [{ runId: "run-1", lastSequence: 5, runDir: "/tmp/run-1" }],
+    });
+  });
+
+  it("extracts the Pi workflow interrupt capability", () => {
+    expect(
+      extractPiWorkflowCapabilities({
+        agentCapabilities: {
+          _meta: {
+            piAcp: {
+              workflows: true,
+              workflowMethods: [
+                "_pi/workflows/list",
+                "_pi/workflows/resume",
+                "_pi/workflows/interrupt",
+                "_pi/workflows/abort",
+              ],
+            },
+          },
+        },
+      }),
+    ).toMatchObject({
+      resumeMethod: "_pi/workflows/resume",
+      interruptMethod: "_pi/workflows/interrupt",
+      abortMethod: "_pi/workflows/abort",
     });
   });
 
