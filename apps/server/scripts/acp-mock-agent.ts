@@ -32,6 +32,10 @@ const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
 const failPrompt = process.env.T3_ACP_FAIL_PROMPT === "1";
 const failPromptDetail = process.env.T3_ACP_FAIL_PROMPT_DETAIL ?? "Mock prompt failed";
 const enableSessionList = process.env.T3_ACP_ENABLE_SESSION_LIST === "1";
+const enableSessionClose = process.env.T3_ACP_ENABLE_SESSION_CLOSE === "1";
+const enableSessionDelete = process.env.T3_ACP_ENABLE_SESSION_DELETE === "1";
+const failSessionClose = process.env.T3_ACP_FAIL_SESSION_CLOSE === "1";
+const failSessionDelete = process.env.T3_ACP_FAIL_SESSION_DELETE === "1";
 const enablePiSteering = process.env.T3_ACP_ENABLE_PI_STEERING === "1";
 const enablePiWorkflows = process.env.T3_ACP_ENABLE_PI_WORKFLOWS === "1";
 const emitWorkflowReplayOnLoad = process.env.T3_ACP_EMIT_WORKFLOW_REPLAY_ON_LOAD === "1";
@@ -314,7 +318,15 @@ const program = Effect.gen(function* () {
         protocolVersion: 1,
         agentCapabilities: {
           loadSession: true,
-          ...(enableSessionList ? { sessionCapabilities: { list: {} } } : {}),
+          ...(enableSessionList || enableSessionClose || enableSessionDelete
+            ? {
+                sessionCapabilities: {
+                  ...(enableSessionList ? { list: {} } : {}),
+                  ...(enableSessionClose ? { close: {} } : {}),
+                  ...(enableSessionDelete ? { delete: {} } : {}),
+                },
+              }
+            : {}),
           ...(enablePiSteering || enablePiWorkflows
             ? {
                 _meta: {
@@ -496,6 +508,20 @@ const program = Effect.gen(function* () {
       ? Effect.never
       : Effect.sync(() => {
           cancelledSessions.add(String(sessionId ?? "mock-session-1"));
+        }),
+  );
+
+  yield* agent.handleCloseSession((request) =>
+    failSessionClose
+      ? Effect.fail(
+          AcpError.AcpRequestError.internalError("Mock failed session/close", {
+            method: "session/close",
+            params: request,
+          }),
+        )
+      : Effect.sync(() => {
+          cancelledSessions.add(String(request.sessionId ?? "mock-session-1"));
+          return {};
         }),
   );
 
@@ -856,6 +882,24 @@ const program = Effect.gen(function* () {
                   : "recovering",
         },
       });
+    }
+
+    if (method === "session/delete") {
+      if (!enableSessionDelete) {
+        return Effect.fail(AcpError.AcpRequestError.methodNotFound(method));
+      }
+      if (failSessionDelete) {
+        return Effect.fail(
+          AcpError.AcpRequestError.internalError("Mock failed session/delete", {
+            method,
+            params,
+          }),
+        );
+      }
+      const payload =
+        typeof params === "object" && params !== null ? (params as Record<string, unknown>) : {};
+      cancelledSessions.add(String(payload.sessionId ?? sessionId));
+      return Effect.succeed({});
     }
 
     if (method !== "session/mode/set") {

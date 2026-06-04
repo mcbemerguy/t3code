@@ -39,6 +39,10 @@ export interface ProviderAdapterCapabilities {
   };
 }
 
+export interface ProviderStopSessionOptions {
+  readonly deleteBackingSession?: boolean;
+}
+
 export interface ProviderThreadTurnSnapshot {
   readonly id: TurnId;
   readonly items: ReadonlyArray<unknown>;
@@ -102,7 +106,10 @@ export interface ProviderAdapterShape<TError> {
   /**
    * Stop one provider session.
    */
-  readonly stopSession: (threadId: ThreadId) => Effect.Effect<void, TError>;
+  readonly stopSession: (
+    threadId: ThreadId,
+    options?: ProviderStopSessionOptions,
+  ) => Effect.Effect<void, TError>;
 
   /**
    * List currently active provider sessions for this adapter.

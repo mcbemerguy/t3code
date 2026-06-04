@@ -865,19 +865,25 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "provider.thread_id": input.threadId,
         });
         if (routed.isActive) {
-          yield* routed.adapter.stopSession(routed.threadId);
+          yield* routed.adapter.stopSession(
+            routed.threadId,
+            input.deleteBackingSession ? { deleteBackingSession: true } : undefined,
+          );
         }
         yield* directory.upsert({
           threadId: input.threadId,
           provider: routed.adapter.provider,
           providerInstanceId: routed.instanceId,
           status: "stopped",
+          ...(input.deleteBackingSession ? { resumeCursor: null } : {}),
           runtimePayload: {
             activeTurnId: null,
+            ...(input.deleteBackingSession ? { deletedBackingSession: true } : {}),
           },
         });
         yield* analytics.record("provider.session.stopped", {
           provider: routed.adapter.provider,
+          deleteBackingSession: input.deleteBackingSession === true,
         });
       }).pipe(
         withMetrics({

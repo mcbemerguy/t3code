@@ -72,6 +72,11 @@ import {
 import { applyGenericAcpSessionConfiguration } from "../acp/GenericAcpAdapterMode.ts";
 import { makeCustomAcpRuntime } from "../acp/CustomAcpSupport.ts";
 import {
+  ACP_SESSION_DELETE_METHOD,
+  extractAcpSessionLifecycleCapabilities,
+  type AcpSessionLifecycleCapabilities,
+} from "../acp/AcpSessionLifecycle.ts";
+import {
   extractPiWorkflowCapabilities,
   makeCustomAcpResumeCursor,
   parseCustomAcpResume,
@@ -90,6 +95,7 @@ const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJ
 const CUSTOM_ACP_PROVIDER = ProviderDriverKind.make("customAcp");
 const ACP_CANCEL_WATCHDOG_GRACE_MS = 2_500;
 const ACP_CANCEL_PROMPT_DRAIN_MS = 500;
+const ACP_SESSION_LIFECYCLE_GRACE_MS = 2_500;
 
 interface PendingApproval {
   readonly decision: Deferred.Deferred<ProviderApprovalDecision>;
@@ -115,6 +121,7 @@ interface GenericAcpSessionContext {
   activeTurnId: TurnId | undefined;
   runtimeEventTurnId: TurnId | undefined;
   piSteeringMethod: string | undefined;
+  acpSessionLifecycleCapabilities: AcpSessionLifecycleCapabilities;
   piWorkflowCapabilities: PiWorkflowCapabilities | undefined;
   readonly workflowRuns: Map<string, PiWorkflowResumeRun>;
   readonly duplicateWorkflowEventRuns: Set<string>;
@@ -216,7 +223,7 @@ function settlePendingApprovalsAsCancelled(
   pendingApprovals: ReadonlyMap<ApprovalRequestId, PendingApproval>,
 ): Effect.Effect<void> {
   return Effect.forEach(
-    pendingApprovals.values(),
+    Array.from(pendingApprovals.values()),
     (pending) => Deferred.succeed(pending.decision, "cancel").pipe(Effect.ignore),
     { discard: true },
   );
@@ -226,7 +233,7 @@ function settlePendingUserInputsAsEmptyAnswers(
   pendingUserInputs: ReadonlyMap<ApprovalRequestId, PendingUserInput>,
 ): Effect.Effect<void> {
   return Effect.forEach(
-    pendingUserInputs.values(),
+    Array.from(pendingUserInputs.values()),
     (pending) => Deferred.succeed(pending.answers, {}).pipe(Effect.ignore),
     { discard: true },
   );
@@ -526,14 +533,50 @@ export function makeGenericAcpAdapter(
       return Effect.succeed(ctx);
     };
 
-    const stopSessionInternal = (ctx: GenericAcpSessionContext) =>
+    const settleActiveTurnsAsCancelled = (
+      ctx: GenericAcpSessionContext,
+      stopReason: string,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        for (const [turnId, completion] of ctx.turnPromptCompletions) {
+          if (ctx.completedTurnIds.has(turnId)) continue;
+          ctx.cancellingTurnIds.add(turnId);
+          yield* Deferred.succeed(
+            completion,
+            Exit.fail(
+              new ProviderAdapterRequestError({
+                provider,
+                method: "session/prompt",
+                detail: stopReason,
+              }),
+            ),
+          ).pipe(Effect.ignore);
+        }
+      });
+
+    const prepareSessionStop = (ctx: GenericAcpSessionContext, stopReason: string) =>
+      Effect.gen(function* () {
+        yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
+        yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
+        yield* settleActiveTurnsAsCancelled(ctx, stopReason);
+      });
+
+    const finalizeSessionStop = (ctx: GenericAcpSessionContext, detach: boolean) =>
       Effect.gen(function* () {
         if (ctx.stopped) return;
         ctx.stopped = true;
-        yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
-        yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
-        if (ctx.notificationFiber) yield* Fiber.interrupt(ctx.notificationFiber);
-        yield* Effect.ignore(Scope.close(ctx.scope, Exit.void));
+        if (ctx.notificationFiber) {
+          const interrupt = Fiber.interrupt(ctx.notificationFiber);
+          const interruptEffect = detach
+            ? interrupt.pipe(Effect.forkDetach, Effect.ignore)
+            : interrupt;
+          yield* interruptEffect;
+        }
+        const closeScope = Scope.close(ctx.scope, Exit.void);
+        const closeScopeEffect = detach
+          ? closeScope.pipe(Effect.forkDetach, Effect.ignore)
+          : Effect.ignore(closeScope);
+        yield* closeScopeEffect;
         sessions.delete(ctx.threadId);
         yield* offerRuntimeEvent({
           type: "session.exited",
@@ -543,6 +586,123 @@ export function makeGenericAcpAdapter(
           payload: { exitKind: "graceful" },
         });
       });
+
+    const emitLifecycleWarning = (
+      ctx: GenericAcpSessionContext,
+      message: string,
+      detail: unknown,
+    ) =>
+      makeEventStamp().pipe(
+        Effect.flatMap((stamp) =>
+          offerRuntimeEvent({
+            type: "runtime.warning",
+            ...stamp,
+            provider,
+            threadId: ctx.threadId,
+            payload: { message, detail },
+          }),
+        ),
+      );
+
+    const closeAcpSessionIfSupported = (ctx: GenericAcpSessionContext) => {
+      if (!ctx.acpSessionLifecycleCapabilities.close) return Effect.void;
+      return ctx.acp.close.pipe(
+        Effect.asVoid,
+        Effect.mapError((error) =>
+          mapAcpToAdapterError(provider, ctx.threadId, "session/close", error),
+        ),
+      );
+    };
+
+    const deleteAcpSessionIfSupported = (ctx: GenericAcpSessionContext) => {
+      const payload = { sessionId: ctx.acpSessionId };
+      return ctx.acp.request(ACP_SESSION_DELETE_METHOD, payload).pipe(
+        Effect.asVoid,
+        Effect.catch((error) => {
+          if (error._tag !== "AcpRequestError" || error.code !== -32601) {
+            return Effect.fail(
+              mapAcpToAdapterError(provider, ctx.threadId, ACP_SESSION_DELETE_METHOD, error),
+            );
+          }
+          return emitLifecycleWarning(
+            ctx,
+            "ACP provider does not support session/delete; backing session history was not removed.",
+            { method: ACP_SESSION_DELETE_METHOD, sessionId: ctx.acpSessionId },
+          ).pipe(Effect.andThen(closeAcpSessionIfSupported(ctx)));
+        }),
+      );
+    };
+
+    const runBoundedAcpLifecycle = (
+      ctx: GenericAcpSessionContext,
+      method: string,
+      effect: Effect.Effect<void, ProviderAdapterError>,
+      failOnError: boolean,
+    ): Effect.Effect<void, ProviderAdapterError> =>
+      effect.pipe(
+        Effect.timeoutOption(Duration.millis(ACP_SESSION_LIFECYCLE_GRACE_MS)),
+        Effect.flatMap((result) => {
+          if (result._tag === "Some") return Effect.void;
+          const error = new ProviderAdapterRequestError({
+            provider,
+            method,
+            detail: `${method} did not settle before local runtime cleanup.`,
+          });
+          const warning = emitLifecycleWarning(
+            ctx,
+            `${method} timed out; local runtime was still stopped.`,
+            {
+              error: error.message,
+            },
+          );
+          return failOnError ? warning.pipe(Effect.andThen(Effect.fail(error))) : warning;
+        }),
+        Effect.catch((error) => {
+          const warning = emitLifecycleWarning(
+            ctx,
+            `${method} failed; local runtime was still stopped.`,
+            {
+              error: error.message,
+            },
+          );
+          return failOnError ? warning.pipe(Effect.andThen(Effect.fail(error))) : warning;
+        }),
+      );
+
+    const runSessionLifecycleStop = (
+      ctx: GenericAcpSessionContext,
+      options?: {
+        readonly deleteBackingSession?: boolean;
+        readonly detach?: boolean;
+        readonly skipAcpLifecycle?: boolean;
+      },
+    ) =>
+      Effect.gen(function* () {
+        if (ctx.stopped) return;
+        const deleteBackingSession = options?.deleteBackingSession === true;
+        const method = deleteBackingSession ? ACP_SESSION_DELETE_METHOD : "session/close";
+        const acpLifecycle: Effect.Effect<void, ProviderAdapterError> = options?.skipAcpLifecycle
+          ? Effect.void
+          : runBoundedAcpLifecycle(
+              ctx,
+              method,
+              deleteBackingSession
+                ? deleteAcpSessionIfSupported(ctx)
+                : closeAcpSessionIfSupported(ctx),
+              deleteBackingSession,
+            );
+        const lifecycleEffect = prepareSessionStop(
+          ctx,
+          deleteBackingSession ? "session/delete requested" : "session/close requested",
+        ).pipe(Effect.andThen(acpLifecycle));
+        const lifecycleExit = yield* lifecycleEffect.pipe(Effect.exit);
+        yield* finalizeSessionStop(ctx, options?.detach === true);
+        if (Exit.isFailure(lifecycleExit)) {
+          return yield* Effect.failCause(lifecycleExit.cause);
+        }
+      });
+
+    const stopSessionInternal = (ctx: GenericAcpSessionContext) => runSessionLifecycleStop(ctx);
 
     const stopSessionWithoutWaitingForPrompt = (ctx: GenericAcpSessionContext) =>
       Effect.gen(function* () {
@@ -764,6 +924,9 @@ export function makeGenericAcpAdapter(
               mapAcpToAdapterError(provider, input.threadId, method, cause),
           });
 
+          const acpSessionLifecycleCapabilities = extractAcpSessionLifecycleCapabilities(
+            started.initializeResult,
+          );
           const piWorkflowCapabilities = extractPiWorkflowCapabilities(started.initializeResult);
           const now = yield* nowIso;
           const resumedWorkflowRuns = new Map(
@@ -821,6 +984,7 @@ export function makeGenericAcpAdapter(
             activeTurnId: undefined,
             runtimeEventTurnId: undefined,
             piSteeringMethod: started.piSteeringMethod,
+            acpSessionLifecycleCapabilities,
             piWorkflowCapabilities,
             workflowRuns: resumedWorkflowRuns,
             duplicateWorkflowEventRuns: new Set(),
@@ -1398,12 +1562,18 @@ export function makeGenericAcpAdapter(
         return { threadId, turns: ctx.turns };
       });
 
-    const stopSession: ProviderAdapterShape<ProviderAdapterError>["stopSession"] = (threadId) =>
+    const stopSession: ProviderAdapterShape<ProviderAdapterError>["stopSession"] = (
+      threadId,
+      options,
+    ) =>
       withThreadLock(
         threadId,
         Effect.gen(function* () {
           const ctx = yield* requireSession(threadId);
-          yield* stopSessionInternal(ctx);
+          yield* runSessionLifecycleStop(
+            ctx,
+            options?.deleteBackingSession ? { deleteBackingSession: true } : undefined,
+          );
         }),
       );
 

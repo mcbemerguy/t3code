@@ -384,6 +384,178 @@ describe("Custom ACP provider", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
+  it.effect("uses session/close for normal Custom ACP stop without deleting backing history", () =>
+    Effect.gen(function* () {
+      const requestLog = yield* Effect.promise(() => tempFile("normal-stop-close.jsonl"));
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({
+            T3_ACP_REQUEST_LOG_PATH: requestLog,
+            T3_ACP_ENABLE_SESSION_CLOSE: "1",
+          }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-normal-close");
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.stopSession(threadId);
+
+      const methods = jsonRpcMethods(yield* Effect.promise(() => readJsonLines(requestLog)));
+      assert.include(methods, "session/close");
+      assert.notInclude(methods, "session/delete");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("uses session/delete for destructive Custom ACP stop when advertised", () =>
+    Effect.gen(function* () {
+      const requestLog = yield* Effect.promise(() => tempFile("destructive-stop-delete.jsonl"));
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({
+            T3_ACP_REQUEST_LOG_PATH: requestLog,
+            T3_ACP_ENABLE_SESSION_DELETE: "1",
+          }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-delete-backed-session");
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.stopSession(threadId, { deleteBackingSession: true });
+
+      const methods = jsonRpcMethods(yield* Effect.promise(() => readJsonLines(requestLog)));
+      assert.include(methods, "session/delete");
+      assert.notInclude(methods, "session/close");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("falls back to session/close and warns when destructive delete is unsupported", () =>
+    Effect.gen(function* () {
+      const requestLog = yield* Effect.promise(() => tempFile("delete-unsupported-close.jsonl"));
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({
+            T3_ACP_REQUEST_LOG_PATH: requestLog,
+            T3_ACP_ENABLE_SESSION_CLOSE: "1",
+          }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-delete-unsupported");
+      const warning =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "runtime.warning" }>>();
+
+      yield* Stream.runForEach(adapter.streamEvents, (event) => {
+        if (event.threadId !== threadId || event.type !== "runtime.warning") return Effect.void;
+        return Deferred.succeed(warning, event).pipe(Effect.ignore);
+      }).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.stopSession(threadId, { deleteBackingSession: true });
+
+      const warningEvent = yield* Deferred.await(warning);
+      assert.match(warningEvent.payload.message, /does not support session\/delete/i);
+      const methods = jsonRpcMethods(yield* Effect.promise(() => readJsonLines(requestLog)));
+      assert.include(methods, "session/delete");
+      assert.include(methods, "session/close");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("cleans up the Custom ACP runtime scope when session/delete fails", () =>
+    Effect.gen(function* () {
+      const requestLog = yield* Effect.promise(() => tempFile("delete-fails.jsonl"));
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({
+            T3_ACP_REQUEST_LOG_PATH: requestLog,
+            T3_ACP_ENABLE_SESSION_DELETE: "1",
+            T3_ACP_FAIL_SESSION_DELETE: "1",
+          }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-delete-fails-cleanup");
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const stopped = yield* adapter
+        .stopSession(threadId, { deleteBackingSession: true })
+        .pipe(Effect.exit);
+
+      assert.isTrue(Exit.isFailure(stopped));
+      assert.isFalse(yield* adapter.hasSession(threadId));
+      const methods = jsonRpcMethods(yield* Effect.promise(() => readJsonLines(requestLog)));
+      assert.include(methods, "session/delete");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("settles pending user input when destructive Custom ACP stop falls back to close", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({
+            T3_ACP_EMIT_ASK_QUESTION: "1",
+            T3_ACP_ENABLE_SESSION_CLOSE: "1",
+          }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-delete-settles-user-input");
+      const requested =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "user-input.requested" }>>();
+      const resolved =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "user-input.resolved" }>>();
+
+      yield* Stream.runForEach(adapter.streamEvents, (event) => {
+        if (event.threadId !== threadId) return Effect.void;
+        if (event.type === "user-input.requested") {
+          return Deferred.succeed(requested, event).pipe(Effect.ignore);
+        }
+        if (event.type === "user-input.resolved") {
+          return Deferred.succeed(resolved, event).pipe(Effect.ignore);
+        }
+        return Effect.void;
+      }).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const turnFiber = yield* adapter
+        .sendTurn({ threadId, input: "ask", attachments: [] })
+        .pipe(Effect.forkChild);
+      const request = yield* Deferred.await(requested);
+
+      yield* adapter.stopSession(threadId, { deleteBackingSession: true });
+      yield* Fiber.await(turnFiber);
+      const resolvedEvent = yield* Deferred.await(resolved);
+      assert.isDefined(request.turnId);
+      assert.equal(resolvedEvent.turnId, request.turnId);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("emits a failed turn completion when ACP prompt fails after start", () =>
     Effect.gen(function* () {
       const adapter = yield* makeGenericAcpAdapter(

@@ -43,8 +43,8 @@ const make = Effect.gen(function* () {
 
   const stopProviderSession = (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
     logCleanupCauseUnlessInterrupted({
-      effect: providerService.stopSession({ threadId }),
-      message: "thread deletion cleanup skipped provider session stop",
+      effect: providerService.stopSession({ threadId, deleteBackingSession: true }),
+      message: "thread deletion cleanup skipped provider backing session delete",
       threadId,
     });
 

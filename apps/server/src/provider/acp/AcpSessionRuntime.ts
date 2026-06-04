@@ -127,6 +127,7 @@ export interface AcpSessionRuntimeShape {
     payload: Omit<EffectAcpSchema.PromptRequest, "sessionId">,
   ) => Effect.Effect<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>;
   readonly cancel: Effect.Effect<void, EffectAcpErrors.AcpError>;
+  readonly close: Effect.Effect<EffectAcpSchema.CloseSessionResponse, EffectAcpErrors.AcpError>;
   readonly setMode: (
     modeId: string,
   ) => Effect.Effect<EffectAcpSchema.SetSessionModeResponse, EffectAcpErrors.AcpError>;
@@ -589,6 +590,16 @@ const makeAcpSessionRuntime = (
             "session/cancel",
             requestPayload,
             acp.agent.cancel(requestPayload),
+          );
+        }),
+      ),
+      close: getStartedState.pipe(
+        Effect.flatMap((started) => {
+          const requestPayload = { sessionId: started.sessionId };
+          return runLoggedRequest(
+            "session/close",
+            requestPayload,
+            acp.agent.closeSession(requestPayload),
           );
         }),
       ),
