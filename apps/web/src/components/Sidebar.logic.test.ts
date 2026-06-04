@@ -826,11 +826,15 @@ describe("deleteSelectedSidebarThreads", () => {
       ["key-2", { environmentId: localEnvironmentId, id: ThreadId.make("thread-2") }],
       ["key-3", { environmentId: localEnvironmentId, id: ThreadId.make("thread-3") }],
     ]);
-    const deleteThread = vi.fn(async (threadRef: ScopedThreadRef) => {
-      if (threadRef.threadId === ThreadId.make("thread-2")) {
-        throw failure;
-      }
-    });
+    const plannedKeySnapshots: string[][] = [];
+    const deleteThread = vi.fn(
+      async (threadRef: ScopedThreadRef, opts?: { deletedThreadKeys?: ReadonlySet<string> }) => {
+        plannedKeySnapshots.push([...(opts?.deletedThreadKeys ?? [])]);
+        if (threadRef.threadId === ThreadId.make("thread-2")) {
+          throw failure;
+        }
+      },
+    );
 
     const result = await deleteSelectedSidebarThreads({
       threadKeys: ["key-1", "key-2", "key-3"],
@@ -843,6 +847,11 @@ describe("deleteSelectedSidebarThreads", () => {
       ThreadId.make("thread-1"),
       ThreadId.make("thread-2"),
       ThreadId.make("thread-3"),
+    ]);
+    expect(plannedKeySnapshots).toEqual([
+      ["key-1", "key-2", "key-3"],
+      ["key-1", "key-2", "key-3"],
+      ["key-1", "key-3"],
     ]);
     expect(result.deletedThreadKeys).toEqual(["key-1", "key-3"]);
     expect(result.failures).toEqual([{ threadKey: "key-2", error: failure }]);

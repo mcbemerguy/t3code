@@ -186,3 +186,29 @@ export function showThreadDeleteUnexpectedError(input: {
   );
   markThreadDeleteErrorVisible(input.error);
 }
+
+export function showSelectedThreadDeleteFailures(input: {
+  failureCount: number;
+  firstError: unknown;
+  toast?: ThreadDeleteToastManager;
+  logger?: ThreadDeleteLogger;
+}): void {
+  if (input.failureCount <= 0) return;
+  const logger = input.logger ?? console;
+  const title =
+    input.failureCount === 1
+      ? "Failed to delete selected thread"
+      : `Failed to delete ${input.failureCount} selected threads`;
+  logger.error(title, { error: input.firstError, failureCount: input.failureCount });
+  const toast = input.toast ?? toastManager;
+  toast.add(
+    stackedThreadToast({
+      type: "error",
+      title,
+      description: errorMessage(
+        input.firstError,
+        "One or more selected threads could not be deleted.",
+      ),
+    }),
+  );
+}

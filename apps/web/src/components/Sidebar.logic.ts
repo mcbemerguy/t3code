@@ -326,19 +326,23 @@ export async function deleteSelectedSidebarThreads(input: {
   deletedThreadKeys: string[];
   failures: Array<{ threadKey: string; error: unknown }>;
 }> {
-  const deletedThreadKeys = new Set(input.threadKeys);
+  const plannedDeletedThreadKeys = new Set(input.threadKeys);
   const succeeded: string[] = [];
   const failures: Array<{ threadKey: string; error: unknown }> = [];
 
   for (const threadKey of input.threadKeys) {
     const thread = input.getThread(threadKey);
-    if (!thread) continue;
+    if (!thread) {
+      plannedDeletedThreadKeys.delete(threadKey);
+      continue;
+    }
     try {
       await input.deleteThread(scopeThreadRef(thread.environmentId, thread.id), {
-        deletedThreadKeys,
+        deletedThreadKeys: plannedDeletedThreadKeys,
       });
       succeeded.push(threadKey);
     } catch (error) {
+      plannedDeletedThreadKeys.delete(threadKey);
       failures.push({ threadKey, error });
     }
   }

@@ -93,7 +93,10 @@ import { useComposerDraftStore } from "../composerDraftStore";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import { retainThreadDetailSubscription } from "../environments/runtime/service";
 
-import { showThreadDeleteUnexpectedError } from "../hooks/threadDeleteAction.logic";
+import {
+  showSelectedThreadDeleteFailures,
+  showThreadDeleteUnexpectedError,
+} from "../hooks/threadDeleteAction.logic";
 import { useThreadActions } from "../hooks/useThreadActions";
 import {
   buildThreadRouteParams,
@@ -1655,13 +1658,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         removeFromSelection(result.deletedThreadKeys);
       }
       if (result.failures.length > 0) {
-        const firstFailure = result.failures[0];
-        showThreadDeleteUnexpectedError({
-          error: firstFailure?.error,
-          title:
-            result.failures.length === 1
-              ? "Failed to delete selected thread"
-              : `Failed to delete ${result.failures.length} selected threads`,
+        showSelectedThreadDeleteFailures({
+          failureCount: result.failures.length,
+          firstError: result.failures[0]?.error,
         });
       }
     },

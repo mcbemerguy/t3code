@@ -8,6 +8,7 @@ import type {
 import {
   closeTerminalAfterThreadDelete,
   dispatchThreadDeleteFirst,
+  showSelectedThreadDeleteFailures,
 } from "./threadDeleteAction.logic";
 
 function commandId(): ClientOrchestrationCommand["commandId"] {
@@ -155,6 +156,34 @@ describe("thread delete action logic", () => {
         type: "warning",
         title: "Thread deleted, but backing session cleanup failed",
         description: "Pi session file could not be removed",
+      }),
+    );
+  });
+
+  it("shows an aggregate selected-thread failure toast even when the first error already had a toast", async () => {
+    const toast = createToastRecorder();
+    const logger = createLogger();
+    const target = threadRef();
+    const error = new Error("dispatch unavailable");
+    const api = createApi({ dispatchCommand: vi.fn().mockRejectedValue(error) });
+
+    await expect(
+      dispatchThreadDeleteFirst({ api, target, commandId: commandId(), toast, logger }),
+    ).rejects.toBe(error);
+
+    showSelectedThreadDeleteFailures({
+      failureCount: 2,
+      firstError: error,
+      toast,
+      logger,
+    });
+
+    expect(toast.add).toHaveBeenCalledTimes(2);
+    expect(toast.add).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        type: "error",
+        title: "Failed to delete 2 selected threads",
+        description: "dispatch unavailable",
       }),
     );
   });
