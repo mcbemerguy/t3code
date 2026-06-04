@@ -25,6 +25,26 @@ This is compatible with Pi through `pi-acp`: Pi `ask_user_questions` can run thr
 
 For a Pi smoke test, configure a Custom ACP provider to launch the local `pi-acp` build and explicitly expose the hidden Pi tool with `PI_DELEGATED_TOOL_CAP=ask_user_questions`. Keep the method as `cursor/ask_question` unless the ACP server requires another extension method.
 
+## Provider lifecycle: Stop/Close vs Delete
+
+Custom ACP treats normal Stop/Close and thread Delete as separate lifecycle intents:
+
+- Stop and provider shutdown are non-destructive. T3Code cancels active work, settles pending approvals/user-input, and calls ACP `session/close` when the server advertises it. Backing ACP history remains resumable/importable.
+- Thread Delete is destructive only when the provider supports it. Before the local thread binding is lost, T3Code requests provider cleanup with `deleteBackingSession: true`; Custom ACP then calls ACP `session/delete` if advertised. If delete is unsupported or fails, local runtime cleanup still happens and T3Code records a warning/toast that backing history may still exist.
+- Archive and ordinary Stop must not request backing-session deletion.
+
+For `pi-acp`, Delete means the adapter closes the live Pi subprocess first, validates the mapped Pi JSONL session file, unlinks only that validated file, removes its session-map entry, and marks recoverable workflow runs for the deleted parent aborted. It does not remove project files, workflow audit directories, child session artifacts, or global Pi configuration.
+
+Smoke checks after lifecycle changes:
+
+1. Idle Pi-backed thread Delete: session disappears from Custom ACP import/list and the Pi JSONL is gone.
+2. Active-turn Delete: the browser thread is removed, T3Code shows a warning only on cleanup failure, and no `pi --mode rpc` process remains.
+3. Stale/wrong mapping: delete is safe and does not unlink a wrong-session/wrong-cwd Pi JSONL.
+4. Unsupported delete: a Custom ACP server without `session/delete` gets close-only cleanup and a visible/durable warning.
+5. Windows/stuck cancel: killing through `pi.cmd`/shell escalates to the full process tree; a Pi turn that ignores abort still leaves no child process.
+
+Diagnostics to check: T3Code server logs include `custom ACP session lifecycle requested`; provider runtime warnings/audit events record ACP close/delete timeout or failure; `pi-acp` stderr logs delete request parameters, resolved session file, validation refusal, unlink result, and kill escalation.
+
 ## Pi workflow recovery
 
 When the ACP server advertises Pi workflow capabilities, T3Code Custom ACP tracks active workflow run ids and the last observed workflow event sequence in its resume cursor. On browser reload, server restart, or provider restart, the Custom ACP provider resumes the ACP session with `session/load` when required, lets the ACP server replay standard `session/update` presentation, and deduplicates replayed workflow events by sequence. Current `pi-acp` `session/load` performs a full replay for attached recoverable runs; T3Code's saved `lastSequence` is what prevents duplicate plan/tool/message presentation.

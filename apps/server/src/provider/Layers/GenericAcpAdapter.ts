@@ -614,7 +614,7 @@ export function makeGenericAcpAdapter(
       );
     };
 
-    const failUnsupportedSessionDelete = (ctx: GenericAcpSessionContext) =>
+    const failUnsupportedSessionDelete = () =>
       Effect.fail(
         new ProviderAdapterRequestError({
           provider,
@@ -630,7 +630,7 @@ export function makeGenericAcpAdapter(
         { method: ACP_SESSION_DELETE_METHOD, sessionId: ctx.acpSessionId },
       ).pipe(
         Effect.andThen(closeAcpSessionIfSupported(ctx)),
-        Effect.andThen(failUnsupportedSessionDelete(ctx)),
+        Effect.andThen(failUnsupportedSessionDelete()),
       );
 
     const deleteAcpSessionIfSupported = (ctx: GenericAcpSessionContext) => {
@@ -699,6 +699,13 @@ export function makeGenericAcpAdapter(
         if (ctx.stopped) return;
         const deleteBackingSession = options?.deleteBackingSession === true;
         const method = deleteBackingSession ? ACP_SESSION_DELETE_METHOD : "session/close";
+        yield* Effect.logInfo("custom ACP session lifecycle requested", {
+          provider,
+          threadId: ctx.threadId,
+          acpSessionId: ctx.acpSessionId,
+          method,
+          deleteBackingSession,
+        });
         const acpLifecycle: Effect.Effect<void, ProviderAdapterError> = options?.skipAcpLifecycle
           ? Effect.void
           : runBoundedAcpLifecycle(

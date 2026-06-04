@@ -35,6 +35,8 @@ Long term maintainability is a core priority. If you add new functionality, firs
 
 When working on Custom ACP workflow recovery, read `docs/providers/custom-acp.md` and the Pi smoke checklist at `../../agent/extensions/workflows/scripts/recovery-smoke.md`. Keep Stop mapped to standard ACP `session/cancel` for active turns; route Pi-specific Continue/Resume, Interrupt/Pause, and Abort through the provider workflow-control seam instead of assistant-text instructions.
 
+Custom ACP lifecycle contract: Stop/Close is non-destructive and must preserve backing ACP history; thread Delete is the only path that may request destructive backing-session cleanup (`deleteBackingSession: true` / ACP `session/delete`) when the agent advertises support. Archive and ordinary Stop must not delete backing sessions.
+
 ## Codex App Server (Important)
 
 T3 Code is currently Codex-first. The server starts `codex app-server` (JSON-RPC over stdio) per provider session, then streams structured events to the browser through WebSocket push messages.
