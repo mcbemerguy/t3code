@@ -318,12 +318,11 @@ const program = Effect.gen(function* () {
         protocolVersion: 1,
         agentCapabilities: {
           loadSession: true,
-          ...(enableSessionList || enableSessionClose || enableSessionDelete
+          ...(enableSessionList || enableSessionClose
             ? {
                 sessionCapabilities: {
                   ...(enableSessionList ? { list: {} } : {}),
                   ...(enableSessionClose ? { close: {} } : {}),
-                  ...(enableSessionDelete ? { delete: {} } : {}),
                 },
               }
             : {}),
@@ -331,7 +330,9 @@ const program = Effect.gen(function* () {
             ? {
                 _meta: {
                   piAcp: {
-                    ...(enableSessionDelete ? { sessionDelete: true } : {}),
+                    ...(enableSessionDelete
+                      ? { sessionDelete: true, sessionDeleteMethod: "_pi/session/delete" }
+                      : {}),
                     ...(enablePiSteering ? { steering: true, steeringMethod: "_pi/steer" } : {}),
                     ...(enablePiWorkflows
                       ? {
@@ -885,13 +886,13 @@ const program = Effect.gen(function* () {
       });
     }
 
-    if (method === "session/delete") {
+    if (method === "_pi/session/delete" || method === "session/delete") {
       if (!enableSessionDelete) {
         return Effect.fail(AcpError.AcpRequestError.methodNotFound(method));
       }
       if (failSessionDelete) {
         return Effect.fail(
-          AcpError.AcpRequestError.internalError("Mock failed session/delete", {
+          AcpError.AcpRequestError.internalError(`Mock failed ${method}`, {
             method,
             params,
           }),

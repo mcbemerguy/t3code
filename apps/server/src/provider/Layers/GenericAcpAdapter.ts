@@ -626,7 +626,7 @@ export function makeGenericAcpAdapter(
     const fallbackFromUnsupportedSessionDelete = (ctx: GenericAcpSessionContext) =>
       emitLifecycleWarning(
         ctx,
-        "ACP provider does not support session/delete; backing session history was not removed.",
+        `ACP provider does not support ${ACP_SESSION_DELETE_METHOD}; backing session history was not removed.`,
         { method: ACP_SESSION_DELETE_METHOD, sessionId: ctx.acpSessionId },
       ).pipe(
         Effect.andThen(closeAcpSessionIfSupported(ctx)),
@@ -634,17 +634,16 @@ export function makeGenericAcpAdapter(
       );
 
     const deleteAcpSessionIfSupported = (ctx: GenericAcpSessionContext) => {
-      if (!ctx.acpSessionLifecycleCapabilities.delete) {
+      const deleteMethod = ctx.acpSessionLifecycleCapabilities.deleteMethod;
+      if (!deleteMethod) {
         return fallbackFromUnsupportedSessionDelete(ctx);
       }
       const payload = { sessionId: ctx.acpSessionId };
-      return ctx.acp.request(ACP_SESSION_DELETE_METHOD, payload).pipe(
+      return ctx.acp.request(deleteMethod, payload).pipe(
         Effect.asVoid,
         Effect.catch((error) => {
           if (error._tag !== "AcpRequestError" || error.code !== -32601) {
-            return Effect.fail(
-              mapAcpToAdapterError(provider, ctx.threadId, ACP_SESSION_DELETE_METHOD, error),
-            );
+            return Effect.fail(mapAcpToAdapterError(provider, ctx.threadId, deleteMethod, error));
           }
           return fallbackFromUnsupportedSessionDelete(ctx);
         }),
@@ -698,7 +697,9 @@ export function makeGenericAcpAdapter(
       Effect.gen(function* () {
         if (ctx.stopped) return;
         const deleteBackingSession = options?.deleteBackingSession === true;
-        const method = deleteBackingSession ? ACP_SESSION_DELETE_METHOD : "session/close";
+        const method = deleteBackingSession
+          ? (ctx.acpSessionLifecycleCapabilities.deleteMethod ?? ACP_SESSION_DELETE_METHOD)
+          : "session/close";
         yield* Effect.logInfo("custom ACP session lifecycle requested", {
           provider,
           threadId: ctx.threadId,
@@ -716,10 +717,9 @@ export function makeGenericAcpAdapter(
                 : closeAcpSessionIfSupported(ctx),
               deleteBackingSession,
             );
-        const lifecycleEffect = prepareSessionStop(
-          ctx,
-          deleteBackingSession ? "session/delete requested" : "session/close requested",
-        ).pipe(Effect.andThen(acpLifecycle));
+        const lifecycleEffect = prepareSessionStop(ctx, `${method} requested`).pipe(
+          Effect.andThen(acpLifecycle),
+        );
         const lifecycleExit = yield* lifecycleEffect.pipe(Effect.exit);
         yield* finalizeSessionStop(ctx, options?.detach === true);
         if (Exit.isFailure(lifecycleExit)) {

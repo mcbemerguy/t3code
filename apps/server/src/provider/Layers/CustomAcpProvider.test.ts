@@ -412,7 +412,7 @@ describe("Custom ACP provider", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
-  it.effect("uses session/delete for destructive Custom ACP stop when advertised", () =>
+  it.effect("uses private _pi/session/delete for destructive Custom ACP stop when advertised", () =>
     Effect.gen(function* () {
       const requestLog = yield* Effect.promise(() => tempFile("destructive-stop-delete.jsonl"));
       const adapter = yield* makeGenericAcpAdapter(
@@ -435,7 +435,8 @@ describe("Custom ACP provider", () => {
       yield* adapter.stopSession(threadId, { deleteBackingSession: true });
 
       const methods = jsonRpcMethods(yield* Effect.promise(() => readJsonLines(requestLog)));
-      assert.include(methods, "session/delete");
+      assert.include(methods, "_pi/session/delete");
+      assert.notInclude(methods, "session/delete");
       assert.notInclude(methods, "session/close");
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
@@ -474,14 +475,15 @@ describe("Custom ACP provider", () => {
       assert.isTrue(Exit.isFailure(stopped));
       assert.isFalse(yield* adapter.hasSession(threadId));
       const warningEvent = yield* Deferred.await(warning);
-      assert.match(warningEvent.payload.message, /does not support session\/delete/i);
+      assert.match(warningEvent.payload.message, /does not support _pi\/session\/delete/i);
       const methods = jsonRpcMethods(yield* Effect.promise(() => readJsonLines(requestLog)));
+      assert.notInclude(methods, "_pi/session/delete");
       assert.notInclude(methods, "session/delete");
       assert.include(methods, "session/close");
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
-  it.effect("cleans up the Custom ACP runtime scope when session/delete fails", () =>
+  it.effect("cleans up the Custom ACP runtime scope when private delete fails", () =>
     Effect.gen(function* () {
       const requestLog = yield* Effect.promise(() => tempFile("delete-fails.jsonl"));
       const adapter = yield* makeGenericAcpAdapter(
@@ -509,7 +511,7 @@ describe("Custom ACP provider", () => {
       assert.isTrue(Exit.isFailure(stopped));
       assert.isFalse(yield* adapter.hasSession(threadId));
       const methods = jsonRpcMethods(yield* Effect.promise(() => readJsonLines(requestLog)));
-      assert.include(methods, "session/delete");
+      assert.include(methods, "_pi/session/delete");
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
