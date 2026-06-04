@@ -3050,4 +3050,44 @@ describe("ProviderCommandReactor", () => {
       deleteBackingSession: true,
     });
   });
+
+  it("honors destructive backing-session intent for already stopped sessions", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-stopped-for-destructive-stop"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "stopped",
+          providerName: "customAcp",
+          providerInstanceId: ProviderInstanceId.make("customAcp_piLocal"),
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.stop",
+        commandId: CommandId.make("cmd-session-destructive-stop-when-stopped"),
+        threadId: ThreadId.make("thread-1"),
+        deleteBackingSession: true,
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.stopSession.mock.calls.length === 1);
+    expect(harness.stopSession.mock.calls[0]?.[0]).toEqual({
+      threadId: ThreadId.make("thread-1"),
+      deleteBackingSession: true,
+    });
+  });
 });

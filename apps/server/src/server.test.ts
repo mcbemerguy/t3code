@@ -3507,7 +3507,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               }),
           },
           projectionSnapshotQuery: {
-            getCommandReadModel: () => Effect.succeed({ ...readModel, threads: [thread] }),
+            getCommandReadModel: () =>
+              Effect.sync(() => {
+                effects.push("query:command-read-model");
+                return { ...readModel, threads: [thread] };
+              }),
           },
         },
       });
@@ -3525,7 +3529,59 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assert.equal(dispatchResult.sequence, 1);
       assert.deepEqual(dispatchResult.warnings ?? [], []);
-      assert.deepEqual(effects, [`provider.stop:${threadId}:true`, "dispatch:thread.delete"]);
+      assert.deepEqual(effects, [
+        "query:command-read-model",
+        `provider.stop:${threadId}:true`,
+        "dispatch:thread.delete",
+      ]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("does not delete provider backing session when thread delete validation fails", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-delete-provider-cleanup-rejected");
+      const effects: string[] = [];
+
+      yield* buildAppUnderTest({
+        layers: {
+          providerService: {
+            stopSession: (input) =>
+              Effect.sync(() => {
+                effects.push(`provider.stop:${input.threadId}:${input.deleteBackingSession}`);
+              }),
+          },
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                effects.push(`dispatch:${command.type}`);
+                return { sequence: 1 };
+              }),
+          },
+          projectionSnapshotQuery: {
+            getCommandReadModel: () =>
+              Effect.sync(() => {
+                effects.push("query:command-read-model");
+                return makeDefaultOrchestrationReadModel();
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const dispatchResult = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "thread.delete",
+            commandId: CommandId.make("cmd-thread-delete-provider-cleanup-rejected"),
+            threadId,
+          }),
+        ).pipe(Effect.result),
+      );
+
+      assertTrue(dispatchResult._tag === "Failure");
+      assertTrue(dispatchResult.failure._tag === "OrchestrationDispatchCommandError");
+      assert.include(dispatchResult.failure.message, `Thread '${threadId}' does not exist`);
+      assert.deepEqual(effects, ["query:command-read-model"]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -3566,7 +3622,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               }),
           },
           projectionSnapshotQuery: {
-            getCommandReadModel: () => Effect.succeed({ ...readModel, threads: [thread] }),
+            getCommandReadModel: () =>
+              Effect.sync(() => {
+                effects.push("query:command-read-model");
+                return { ...readModel, threads: [thread] };
+              }),
           },
         },
       });
@@ -3584,7 +3644,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assert.equal(dispatchResult.sequence, 1);
       assert.equal(dispatchResult.warnings?.[0]?.code, "provider_backing_session_delete_failed");
-      assert.deepEqual(effects, [`provider.stop:${threadId}:true`, "dispatch:thread.delete"]);
+      assert.deepEqual(effects, [
+        "query:command-read-model",
+        `provider.stop:${threadId}:true`,
+        "dispatch:thread.delete",
+      ]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

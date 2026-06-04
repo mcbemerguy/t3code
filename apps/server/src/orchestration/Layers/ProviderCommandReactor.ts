@@ -1126,7 +1126,10 @@ const make = Effect.gen(function* () {
     }
 
     const now = event.payload.createdAt;
-    if (thread.session && thread.session.status !== "stopped") {
+    if (
+      thread.session &&
+      (thread.session.status !== "stopped" || event.payload.deleteBackingSession === true)
+    ) {
       yield* providerService.stopSession({
         threadId: thread.id,
         ...(event.payload.deleteBackingSession === true ? { deleteBackingSession: true } : {}),

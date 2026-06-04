@@ -613,6 +613,28 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           );
       };
 
+      const validateThreadDeleteBeforeBackingSessionDelete = (
+        normalizedCommand: OrchestrationCommand,
+      ): Effect.Effect<void, OrchestrationDispatchCommandError> => {
+        if (normalizedCommand.type !== "thread.delete") {
+          return Effect.void;
+        }
+        return projectionSnapshotQuery.getCommandReadModel().pipe(
+          Effect.mapError((cause) =>
+            toDispatchCommandError(cause, "Failed to validate thread delete command"),
+          ),
+          Effect.flatMap((readModel) =>
+            readModel.threads.some((thread) => thread.id === normalizedCommand.threadId)
+              ? Effect.void
+              : Effect.fail(
+                  new OrchestrationDispatchCommandError({
+                    message: `Thread '${normalizedCommand.threadId}' does not exist for command 'thread.delete'.`,
+                  }),
+                ),
+          ),
+        );
+      };
+
       const deleteBackingSessionBeforeThreadDelete = (
         normalizedCommand: OrchestrationCommand,
       ): Effect.Effect<ReadonlyArray<DispatchWarning>> => {
@@ -710,6 +732,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                         Effect.catch(() => Effect.succeed(false)),
                       )
                   : false;
+              yield* validateThreadDeleteBeforeBackingSessionDelete(normalizedCommand);
               const preDispatchWarnings =
                 yield* deleteBackingSessionBeforeThreadDelete(normalizedCommand);
               const result = yield* dispatchNormalizedCommand(normalizedCommand);
