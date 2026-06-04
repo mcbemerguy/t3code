@@ -613,6 +613,18 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           );
       };
 
+      const logThreadDeleteCommandReceipt = (
+        normalizedCommand: OrchestrationCommand,
+      ): Effect.Effect<void> => {
+        if (normalizedCommand.type !== "thread.delete") {
+          return Effect.void;
+        }
+        return Effect.logInfo("thread.delete command received", {
+          commandId: normalizedCommand.commandId,
+          threadId: normalizedCommand.threadId,
+        });
+      };
+
       const validateThreadDeleteBeforeBackingSessionDelete = (
         normalizedCommand: OrchestrationCommand,
       ): Effect.Effect<void, OrchestrationDispatchCommandError> => {
@@ -732,6 +744,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                         Effect.catch(() => Effect.succeed(false)),
                       )
                   : false;
+              yield* logThreadDeleteCommandReceipt(normalizedCommand);
               yield* validateThreadDeleteBeforeBackingSessionDelete(normalizedCommand);
               const preDispatchWarnings =
                 yield* deleteBackingSessionBeforeThreadDelete(normalizedCommand);

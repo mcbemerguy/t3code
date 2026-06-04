@@ -2,12 +2,15 @@ import {
   DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
   ProviderInstanceId,
+  ThreadId,
   type ProviderInstanceConfig,
+  type ScopedThreadRef,
 } from "@t3tools/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildProviderInstanceUpdatePatch,
   formatDiagnosticsDescription,
+  runArchivedThreadContextMenuAction,
 } from "./SettingsPanels.logic";
 
 describe("formatDiagnosticsDescription", () => {
@@ -45,6 +48,32 @@ describe("formatDiagnosticsDescription", () => {
         otlpMetricsEnabled: false,
       }),
     ).toBe("Local trace file.");
+  });
+});
+
+describe("runArchivedThreadContextMenuAction", () => {
+  it("runs the shared delete action for archived-thread Delete", async () => {
+    const threadRef = {
+      environmentId: "environment-local",
+      threadId: ThreadId.make("thread-1"),
+    } as ScopedThreadRef;
+    const confirmAndDeleteThread = vi.fn().mockResolvedValue(undefined);
+    const unarchiveThread = vi.fn().mockResolvedValue(undefined);
+    const refreshArchivedThreads = vi.fn();
+
+    await expect(
+      runArchivedThreadContextMenuAction({
+        clicked: "delete",
+        threadRef,
+        unarchiveThread,
+        confirmAndDeleteThread,
+        refreshArchivedThreads,
+      }),
+    ).resolves.toBe("deleted");
+
+    expect(confirmAndDeleteThread).toHaveBeenCalledWith(threadRef);
+    expect(unarchiveThread).not.toHaveBeenCalled();
+    expect(refreshArchivedThreads).toHaveBeenCalledTimes(1);
   });
 });
 

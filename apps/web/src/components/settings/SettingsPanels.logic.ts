@@ -2,6 +2,7 @@ import type {
   ProviderDriverKind,
   ProviderInstanceConfig,
   ProviderInstanceId,
+  ScopedThreadRef,
   ServerSettings,
   UnifiedSettings,
 } from "@t3tools/contracts";
@@ -53,6 +54,26 @@ export function formatDiagnosticsDescription(input: {
   }
 
   return `${mode}.`;
+}
+
+export async function runArchivedThreadContextMenuAction(input: {
+  clicked: string | null | undefined;
+  threadRef: ScopedThreadRef;
+  unarchiveThread: (threadRef: ScopedThreadRef) => Promise<void>;
+  confirmAndDeleteThread: (threadRef: ScopedThreadRef) => Promise<void>;
+  refreshArchivedThreads: () => void;
+}): Promise<"ignored" | "unarchived" | "deleted"> {
+  if (input.clicked === "unarchive") {
+    await input.unarchiveThread(input.threadRef);
+    input.refreshArchivedThreads();
+    return "unarchived";
+  }
+  if (input.clicked === "delete") {
+    await input.confirmAndDeleteThread(input.threadRef);
+    input.refreshArchivedThreads();
+    return "deleted";
+  }
+  return "ignored";
 }
 
 export function buildProviderInstanceUpdatePatch(input: {

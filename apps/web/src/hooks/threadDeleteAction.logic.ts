@@ -12,7 +12,7 @@ const visibleThreadDeleteErrors = new WeakSet<object>();
 
 type ThreadDeleteToastManager = Pick<typeof toastManager, "add">;
 
-type ThreadDeleteLogger = Pick<Console, "error" | "warn">;
+type ThreadDeleteLogger = Pick<Console, "error" | "info" | "warn">;
 
 export type ThreadDeleteActionDependencies = {
   api: EnvironmentApi | undefined;
@@ -121,7 +121,14 @@ export async function dispatchThreadDeleteFirst(
     });
   }
 
+  const logger = deps.logger ?? console;
+
   try {
+    logger.info("Dispatching thread delete", {
+      environmentId: deps.target.environmentId,
+      threadId: deps.target.threadId,
+      commandId: deps.commandId,
+    });
     const result = await deps.api.orchestration.dispatchCommand({
       type: "thread.delete",
       commandId: deps.commandId,

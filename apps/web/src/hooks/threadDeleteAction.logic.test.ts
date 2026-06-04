@@ -30,6 +30,7 @@ function createToastRecorder() {
 function createLogger() {
   return {
     error: vi.fn(),
+    info: vi.fn(),
     warn: vi.fn(),
   };
 }
@@ -77,16 +78,24 @@ describe("thread delete action logic", () => {
     );
   });
 
-  it("does not let terminal close failure or timeout prevent thread.delete dispatch", async () => {
+  it("logs the delete command id and does not let terminal close failure or timeout prevent thread.delete dispatch", async () => {
     const target = threadRef();
     const dispatchCommand = vi.fn().mockResolvedValue({ sequence: 7, warnings: undefined });
     const close = vi.fn().mockReturnValue(new Promise(() => undefined));
     const api = createApi({ dispatchCommand, close });
     const logger = createLogger();
 
-    await dispatchThreadDeleteFirst({ api, target, commandId: commandId() });
+    await dispatchThreadDeleteFirst({ api, target, commandId: commandId(), logger });
     closeTerminalAfterThreadDelete({ api, target, logger });
 
+    expect(logger.info).toHaveBeenCalledWith(
+      "Dispatching thread delete",
+      expect.objectContaining({
+        environmentId: target.environmentId,
+        threadId: target.threadId,
+        commandId: "command-test",
+      }),
+    );
     expect(dispatchCommand).toHaveBeenCalledWith({
       type: "thread.delete",
       commandId: "command-test",

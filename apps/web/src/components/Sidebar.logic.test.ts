@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ProviderDriverKind } from "@t3tools/contracts";
+import { ProviderDriverKind, type ScopedThreadRef } from "@t3tools/contracts";
 
 import {
   createThreadJumpHintVisibilityController,
+  deleteSelectedSidebarThreads,
   getSidebarThreadIdsToPrewarm,
   getVisibleSidebarThreadIds,
   resolveAdjacentThreadId,
@@ -17,6 +18,7 @@ import {
   resolveSidebarNewThreadEnvMode,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
+  runSidebarThreadContextMenuDeleteAction,
   shouldClearThreadSelectionOnMouseDown,
   sortProjectsForSidebar,
   THREAD_JUMP_HINT_SHOW_DELAY_MS,
@@ -780,6 +782,72 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     ...overrides,
   };
 }
+
+describe("runSidebarThreadContextMenuDeleteAction", () => {
+  it("runs the shared delete action for a sidebar row context-menu Delete", async () => {
+    const confirm = vi.fn().mockResolvedValue(true);
+    const deleteThread = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      runSidebarThreadContextMenuDeleteAction({
+        clicked: "delete",
+        confirmThreadDelete: true,
+        confirm,
+        deleteThread,
+      }),
+    ).resolves.toBe("deleted");
+
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(deleteThread).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not delete when the sidebar row context-menu confirmation is cancelled", async () => {
+    const confirm = vi.fn().mockResolvedValue(false);
+    const deleteThread = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      runSidebarThreadContextMenuDeleteAction({
+        clicked: "delete",
+        confirmThreadDelete: true,
+        confirm,
+        deleteThread,
+      }),
+    ).resolves.toBe("cancelled");
+
+    expect(deleteThread).not.toHaveBeenCalled();
+  });
+});
+
+describe("deleteSelectedSidebarThreads", () => {
+  it("continues after failed selected-thread deletes and reports each failure", async () => {
+    const failure = new Error("dispatch failed");
+    const threads = new Map([
+      ["key-1", { environmentId: localEnvironmentId, id: ThreadId.make("thread-1") }],
+      ["key-2", { environmentId: localEnvironmentId, id: ThreadId.make("thread-2") }],
+      ["key-3", { environmentId: localEnvironmentId, id: ThreadId.make("thread-3") }],
+    ]);
+    const deleteThread = vi.fn(async (threadRef: ScopedThreadRef) => {
+      if (threadRef.threadId === ThreadId.make("thread-2")) {
+        throw failure;
+      }
+    });
+
+    const result = await deleteSelectedSidebarThreads({
+      threadKeys: ["key-1", "key-2", "key-3"],
+      getThread: (threadKey) => threads.get(threadKey),
+      deleteThread,
+    });
+
+    expect(deleteThread).toHaveBeenCalledTimes(3);
+    expect(deleteThread.mock.calls.map(([threadRef]) => threadRef.threadId)).toEqual([
+      ThreadId.make("thread-1"),
+      ThreadId.make("thread-2"),
+      ThreadId.make("thread-3"),
+    ]);
+    expect(result.deletedThreadKeys).toEqual(["key-1", "key-3"]);
+    expect(result.failures).toEqual([{ threadKey: "key-2", error: failure }]);
+  });
+});
 
 describe("getFallbackThreadIdAfterDelete", () => {
   it("returns the top remaining thread in the deleted thread's project sidebar order", () => {

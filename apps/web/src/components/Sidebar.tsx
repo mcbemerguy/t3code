@@ -161,6 +161,7 @@ import {
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import {
+  deleteSelectedSidebarThreads,
   getSidebarThreadIdsToPrewarm,
   resolveAdjacentThreadId,
   isContextMenuPointerDown,
@@ -171,6 +172,7 @@ import {
   resolveThreadStatusPill,
   orderItemsByPreferredIds,
   shouldClearThreadSelectionOnMouseDown,
+  runSidebarThreadContextMenuDeleteAction,
   sortProjectsForSidebar,
   useThreadJumpHintVisibility,
   ThreadStatusPill,
@@ -1644,20 +1646,24 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         if (!confirmed) return;
       }
 
-      const deletedThreadKeys = new Set(threadKeys);
-      try {
-        for (const threadKey of threadKeys) {
-          const thread = sidebarThreadByKeyRef.current.get(threadKey);
-          if (!thread) continue;
-          await deleteThread(scopeThreadRef(thread.environmentId, thread.id), {
-            deletedThreadKeys,
-          });
-        }
-      } catch (error) {
-        showThreadDeleteUnexpectedError({ error, title: "Failed to delete selected threads" });
-        return;
+      const result = await deleteSelectedSidebarThreads({
+        threadKeys,
+        getThread: (threadKey) => sidebarThreadByKeyRef.current.get(threadKey),
+        deleteThread,
+      });
+      if (result.deletedThreadKeys.length > 0) {
+        removeFromSelection(result.deletedThreadKeys);
       }
-      removeFromSelection(threadKeys);
+      if (result.failures.length > 0) {
+        const firstFailure = result.failures[0];
+        showThreadDeleteUnexpectedError({
+          error: firstFailure?.error,
+          title:
+            result.failures.length === 1
+              ? "Failed to delete selected thread"
+              : `Failed to delete ${result.failures.length} selected threads`,
+        });
+      }
     },
     [
       appSettingsConfirmThreadDelete,
@@ -1985,20 +1991,19 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         copyThreadIdToClipboard(thread.id, { threadId: thread.id });
         return;
       }
-      if (clicked !== "delete") return;
-      if (appSettingsConfirmThreadDelete) {
-        const confirmed = await api.dialogs.confirm(
-          [
-            `Delete thread "${thread.title}"?`,
-            "This permanently clears conversation history for this thread.",
-          ].join("\n"),
-        );
-        if (!confirmed) {
-          return;
-        }
-      }
       try {
-        await deleteThread(threadRef);
+        await runSidebarThreadContextMenuDeleteAction({
+          clicked,
+          confirmThreadDelete: appSettingsConfirmThreadDelete,
+          confirm: () =>
+            api.dialogs.confirm(
+              [
+                `Delete thread "${thread.title}"?`,
+                "This permanently clears conversation history for this thread.",
+              ].join("\n"),
+            ),
+          deleteThread: () => deleteThread(threadRef),
+        });
       } catch (error) {
         showThreadDeleteUnexpectedError({ error });
       }

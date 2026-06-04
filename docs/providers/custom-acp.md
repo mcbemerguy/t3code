@@ -43,7 +43,15 @@ Smoke checks after lifecycle changes:
 4. Unsupported delete: a Custom ACP server without `_meta.piAcp.sessionDelete` (or legacy experimental `session/delete`) gets close-only cleanup and a visible/durable warning.
 5. Windows/stuck cancel: killing through `pi.cmd`/shell escalates to the full process tree; a Pi turn that ignores abort still leaves no child process.
 
-Diagnostics to check: T3Code server logs include `custom ACP session lifecycle requested` with `_pi/session/delete` for private destructive cleanup; provider runtime warnings/audit events record ACP close/delete timeout or failure; `pi-acp` stderr logs delete request parameters, resolved session file, validation refusal, unlink result, and kill escalation.
+Diagnostics to check: T3Code server logs include `thread.delete command received` with the command id/thread id when the UI click reaches the server, and include `custom ACP session lifecycle requested` with `_pi/session/delete` for private destructive cleanup; provider runtime warnings/audit events record ACP close/delete timeout or failure; `pi-acp` stderr logs delete request parameters, resolved session file, validation refusal, unlink result, and kill escalation.
+
+Manual Delete dispatch smoke when browser automation is unavailable:
+
+1. Start Desktop with a Custom ACP/Pi provider and create or import a Pi-backed thread.
+2. Open the sidebar row context menu and choose Delete. For an archived thread, open Settings → Archived threads, right-click the archived row, and choose Delete.
+3. Confirm the destructive dialog when shown.
+4. Expected signals: the browser console logs `Dispatching thread delete` with environment id, thread id, and command id; T3Code server logs `thread.delete command received` with command id/thread id; SQLite contains an accepted `thread.delete` receipt and a `thread.deleted` event; Custom ACP/Pi threads additionally log `custom ACP session lifecycle requested` with `_pi/session/delete`, `pi-acp` stderr records the delete request, validated session file, and unlink result, and the old Pi child process tree is gone.
+5. Failure signal: T3Code shows a visible delete failure toast instead of silently leaving the thread in place.
 
 ## Pi workflow recovery
 

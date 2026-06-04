@@ -1,5 +1,7 @@
 import * as React from "react";
+import type { ScopedThreadRef } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
+import { scopeThreadRef } from "@t3tools/client-runtime";
 import {
   getThreadSortTimestamp,
   sortThreads,
@@ -293,6 +295,55 @@ export function isContextMenuPointerDown(input: {
 }): boolean {
   if (input.button === 2) return true;
   return input.isMac && input.button === 0 && input.ctrlKey;
+}
+
+export type SidebarThreadDeleteAction = (
+  threadRef: ScopedThreadRef,
+  opts?: { deletedThreadKeys?: ReadonlySet<string> },
+) => Promise<void>;
+
+export async function runSidebarThreadContextMenuDeleteAction(input: {
+  clicked: string | null | undefined;
+  confirmThreadDelete: boolean;
+  confirm: () => Promise<boolean>;
+  deleteThread: () => Promise<void>;
+}): Promise<"ignored" | "cancelled" | "deleted"> {
+  if (input.clicked !== "delete") {
+    return "ignored";
+  }
+  if (input.confirmThreadDelete && !(await input.confirm())) {
+    return "cancelled";
+  }
+  await input.deleteThread();
+  return "deleted";
+}
+
+export async function deleteSelectedSidebarThreads(input: {
+  threadKeys: readonly string[];
+  getThread: (threadKey: string) => Pick<Thread, "environmentId" | "id"> | undefined;
+  deleteThread: SidebarThreadDeleteAction;
+}): Promise<{
+  deletedThreadKeys: string[];
+  failures: Array<{ threadKey: string; error: unknown }>;
+}> {
+  const deletedThreadKeys = new Set(input.threadKeys);
+  const succeeded: string[] = [];
+  const failures: Array<{ threadKey: string; error: unknown }> = [];
+
+  for (const threadKey of input.threadKeys) {
+    const thread = input.getThread(threadKey);
+    if (!thread) continue;
+    try {
+      await input.deleteThread(scopeThreadRef(thread.environmentId, thread.id), {
+        deletedThreadKeys,
+      });
+      succeeded.push(threadKey);
+    } catch (error) {
+      failures.push({ threadKey, error });
+    }
+  }
+
+  return { deletedThreadKeys: succeeded, failures };
 }
 
 export function resolveThreadRowClassName(input: {

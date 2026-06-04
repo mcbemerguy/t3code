@@ -70,6 +70,7 @@ import { DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
 import {
   buildProviderInstanceUpdatePatch,
   formatDiagnosticsDescription,
+  runArchivedThreadContextMenuAction,
 } from "./SettingsPanels.logic";
 import {
   SettingResetButton,
@@ -1417,11 +1418,16 @@ export function ArchivedThreadsPanel() {
         position,
       );
 
-      if (clicked === "unarchive") {
-        try {
-          await unarchiveThread(threadRef);
-          refreshArchivedThreads();
-        } catch (error) {
+      try {
+        await runArchivedThreadContextMenuAction({
+          clicked,
+          threadRef,
+          unarchiveThread,
+          confirmAndDeleteThread,
+          refreshArchivedThreads,
+        });
+      } catch (error) {
+        if (clicked === "unarchive") {
           toastManager.add(
             stackedThreadToast({
               type: "error",
@@ -1429,15 +1435,9 @@ export function ArchivedThreadsPanel() {
               description: error instanceof Error ? error.message : "An error occurred.",
             }),
           );
+          return;
         }
-        return;
-      }
-
-      if (clicked === "delete") {
-        try {
-          await confirmAndDeleteThread(threadRef);
-          refreshArchivedThreads();
-        } catch (error) {
+        if (clicked === "delete") {
           showThreadDeleteUnexpectedError({ error });
         }
       }
