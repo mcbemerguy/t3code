@@ -93,6 +93,7 @@ import { useComposerDraftStore } from "../composerDraftStore";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import { retainThreadDetailSubscription } from "../environments/runtime/service";
 
+import { showThreadDeleteUnexpectedError } from "../hooks/threadDeleteAction.logic";
 import { useThreadActions } from "../hooks/useThreadActions";
 import {
   buildThreadRouteParams,
@@ -1644,12 +1645,17 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       }
 
       const deletedThreadKeys = new Set(threadKeys);
-      for (const threadKey of threadKeys) {
-        const thread = sidebarThreadByKeyRef.current.get(threadKey);
-        if (!thread) continue;
-        await deleteThread(scopeThreadRef(thread.environmentId, thread.id), {
-          deletedThreadKeys,
-        });
+      try {
+        for (const threadKey of threadKeys) {
+          const thread = sidebarThreadByKeyRef.current.get(threadKey);
+          if (!thread) continue;
+          await deleteThread(scopeThreadRef(thread.environmentId, thread.id), {
+            deletedThreadKeys,
+          });
+        }
+      } catch (error) {
+        showThreadDeleteUnexpectedError({ error, title: "Failed to delete selected threads" });
+        return;
       }
       removeFromSelection(threadKeys);
     },
@@ -1991,7 +1997,11 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           return;
         }
       }
-      await deleteThread(threadRef);
+      try {
+        await deleteThread(threadRef);
+      } catch (error) {
+        showThreadDeleteUnexpectedError({ error });
+      }
     },
     [
       appSettingsConfirmThreadDelete,

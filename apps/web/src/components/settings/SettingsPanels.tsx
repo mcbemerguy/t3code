@@ -32,6 +32,7 @@ import { isElectron } from "../../env";
 import { buildHostedChannelSelectionUrl, type HostedAppChannel } from "../../hostedPairing";
 import { useTheme } from "../../hooks/useTheme";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
+import { showThreadDeleteUnexpectedError } from "../../hooks/threadDeleteAction.logic";
 import { useThreadActions } from "../../hooks/useThreadActions";
 import {
   setDesktopUpdateStateQueryData,
@@ -1433,8 +1434,12 @@ export function ArchivedThreadsPanel() {
       }
 
       if (clicked === "delete") {
-        await confirmAndDeleteThread(threadRef);
-        refreshArchivedThreads();
+        try {
+          await confirmAndDeleteThread(threadRef);
+          refreshArchivedThreads();
+        } catch (error) {
+          showThreadDeleteUnexpectedError({ error });
+        }
       }
     },
     [confirmAndDeleteThread, refreshArchivedThreads, unarchiveThread],

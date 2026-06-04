@@ -22,6 +22,10 @@ import { useTerminalUiStateStore } from "../terminalUiStateStore";
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../threadRoutes";
 import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "../worktreeCleanup";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
+import {
+  closeTerminalAfterThreadDelete,
+  dispatchThreadDeleteFirst,
+} from "./threadDeleteAction.logic";
 import { useSettings } from "./useSettings";
 
 export function useThreadActions() {
@@ -102,31 +106,18 @@ export function useThreadActions() {
   const deleteThread = useCallback(
     async (target: ScopedThreadRef, opts: { deletedThreadKeys?: ReadonlySet<string> } = {}) => {
       const api = readEnvironmentApi(target.environmentId);
-      if (!api) return;
       const resolved = resolveThreadTarget(target);
-      const showBackingSessionDeletionWarnings = (
-        warnings: Awaited<ReturnType<typeof api.orchestration.dispatchCommand>>["warnings"],
-      ) => {
-        for (const warning of warnings ?? []) {
-          if (warning.code !== "provider_backing_session_delete_failed") continue;
-          toastManager.add(
-            stackedThreadToast({
-              type: "warning",
-              title: "Thread deleted, but backing session cleanup failed",
-              description: warning.detail ?? warning.message,
-            }),
-          );
-        }
-      };
       if (!resolved) {
-        const deleteResult = await api.orchestration.dispatchCommand({
-          type: "thread.delete",
+        await dispatchThreadDeleteFirst({
+          api,
+          target,
           commandId: newCommandId(),
-          threadId: target.threadId,
         });
+        if (api) {
+          closeTerminalAfterThreadDelete({ api, target });
+        }
         refreshArchivedThreadsForEnvironment(target.environmentId);
         notifyCustomAcpSessionsChanged(target.environmentId);
-        showBackingSessionDeletionWarnings(deleteResult.warnings);
         return;
       }
       const { thread, threadRef } = resolved;
@@ -170,12 +161,6 @@ export function useThreadActions() {
           ].join("\n"),
         ));
 
-      try {
-        await api.terminal.close({ threadId: threadRef.threadId, deleteHistory: true });
-      } catch {
-        // Terminal may already be closed.
-      }
-
       const deletedThreadIds = deletedIds ?? new Set<ThreadId>();
       const currentRouteThreadRef = getCurrentRouteThreadRef();
       const shouldNavigateToFallback =
@@ -187,14 +172,16 @@ export function useThreadActions() {
         deletedThreadIds,
         sortOrder: sidebarThreadSortOrder,
       });
-      const deleteResult = await api.orchestration.dispatchCommand({
-        type: "thread.delete",
+      await dispatchThreadDeleteFirst({
+        api,
+        target: threadRef,
         commandId: newCommandId(),
-        threadId: threadRef.threadId,
       });
+      if (api) {
+        closeTerminalAfterThreadDelete({ api, target: threadRef });
+      }
       refreshArchivedThreadsForEnvironment(threadRef.environmentId);
       notifyCustomAcpSessionsChanged(threadRef.environmentId);
-      showBackingSessionDeletionWarnings(deleteResult.warnings);
       clearComposerDraftForThread(threadRef);
       clearProjectDraftThreadById(
         scopeProjectRef(threadRef.environmentId, thread.projectId),
@@ -267,8 +254,6 @@ export function useThreadActions() {
 
   const confirmAndDeleteThread = useCallback(
     async (target: ScopedThreadRef) => {
-      const api = readEnvironmentApi(target.environmentId);
-      if (!api) return;
       const localApi = readLocalApi();
       const resolved = resolveThreadTarget(target);
 
