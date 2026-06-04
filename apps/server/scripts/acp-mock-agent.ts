@@ -327,10 +327,11 @@ const program = Effect.gen(function* () {
                 },
               }
             : {}),
-          ...(enablePiSteering || enablePiWorkflows
+          ...(enablePiSteering || enablePiWorkflows || enableSessionDelete
             ? {
                 _meta: {
                   piAcp: {
+                    ...(enableSessionDelete ? { sessionDelete: true } : {}),
                     ...(enablePiSteering ? { steering: true, steeringMethod: "_pi/steer" } : {}),
                     ...(enablePiWorkflows
                       ? {

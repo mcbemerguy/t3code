@@ -614,7 +614,29 @@ export function makeGenericAcpAdapter(
       );
     };
 
+    const failUnsupportedSessionDelete = (ctx: GenericAcpSessionContext) =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider,
+          method: ACP_SESSION_DELETE_METHOD,
+          detail: `ACP provider does not support ${ACP_SESSION_DELETE_METHOD}; backing session history was not removed.`,
+        }),
+      );
+
+    const fallbackFromUnsupportedSessionDelete = (ctx: GenericAcpSessionContext) =>
+      emitLifecycleWarning(
+        ctx,
+        "ACP provider does not support session/delete; backing session history was not removed.",
+        { method: ACP_SESSION_DELETE_METHOD, sessionId: ctx.acpSessionId },
+      ).pipe(
+        Effect.andThen(closeAcpSessionIfSupported(ctx)),
+        Effect.andThen(failUnsupportedSessionDelete(ctx)),
+      );
+
     const deleteAcpSessionIfSupported = (ctx: GenericAcpSessionContext) => {
+      if (!ctx.acpSessionLifecycleCapabilities.delete) {
+        return fallbackFromUnsupportedSessionDelete(ctx);
+      }
       const payload = { sessionId: ctx.acpSessionId };
       return ctx.acp.request(ACP_SESSION_DELETE_METHOD, payload).pipe(
         Effect.asVoid,
@@ -624,11 +646,7 @@ export function makeGenericAcpAdapter(
               mapAcpToAdapterError(provider, ctx.threadId, ACP_SESSION_DELETE_METHOD, error),
             );
           }
-          return emitLifecycleWarning(
-            ctx,
-            "ACP provider does not support session/delete; backing session history was not removed.",
-            { method: ACP_SESSION_DELETE_METHOD, sessionId: ctx.acpSessionId },
-          ).pipe(Effect.andThen(closeAcpSessionIfSupported(ctx)));
+          return fallbackFromUnsupportedSessionDelete(ctx);
         }),
       );
     };

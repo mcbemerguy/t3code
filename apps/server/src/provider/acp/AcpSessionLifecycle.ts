@@ -23,8 +23,20 @@ export function extractAcpSessionLifecycleCapabilities(
 
   return {
     close: hasAdvertisedCapability(sessionCapabilities, "close"),
-    delete: hasAdvertisedCapability(sessionCapabilities, "delete"),
+    delete:
+      hasAdvertisedCapability(sessionCapabilities, "delete") ||
+      hasPiAcpDeleteCapability(agentCapabilities) ||
+      hasPiAcpDeleteCapability(initializeResult),
   };
+}
+
+function hasPiAcpDeleteCapability(container: unknown): boolean {
+  if (!isRecord(container)) return false;
+  const meta = container._meta;
+  if (!isRecord(meta)) return false;
+  const piAcp = meta.piAcp;
+  if (!isRecord(piAcp)) return false;
+  return piAcp.sessionDelete === true || piAcp.deleteSession === true;
 }
 
 function hasAdvertisedCapability(capabilities: unknown, key: string): boolean {

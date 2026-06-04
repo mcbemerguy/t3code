@@ -163,7 +163,10 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
   );
 
   const stopSession = vi.fn(
-    (threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> =>
+    (
+      threadId: ThreadId,
+      _options?: { readonly deleteBackingSession?: boolean },
+    ): Effect.Effect<void, ProviderAdapterError> =>
       Effect.sync(() => {
         sessions.delete(threadId);
       }),
@@ -961,6 +964,53 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(startPayload.threadId, initial.threadId);
       }
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("recovers a stopped resumable session before destructive backing-session delete", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const runtimeRepository = yield* ProviderSessionRuntimeRepository;
+      const threadId = asThreadId("thread-delete-recovers-stopped");
+
+      const initial = yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-delete-recover",
+        runtimeMode: "full-access",
+      });
+      yield* routing.codex.stopSession(initial.threadId);
+      routing.codex.startSession.mockClear();
+      routing.codex.stopSession.mockClear();
+
+      yield* provider.stopSession({ threadId: initial.threadId, deleteBackingSession: true });
+
+      assert.equal(routing.codex.startSession.mock.calls.length, 1);
+      const recoveredStartInput = routing.codex.startSession.mock.calls[0]?.[0];
+      assert.deepEqual(
+        recoveredStartInput && typeof recoveredStartInput === "object"
+          ? (recoveredStartInput as { resumeCursor?: unknown }).resumeCursor
+          : undefined,
+        initial.resumeCursor,
+      );
+      assert.deepEqual(routing.codex.stopSession.mock.calls, [
+        [initial.threadId, { deleteBackingSession: true }],
+      ]);
+
+      const persistedAfterDelete = yield* runtimeRepository.getByThreadId({
+        threadId: initial.threadId,
+      });
+      assert.equal(Option.isSome(persistedAfterDelete), true);
+      if (Option.isSome(persistedAfterDelete)) {
+        assert.equal(persistedAfterDelete.value.status, "stopped");
+        assert.equal(persistedAfterDelete.value.resumeCursor, null);
+        assert.equal(
+          (persistedAfterDelete.value.runtimePayload as { deletedBackingSession?: boolean })
+            .deletedBackingSession,
+          true,
+        );
+      }
     }),
   );
 

@@ -467,12 +467,16 @@ describe("Custom ACP provider", () => {
         cwd: process.cwd(),
         runtimeMode: "full-access",
       });
-      yield* adapter.stopSession(threadId, { deleteBackingSession: true });
+      const stopped = yield* adapter
+        .stopSession(threadId, { deleteBackingSession: true })
+        .pipe(Effect.exit);
 
+      assert.isTrue(Exit.isFailure(stopped));
+      assert.isFalse(yield* adapter.hasSession(threadId));
       const warningEvent = yield* Deferred.await(warning);
       assert.match(warningEvent.payload.message, /does not support session\/delete/i);
       const methods = jsonRpcMethods(yield* Effect.promise(() => readJsonLines(requestLog)));
-      assert.include(methods, "session/delete");
+      assert.notInclude(methods, "session/delete");
       assert.include(methods, "session/close");
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
@@ -548,8 +552,11 @@ describe("Custom ACP provider", () => {
         .pipe(Effect.forkChild);
       const request = yield* Deferred.await(requested);
 
-      yield* adapter.stopSession(threadId, { deleteBackingSession: true });
+      const stopped = yield* adapter
+        .stopSession(threadId, { deleteBackingSession: true })
+        .pipe(Effect.exit);
       yield* Fiber.await(turnFiber);
+      assert.isTrue(Exit.isFailure(stopped));
       const resolvedEvent = yield* Deferred.await(resolved);
       assert.isDefined(request.turnId);
       assert.equal(resolvedEvent.turnId, request.turnId);

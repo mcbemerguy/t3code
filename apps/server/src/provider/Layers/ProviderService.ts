@@ -853,10 +853,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       });
       let metricProvider = "unknown";
       return yield* Effect.gen(function* () {
+        const deleteBackingSession = input.deleteBackingSession === true;
         const routed = yield* resolveRoutableSession({
           threadId: input.threadId,
           operation: "ProviderService.stopSession",
-          allowRecovery: false,
+          allowRecovery: deleteBackingSession,
         });
         metricProvider = routed.adapter.provider;
         yield* Effect.annotateCurrentSpan({
@@ -867,23 +868,24 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         if (routed.isActive) {
           yield* routed.adapter.stopSession(
             routed.threadId,
-            input.deleteBackingSession ? { deleteBackingSession: true } : undefined,
+            deleteBackingSession ? { deleteBackingSession: true } : undefined,
           );
         }
+        const backingSessionDeleted = deleteBackingSession && routed.isActive;
         yield* directory.upsert({
           threadId: input.threadId,
           provider: routed.adapter.provider,
           providerInstanceId: routed.instanceId,
           status: "stopped",
-          ...(input.deleteBackingSession ? { resumeCursor: null } : {}),
+          ...(backingSessionDeleted ? { resumeCursor: null } : {}),
           runtimePayload: {
             activeTurnId: null,
-            ...(input.deleteBackingSession ? { deletedBackingSession: true } : {}),
+            ...(backingSessionDeleted ? { deletedBackingSession: true } : {}),
           },
         });
         yield* analytics.record("provider.session.stopped", {
           provider: routed.adapter.provider,
-          deleteBackingSession: input.deleteBackingSession === true,
+          deleteBackingSession: backingSessionDeleted,
         });
       }).pipe(
         withMetrics({
