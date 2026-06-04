@@ -1,4 +1,5 @@
 import {
+  EnvironmentId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -11,8 +12,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
+import { notifyCustomAcpSessionsChanged } from "../../lib/customAcpSessionRefresh";
 import { ImportAcpSessionDialog } from "./ImportAcpSessionDialog";
 
+const ENVIRONMENT_ID = EnvironmentId.make("environment-1");
 const PROJECT_ID = ProjectId.make("project-1");
 const CWD = "/workspace/project";
 const PROVIDER_ID = ProviderInstanceId.make("custom-one");
@@ -60,6 +63,7 @@ async function renderDialog(input: {
       open
       onOpenChange={vi.fn()}
       api={input.environmentApi}
+      environmentId={ENVIRONMENT_ID}
       projectId={PROJECT_ID}
       cwd={CWD}
       providers={input.providers ?? [provider()]}
@@ -136,6 +140,40 @@ describe("ImportAcpSessionDialog", () => {
         cwd: CWD,
         cursor: "cursor-2",
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("refreshes the session list after a Custom ACP session deletion notification", async () => {
+    const listSessions = vi
+      .fn()
+      .mockResolvedValueOnce({
+        providerInstanceId: PROVIDER_ID,
+        nextCursor: null,
+        sessions: [
+          {
+            sessionId: "session-deleted",
+            cwd: CWD,
+            title: "Deleted work",
+            updatedAt: "2026-05-23T01:02:03.000Z",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        providerInstanceId: PROVIDER_ID,
+        nextCursor: null,
+        sessions: [],
+      });
+    const mounted = await renderDialog({ environmentApi: api({ listSessions }) });
+
+    try {
+      await expect.element(page.getByRole("button", { name: /Deleted work/ })).toBeVisible();
+      notifyCustomAcpSessionsChanged(ENVIRONMENT_ID);
+      await vi.waitFor(() => {
+        expect(listSessions).toHaveBeenCalledTimes(2);
+      });
+      await expect.element(page.getByText("No sessions found for this project.")).toBeVisible();
     } finally {
       await mounted.cleanup();
     }

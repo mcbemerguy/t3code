@@ -63,6 +63,7 @@ import type { ServerRemoveKeybindingInput, ServerUpsertKeybindingInput } from ".
 import * as Schema from "effect/Schema";
 import type {
   ClientOrchestrationCommand,
+  DispatchResult,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetFullThreadDiffResult,
   OrchestrationGetTurnDiffInput,
@@ -575,7 +576,7 @@ export interface EnvironmentApi {
     getDiffPreview: (input: ReviewDiffPreviewInput) => Promise<ReviewDiffPreviewResult>;
   };
   orchestration: {
-    dispatchCommand: (command: ClientOrchestrationCommand) => Promise<{ sequence: number }>;
+    dispatchCommand: (command: ClientOrchestrationCommand) => Promise<DispatchResult>;
     getTurnDiff: (input: OrchestrationGetTurnDiffInput) => Promise<OrchestrationGetTurnDiffResult>;
     getFullThreadDiff: (
       input: OrchestrationGetFullThreadDiffInput,

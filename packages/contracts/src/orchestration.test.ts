@@ -389,6 +389,44 @@ it.effect("decodes thread archive and unarchive commands", () =>
   }),
 );
 
+it.effect("decodes destructive thread session stop commands and events", () =>
+  Effect.gen(function* () {
+    const command = yield* decodeOrchestrationCommand({
+      type: "thread.session.stop",
+      commandId: "cmd-session-stop-delete",
+      threadId: "thread-1",
+      deleteBackingSession: true,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(command.type, "thread.session.stop");
+    if (command.type === "thread.session.stop") {
+      assert.strictEqual(command.deleteBackingSession, true);
+    }
+
+    const event = yield* decodeOrchestrationEvent({
+      sequence: 1,
+      eventId: "evt-session-stop-delete",
+      aggregateKind: "thread",
+      aggregateId: "thread-1",
+      occurredAt: "2026-01-01T00:00:00.000Z",
+      commandId: "cmd-session-stop-delete",
+      causationEventId: null,
+      correlationId: null,
+      metadata: {},
+      type: "thread.session-stop-requested",
+      payload: {
+        threadId: "thread-1",
+        deleteBackingSession: true,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    });
+    assert.strictEqual(event.type, "thread.session-stop-requested");
+    if (event.type === "thread.session-stop-requested") {
+      assert.strictEqual(event.payload.deleteBackingSession, true);
+    }
+  }),
+);
+
 it.effect("decodes thread archived and unarchived events", () =>
   Effect.gen(function* () {
     const archived = yield* decodeOrchestrationEvent({

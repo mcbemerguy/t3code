@@ -162,6 +162,18 @@ function readPersistedCwd(
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function readDeletedBackingSession(
+  runtimePayload: ProviderRuntimeBinding["runtimePayload"],
+): boolean {
+  return (
+    runtimePayload !== null &&
+    typeof runtimePayload === "object" &&
+    !Array.isArray(runtimePayload) &&
+    "deletedBackingSession" in runtimePayload &&
+    runtimePayload.deletedBackingSession === true
+  );
+}
+
 const dieOnMissingBindingInstanceId = (
   operation: string,
   payload: {
@@ -854,6 +866,37 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       let metricProvider = "unknown";
       return yield* Effect.gen(function* () {
         const deleteBackingSession = input.deleteBackingSession === true;
+        if (deleteBackingSession) {
+          const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+          if (binding && readDeletedBackingSession(binding.runtimePayload)) {
+            const instanceId = yield* requireBindingInstanceId(
+              "ProviderService.stopSession",
+              binding,
+            );
+            const adapter = yield* registry.getByInstance(instanceId);
+            metricProvider = adapter.provider;
+            const hasActiveSession = yield* adapter.hasSession(input.threadId);
+            if (!hasActiveSession) {
+              yield* directory.upsert({
+                threadId: input.threadId,
+                provider: adapter.provider,
+                providerInstanceId: instanceId,
+                status: "stopped",
+                resumeCursor: null,
+                runtimePayload: {
+                  activeTurnId: null,
+                  deletedBackingSession: true,
+                },
+              });
+              yield* analytics.record("provider.session.stopped", {
+                provider: adapter.provider,
+                deleteBackingSession: false,
+                backingSessionAlreadyDeleted: true,
+              });
+              return;
+            }
+          }
+        }
         const routed = yield* resolveRoutableSession({
           threadId: input.threadId,
           operation: "ProviderService.stopSession",

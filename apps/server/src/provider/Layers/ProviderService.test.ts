@@ -1014,6 +1014,44 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
+  it.effect("treats repeated destructive backing-session delete as an idempotent no-op", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const runtimeRepository = yield* ProviderSessionRuntimeRepository;
+      const threadId = asThreadId("thread-delete-idempotent");
+
+      const initial = yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-delete-idempotent",
+        runtimeMode: "full-access",
+      });
+
+      yield* provider.stopSession({ threadId: initial.threadId, deleteBackingSession: true });
+      routing.codex.startSession.mockClear();
+      routing.codex.stopSession.mockClear();
+
+      yield* provider.stopSession({ threadId: initial.threadId, deleteBackingSession: true });
+
+      assert.equal(routing.codex.startSession.mock.calls.length, 0);
+      assert.equal(routing.codex.stopSession.mock.calls.length, 0);
+      const persistedAfterDelete = yield* runtimeRepository.getByThreadId({
+        threadId: initial.threadId,
+      });
+      assert.equal(Option.isSome(persistedAfterDelete), true);
+      if (Option.isSome(persistedAfterDelete)) {
+        assert.equal(persistedAfterDelete.value.status, "stopped");
+        assert.equal(persistedAfterDelete.value.resumeCursor, null);
+        assert.equal(
+          (persistedAfterDelete.value.runtimePayload as { deletedBackingSession?: boolean })
+            .deletedBackingSession,
+          true,
+        );
+      }
+    }),
+  );
+
   it.effect("routes explicit claudeAgent provider session starts to the claude adapter", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;

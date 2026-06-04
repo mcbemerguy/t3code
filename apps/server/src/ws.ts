@@ -12,6 +12,7 @@ import * as Stream from "effect/Stream";
 import {
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
   type AuthAccessStreamEvent,
+  type DispatchWarning,
   AuthSessionId,
   CommandId,
   EventId,
@@ -53,7 +54,9 @@ import {
   observeRpcStream,
   observeRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
+import { ProviderValidationError } from "./provider/Errors.ts";
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
+import { ProviderService } from "./provider/Services/ProviderService.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import {
   importCustomAcpExternalSession,
@@ -98,6 +101,7 @@ import {
 } from "./auth/Services/SessionCredentialService.ts";
 import { respondToAuthError } from "./auth/http.ts";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
+const isProviderValidationError = Schema.is(ProviderValidationError);
 const isWorkspacePathOutsideRootError = Schema.is(WorkspacePathOutsideRootError);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -181,6 +185,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager;
       const providerRegistry = yield* ProviderRegistry;
+      const providerService = yield* ProviderService;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
       const config = yield* ServerConfig;
       const lifecycleEvents = yield* ServerLifecycleEvents;
@@ -608,6 +613,47 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           );
       };
 
+      const deleteBackingSessionBeforeThreadDelete = (
+        normalizedCommand: OrchestrationCommand,
+      ): Effect.Effect<ReadonlyArray<DispatchWarning>> => {
+        if (normalizedCommand.type !== "thread.delete") {
+          return Effect.succeed([]);
+        }
+        return providerService
+          .stopSession({ threadId: normalizedCommand.threadId, deleteBackingSession: true })
+          .pipe(
+            Effect.as([]),
+            Effect.catchCause((cause) => {
+              if (Cause.hasInterruptsOnly(cause)) {
+                return Effect.interrupt;
+              }
+              const failed = cause.reasons.find(Cause.isFailReason)?.error;
+              if (
+                isProviderValidationError(failed) &&
+                failed.issue.toLowerCase().includes("no persisted provider binding")
+              ) {
+                return Effect.succeed([]);
+              }
+              const detail = Cause.pretty(cause);
+              return Effect.logWarning(
+                "failed to delete provider backing session before thread deletion",
+                {
+                  threadId: normalizedCommand.threadId,
+                  cause: detail,
+                },
+              ).pipe(
+                Effect.as([
+                  {
+                    code: "provider_backing_session_delete_failed",
+                    message: "Thread deleted, but the provider backing session may still exist.",
+                    detail,
+                  },
+                ] satisfies ReadonlyArray<DispatchWarning>),
+              );
+            }),
+          );
+      };
+
       const loadServerConfig = Effect.gen(function* () {
         const keybindingsConfig = yield* keybindings.loadConfigState;
         const providers = yield* providerRegistry.getProviders;
@@ -664,6 +710,8 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                         Effect.catch(() => Effect.succeed(false)),
                       )
                   : false;
+              const preDispatchWarnings =
+                yield* deleteBackingSessionBeforeThreadDelete(normalizedCommand);
               const result = yield* dispatchNormalizedCommand(normalizedCommand);
               if (normalizedCommand.type === "thread.archive") {
                 if (shouldStopSessionAfterArchive) {
@@ -697,7 +745,9 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                   ),
                 );
               }
-              return result;
+              return preDispatchWarnings.length > 0
+                ? { ...result, warnings: [...preDispatchWarnings] }
+                : result;
             }).pipe(
               Effect.mapError((cause) =>
                 isOrchestrationDispatchCommandError(cause)

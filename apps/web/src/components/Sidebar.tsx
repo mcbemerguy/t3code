@@ -2263,6 +2263,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
             }
           }}
           api={readEnvironmentApi(importAcpSessionTarget.environmentId) ?? null}
+          environmentId={importAcpSessionTarget.environmentId}
           projectId={importAcpSessionTarget.id}
           cwd={importAcpSessionTarget.cwd}
           providers={serverProviders}

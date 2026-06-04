@@ -8,6 +8,7 @@ import { useComposerDraftStore } from "../composerDraftStore";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { ensureEnvironmentApi, readEnvironmentApi } from "../environmentApi";
 import { invalidateSourceControlState } from "../lib/sourceControlActions";
+import { notifyCustomAcpSessionsChanged } from "../lib/customAcpSessionRefresh";
 import { refreshArchivedThreadsForEnvironment } from "../lib/archivedThreadsState";
 import { newCommandId } from "../lib/utils";
 import { readLocalApi } from "../localApi";
@@ -103,14 +104,29 @@ export function useThreadActions() {
       const api = readEnvironmentApi(target.environmentId);
       if (!api) return;
       const resolved = resolveThreadTarget(target);
+      const showBackingSessionDeletionWarnings = (
+        warnings: Awaited<ReturnType<typeof api.orchestration.dispatchCommand>>["warnings"],
+      ) => {
+        for (const warning of warnings ?? []) {
+          if (warning.code !== "provider_backing_session_delete_failed") continue;
+          toastManager.add(
+            stackedThreadToast({
+              type: "warning",
+              title: "Thread deleted, but backing session cleanup failed",
+              description: warning.detail ?? warning.message,
+            }),
+          );
+        }
+      };
       if (!resolved) {
-        // Thread not in main store (e.g. archived thread) — dispatch delete directly.
-        await api.orchestration.dispatchCommand({
+        const deleteResult = await api.orchestration.dispatchCommand({
           type: "thread.delete",
           commandId: newCommandId(),
           threadId: target.threadId,
         });
         refreshArchivedThreadsForEnvironment(target.environmentId);
+        notifyCustomAcpSessionsChanged(target.environmentId);
+        showBackingSessionDeletionWarnings(deleteResult.warnings);
         return;
       }
       const { thread, threadRef } = resolved;
@@ -154,17 +170,6 @@ export function useThreadActions() {
           ].join("\n"),
         ));
 
-      if (thread.session && thread.session.status !== "closed") {
-        await api.orchestration
-          .dispatchCommand({
-            type: "thread.session.stop",
-            commandId: newCommandId(),
-            threadId: threadRef.threadId,
-            createdAt: new Date().toISOString(),
-          })
-          .catch(() => undefined);
-      }
-
       try {
         await api.terminal.close({ threadId: threadRef.threadId, deleteHistory: true });
       } catch {
@@ -182,12 +187,14 @@ export function useThreadActions() {
         deletedThreadIds,
         sortOrder: sidebarThreadSortOrder,
       });
-      await api.orchestration.dispatchCommand({
+      const deleteResult = await api.orchestration.dispatchCommand({
         type: "thread.delete",
         commandId: newCommandId(),
         threadId: threadRef.threadId,
       });
       refreshArchivedThreadsForEnvironment(threadRef.environmentId);
+      notifyCustomAcpSessionsChanged(threadRef.environmentId);
+      showBackingSessionDeletionWarnings(deleteResult.warnings);
       clearComposerDraftForThread(threadRef);
       clearProjectDraftThreadById(
         scopeProjectRef(threadRef.environmentId, thread.projectId),

@@ -2,6 +2,7 @@ import {
   DEFAULT_RUNTIME_MODE,
   type CustomAcpExternalSession,
   type EnvironmentApi,
+  type EnvironmentId,
   type ProjectId,
   ProviderInstanceId,
   type ServerProvider,
@@ -16,6 +17,7 @@ import {
   resolveCustomAcpImportModelSelection,
   resolveCustomAcpProviderForImport,
 } from "../../lib/customAcpSessionImport";
+import { subscribeCustomAcpSessionsChanged } from "../../lib/customAcpSessionRefresh";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -31,6 +33,7 @@ export interface ImportAcpSessionDialogProps {
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly api: EnvironmentApi | null;
+  readonly environmentId: EnvironmentId;
   readonly projectId: ProjectId;
   readonly cwd: string;
   readonly providers: ReadonlyArray<ServerProvider>;
@@ -97,6 +100,7 @@ export function ImportAcpSessionDialog(props: ImportAcpSessionDialogProps) {
   const [loadState, setLoadState] = useState<LoadState>({ kind: "idle" });
   const [importingSessionId, setImportingSessionId] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+  const [refreshNonce, setRefreshNonce] = useState(0);
 
   useEffect(() => {
     if (!props.open) {
@@ -113,6 +117,13 @@ export function ImportAcpSessionDialog(props: ImportAcpSessionDialogProps) {
     setLoadState({ kind: "idle" });
     setImportError(null);
   }, [props.open, providerResolution]);
+
+  useEffect(() => {
+    if (!props.open) return;
+    return subscribeCustomAcpSessionsChanged(props.environmentId, () => {
+      setRefreshNonce((value) => value + 1);
+    });
+  }, [props.environmentId, props.open]);
 
   useEffect(() => {
     if (!props.open || !props.api || !selectedProviderId) {
@@ -141,7 +152,7 @@ export function ImportAcpSessionDialog(props: ImportAcpSessionDialogProps) {
     return () => {
       cancelled = true;
     };
-  }, [props.api, props.cwd, props.open, selectedProviderId]);
+  }, [props.api, props.cwd, props.open, refreshNonce, selectedProviderId]);
 
   const selectedProvider = useMemo(() => {
     if (!selectedProviderId) return null;

@@ -712,6 +712,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.session-stop-requested",
         payload: {
           threadId: command.threadId,
+          ...(command.deleteBackingSession === true ? { deleteBackingSession: true } : {}),
           createdAt: command.createdAt,
         },
       };

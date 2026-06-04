@@ -721,6 +721,7 @@ const ThreadSessionStopCommand = Schema.Struct({
   type: Schema.Literal("thread.session.stop"),
   commandId: CommandId,
   threadId: ThreadId,
+  deleteBackingSession: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
 });
 
@@ -1067,6 +1068,7 @@ export const ThreadRevertedPayload = Schema.Struct({
 
 export const ThreadSessionStopRequestedPayload = Schema.Struct({
   threadId: ThreadId,
+  deleteBackingSession: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
 });
 
@@ -1312,8 +1314,16 @@ export type ProjectionPendingApprovalStatus = typeof ProjectionPendingApprovalSt
 export const ProjectionPendingApprovalDecision = Schema.NullOr(ProviderApprovalDecision);
 export type ProjectionPendingApprovalDecision = typeof ProjectionPendingApprovalDecision.Type;
 
+export const DispatchWarning = Schema.Struct({
+  code: TrimmedNonEmptyString,
+  message: TrimmedNonEmptyString,
+  detail: Schema.optional(Schema.String),
+});
+export type DispatchWarning = typeof DispatchWarning.Type;
+
 export const DispatchResult = Schema.Struct({
   sequence: NonNegativeInt,
+  warnings: Schema.optional(Schema.Array(DispatchWarning)),
 });
 export type DispatchResult = typeof DispatchResult.Type;
 

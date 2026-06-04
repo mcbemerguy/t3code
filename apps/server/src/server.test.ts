@@ -80,6 +80,7 @@ import {
   ProviderRegistry,
   type ProviderRegistryShape,
 } from "./provider/Services/ProviderRegistry.ts";
+import { ProviderService, type ProviderServiceShape } from "./provider/Services/ProviderService.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "./provider/providerMaintenance.ts";
 import { ServerLifecycleEvents, type ServerLifecycleEventsShape } from "./serverLifecycleEvents.ts";
 import { ServerRuntimeStartup, type ServerRuntimeStartupShape } from "./serverRuntimeStartup.ts";
@@ -321,6 +322,7 @@ const buildAppUnderTest = (options?: {
   layers?: {
     keybindings?: Partial<KeybindingsShape>;
     providerRegistry?: Partial<ProviderRegistryShape>;
+    providerService?: Partial<ProviderServiceShape>;
     serverSettings?: Partial<ServerSettingsShape>;
     externalLauncher?: Partial<ExternalLauncher.ExternalLauncherShape>;
     vcsDriver?: Partial<VcsDriver.VcsDriverShape>;
@@ -539,6 +541,23 @@ const buildAppUnderTest = (options?: {
           setProviderMaintenanceActionState: () => Effect.succeed([]),
           streamChanges: Stream.empty,
           ...options?.layers?.providerRegistry,
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(ProviderService)({
+          startSession: () => Effect.die(new Error("Unsupported provider call in test")),
+          sendTurn: () => Effect.die(new Error("Unsupported provider call in test")),
+          sendActiveTurnInput: () => Effect.die(new Error("Unsupported provider call in test")),
+          interruptTurn: () => Effect.die(new Error("Unsupported provider call in test")),
+          respondToRequest: () => Effect.die(new Error("Unsupported provider call in test")),
+          respondToUserInput: () => Effect.die(new Error("Unsupported provider call in test")),
+          stopSession: () => Effect.void,
+          listSessions: () => Effect.succeed([]),
+          getCapabilities: () => Effect.die(new Error("Unsupported provider call in test")),
+          getInstanceInfo: () => Effect.die(new Error("Unsupported provider call in test")),
+          rollbackConversation: () => Effect.die(new Error("Unsupported provider call in test")),
+          streamEvents: Stream.empty,
+          ...options?.layers?.providerService,
         }),
       ),
       Layer.provide(
@@ -3448,6 +3467,124 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       if (sessionStopCommand?.type === "thread.session.stop") {
         assert.equal(sessionStopCommand.threadId, threadId);
       }
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("requests destructive provider cleanup before dispatching thread delete", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-delete-provider-cleanup");
+      const effects: string[] = [];
+      const readModel = makeDefaultOrchestrationReadModel();
+      const now = "2026-01-01T00:00:00.000Z";
+      const thread = {
+        ...readModel.threads[0]!,
+        id: threadId,
+        session: {
+          threadId,
+          status: "stopped" as const,
+          providerName: "customAcp",
+          providerInstanceId: ProviderInstanceId.make("custom-acp"),
+          runtimeMode: "full-access" as const,
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+      };
+
+      yield* buildAppUnderTest({
+        layers: {
+          providerService: {
+            stopSession: (input) =>
+              Effect.sync(() => {
+                effects.push(`provider.stop:${input.threadId}:${input.deleteBackingSession}`);
+              }),
+          },
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                effects.push(`dispatch:${command.type}`);
+                return { sequence: 1 };
+              }),
+          },
+          projectionSnapshotQuery: {
+            getCommandReadModel: () => Effect.succeed({ ...readModel, threads: [thread] }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const dispatchResult = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "thread.delete",
+            commandId: CommandId.make("cmd-thread-delete-provider-cleanup"),
+            threadId,
+          }),
+        ),
+      );
+
+      assert.equal(dispatchResult.sequence, 1);
+      assert.deepEqual(dispatchResult.warnings ?? [], []);
+      assert.deepEqual(effects, [`provider.stop:${threadId}:true`, "dispatch:thread.delete"]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("warns but still dispatches thread delete when backing session cleanup fails", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-delete-provider-cleanup-failure");
+      const effects: string[] = [];
+      const readModel = makeDefaultOrchestrationReadModel();
+      const now = "2026-01-01T00:00:00.000Z";
+      const thread = {
+        ...readModel.threads[0]!,
+        id: threadId,
+        session: {
+          threadId,
+          status: "ready" as const,
+          providerName: "customAcp",
+          providerInstanceId: ProviderInstanceId.make("custom-acp"),
+          runtimeMode: "full-access" as const,
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+      };
+
+      yield* buildAppUnderTest({
+        layers: {
+          providerService: {
+            stopSession: (input) =>
+              Effect.sync(() => {
+                effects.push(`provider.stop:${input.threadId}:${input.deleteBackingSession}`);
+              }).pipe(Effect.andThen(Effect.die(new Error("delete failed")))),
+          },
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                effects.push(`dispatch:${command.type}`);
+                return { sequence: 1 };
+              }),
+          },
+          projectionSnapshotQuery: {
+            getCommandReadModel: () => Effect.succeed({ ...readModel, threads: [thread] }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const dispatchResult = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "thread.delete",
+            commandId: CommandId.make("cmd-thread-delete-provider-cleanup-failure"),
+            threadId,
+          }),
+        ),
+      );
+
+      assert.equal(dispatchResult.sequence, 1);
+      assert.equal(dispatchResult.warnings?.[0]?.code, "provider_backing_session_delete_failed");
+      assert.deepEqual(effects, [`provider.stop:${threadId}:true`, "dispatch:thread.delete"]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
