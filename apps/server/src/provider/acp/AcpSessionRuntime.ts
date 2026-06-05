@@ -711,6 +711,19 @@ const handleSessionUpdate = ({
         continue;
       }
       if (event._tag === "ContentDelta") {
+        if (event.streamKind !== "assistant_text") {
+          const itemId =
+            event.itemId ??
+            (event.messageId
+              ? reasoningItemIdForAcpMessage(params.sessionId, event.messageId)
+              : undefined);
+          yield* Queue.offer(queue, {
+            ...event,
+            ...(itemId ? { itemId } : {}),
+          });
+          continue;
+        }
+
         if (event.text.trim().length === 0) {
           const assistantSegmentState = yield* Ref.get(assistantSegmentRef);
           if (!assistantSegmentState.activeItemId) {
@@ -779,6 +792,9 @@ const assistantItemIdForAcpMessage = (
   acpMessageId: string,
   segmentIndex: number,
 ) => `assistant:${sessionId}:message:${encodeURIComponent(acpMessageId)}:segment:${segmentIndex}`;
+
+const reasoningItemIdForAcpMessage = (sessionId: string, acpMessageId: string) =>
+  `reasoning:${sessionId}:message:${encodeURIComponent(acpMessageId)}`;
 
 const ensureActiveAssistantSegment = ({
   queue,

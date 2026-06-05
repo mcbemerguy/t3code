@@ -61,6 +61,7 @@ const REASONING_PROGRESS_DISPATCHED_LENGTH_BY_KEY_CACHE_CAPACITY = 20_000;
 const REASONING_PROGRESS_DISPATCHED_LENGTH_BY_KEY_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 const MAX_BUFFERED_REASONING_CHARS = 4_000;
+const REASONING_PROGRESS_SUMMARY_CHARS = 180;
 const REASONING_PROGRESS_DISPATCH_CHAR_INTERVAL = 80;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
@@ -172,6 +173,10 @@ function maxCheckpointTurnCount(
 
 function truncateDetail(value: string, limit = 180): string {
   return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
+}
+
+function truncateTailDetail(value: string, limit = 180): string {
+  return value.length > limit ? `...${value.slice(value.length - limit + 3)}` : value;
 }
 
 function normalizeProposedPlanMarkdown(planMarkdown: string | undefined): string | undefined {
@@ -965,8 +970,8 @@ const make = Effect.gen(function* () {
           summary: "Reasoning update",
           payload: {
             taskId: input.reasoningKey,
-            detail: truncateDetail(bufferedReasoningText),
-            summary: truncateDetail(bufferedReasoningText),
+            detail: truncateDetail(bufferedReasoningText, MAX_BUFFERED_REASONING_CHARS),
+            summary: truncateTailDetail(bufferedReasoningText, REASONING_PROGRESS_SUMMARY_CHARS),
           },
           turnId: input.turnId ?? null,
         },
