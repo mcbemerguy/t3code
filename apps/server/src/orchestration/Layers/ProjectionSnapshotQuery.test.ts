@@ -361,6 +361,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             runtimeMode: "approval-required",
             activeTurnId: null,
             lastError: null,
+            workflowRuns: [],
             updatedAt: "2026-02-24T00:00:07.000Z",
           },
         },
@@ -426,6 +427,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             runtimeMode: "approval-required",
             activeTurnId: null,
             lastError: null,
+            workflowRuns: [],
             updatedAt: "2026-02-24T00:00:07.000Z",
           },
           latestUserMessageAt: "2026-02-24T00:00:04.000Z",
@@ -529,6 +531,24 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           '2026-02-24T01:00:01.000Z',
           '2026-02-24T01:00:02.000Z',
           NULL
+        ),
+        (
+          'thread-stale-turn-working-workflow',
+          'project-stale-running',
+          'Thread Stale Turn Working Workflow',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          'full-access',
+          'default',
+          NULL,
+          NULL,
+          'turn-stale-turn-working-workflow',
+          NULL,
+          0,
+          0,
+          0,
+          '2026-02-24T01:00:01.000Z',
+          '2026-02-24T01:00:02.000Z',
+          NULL
         )
       `;
       yield* sql`
@@ -557,6 +577,17 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         (
           'thread-stale-idle-running',
           'turn-stale-idle-running',
+          NULL,
+          NULL,
+          'completed',
+          '2026-02-24T01:00:03.000Z',
+          '2026-02-24T01:00:03.000Z',
+          '2026-02-24T01:00:04.000Z',
+          '[]'
+        ),
+        (
+          'thread-stale-turn-working-workflow',
+          'turn-stale-turn-working-workflow',
           NULL,
           NULL,
           'completed',
@@ -593,7 +624,21 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           NULL,
           NULL,
           '2026-02-24T01:00:05.000Z'
+        ),
+        (
+          'thread-stale-turn-working-workflow',
+          'running',
+          'codex',
+          'full-access',
+          'turn-stale-turn-working-workflow',
+          NULL,
+          '2026-02-24T01:00:05.000Z'
         )
+      `;
+      yield* sql`
+        UPDATE projection_thread_sessions
+        SET workflow_runs_json = '[{"runId":"workflow-run-1","status":"running","terminal":false,"lastSequence":3,"actions":["interrupt","abort"],"updatedAt":"2026-02-24T01:00:05.000Z"}]'
+        WHERE thread_id = 'thread-stale-turn-working-workflow'
       `;
 
       const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
@@ -610,6 +655,13 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.equal(idleThread?.latestTurn?.state, "completed");
       assert.equal(idleThread?.session?.status, "ready");
       assert.equal(idleThread?.session?.activeTurnId, null);
+
+      const workingWorkflowThread = shellSnapshot.threads.find(
+        (entry) => entry.id === ThreadId.make("thread-stale-turn-working-workflow"),
+      );
+      assert.equal(workingWorkflowThread?.latestTurn?.state, "completed");
+      assert.equal(workingWorkflowThread?.session?.status, "running");
+      assert.equal(workingWorkflowThread?.session?.activeTurnId, null);
     }),
   );
 

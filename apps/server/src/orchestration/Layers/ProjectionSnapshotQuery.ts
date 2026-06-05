@@ -222,7 +222,7 @@ function mapSessionRow(
 ): OrchestrationSession {
   const latestTurnSettled = latestTurn !== null && latestTurn.completedAt !== null;
   const latestTurnNonRunning = latestTurnSettled && latestTurn?.state !== "running";
-  const activeTurnSettled =
+  const staleActiveTurn =
     row.status === "running" &&
     row.activeTurnId !== null &&
     latestTurnNonRunning &&
@@ -230,19 +230,18 @@ function mapSessionRow(
   const hasWorkingWorkflowRun = row.workflowRuns.some(
     (run) => !run.terminal && (run.status === "running" || run.status === "recovering"),
   );
-  const idleRunningSessionSettled =
+  const repairSettledRunningSession =
     row.status === "running" &&
-    row.activeTurnId === null &&
     latestTurnNonRunning &&
-    !hasWorkingWorkflowRun;
-  const repairSettledRunningSession = activeTurnSettled || idleRunningSessionSettled;
+    !hasWorkingWorkflowRun &&
+    (row.activeTurnId === null || staleActiveTurn);
   return {
     threadId: row.threadId,
     status: repairSettledRunningSession ? "ready" : row.status,
     providerName: row.providerName,
     ...(row.providerInstanceId !== null ? { providerInstanceId: row.providerInstanceId } : {}),
     runtimeMode: row.runtimeMode,
-    activeTurnId: repairSettledRunningSession ? null : row.activeTurnId,
+    activeTurnId: staleActiveTurn ? null : row.activeTurnId,
     lastError: repairSettledRunningSession ? null : row.lastError,
     workflowRuns: row.workflowRuns,
     updatedAt: row.updatedAt,
