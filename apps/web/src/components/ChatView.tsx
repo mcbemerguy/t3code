@@ -16,6 +16,7 @@ import {
   type TurnId,
   type KeybindingCommand,
   type ProviderWorkflowControlAction,
+  type ProviderWorkflowRunCursor,
   OrchestrationThreadActivity,
   ProviderInteractionMode,
   ProviderDriverKind,
@@ -205,6 +206,7 @@ const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_PROPOSED_PLANS: Thread["proposedPlans"] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
+const EMPTY_WORKFLOW_RUNS: ReadonlyArray<ProviderWorkflowRunCursor> = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 type EnvironmentUnavailableState = {
   readonly environmentId: EnvironmentId;
@@ -1628,7 +1630,17 @@ export default function ChatView(props: ChatViewProps) {
     () => deriveActivePlanState(threadActivities, activeLatestTurn?.turnId ?? undefined),
     [activeLatestTurn?.turnId, threadActivities],
   );
-  const activeWorkflowRuns = activeThread?.session?.workflowRuns ?? [];
+  const activeWorkflowRuns = activeThread?.session?.workflowRuns ?? EMPTY_WORKFLOW_RUNS;
+  const activeWorkflowRunKey = useMemo(() => {
+    const activeRunIds = activeWorkflowRuns
+      .filter((run) => !run.terminal)
+      .map((run) => run.runId)
+      .sort();
+    return activeRunIds.length > 0 ? `workflow:${activeRunIds.join("|")}` : null;
+  }, [activeWorkflowRuns]);
+  const hasActiveWorkflowRuns = activeWorkflowRunKey !== null;
+  const planSidebarDismissalKey =
+    activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? activeWorkflowRunKey ?? "__dismissed__";
   const planSidebarLabel = sidebarProposedPlan || interactionMode === "plan" ? "Plan" : "Tasks";
   const showPlanFollowUpPrompt =
     pendingUserInputs.length === 0 &&
@@ -2488,19 +2500,17 @@ export default function ChatView(props: ChatViewProps) {
   const togglePlanSidebar = useCallback(() => {
     setPlanSidebarOpen((open) => {
       if (open) {
-        planSidebarDismissedForTurnRef.current =
-          activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
+        planSidebarDismissedForTurnRef.current = planSidebarDismissalKey;
       } else {
         planSidebarDismissedForTurnRef.current = null;
       }
       return !open;
     });
-  }, [activePlan?.turnId, sidebarProposedPlan?.turnId]);
+  }, [planSidebarDismissalKey]);
   const closePlanSidebar = useCallback(() => {
     setPlanSidebarOpen(false);
-    planSidebarDismissedForTurnRef.current =
-      activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
-  }, [activePlan?.turnId, sidebarProposedPlan?.turnId]);
+    planSidebarDismissedForTurnRef.current = planSidebarDismissalKey;
+  }, [planSidebarDismissalKey]);
 
   const persistThreadSettingsForNextTurn = useCallback(
     async (input: {
@@ -2593,23 +2603,29 @@ export default function ChatView(props: ChatViewProps) {
     planSidebarDismissedForTurnRef.current = null;
   }, [activeThread?.id]);
 
-  // Auto-open the plan sidebar when plan/todo steps arrive for the current turn.
+  // Auto-open the plan/tasks sidebar when current-turn tasks or active workflow controls appear.
   // Don't auto-open for plans carried over from a previous turn (the user can open manually).
   useEffect(() => {
     if (!autoOpenPlanSidebar) return;
-    if (!activePlan) return;
     if (planSidebarOpen) return;
-    const latestTurnId = activeLatestTurn?.turnId ?? null;
-    if (latestTurnId && activePlan.turnId !== latestTurnId) return;
-    const turnKey = activePlan.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
-    if (planSidebarDismissedForTurnRef.current === turnKey) return;
+    let shouldOpen = false;
+    if (activePlan) {
+      const latestTurnId = activeLatestTurn?.turnId ?? null;
+      shouldOpen = !latestTurnId || activePlan.turnId === latestTurnId;
+    }
+    if (!shouldOpen && hasActiveWorkflowRuns) {
+      shouldOpen = true;
+    }
+    if (!shouldOpen) return;
+    if (planSidebarDismissedForTurnRef.current === planSidebarDismissalKey) return;
     setPlanSidebarOpen(true);
   }, [
     activePlan,
     activeLatestTurn?.turnId,
     autoOpenPlanSidebar,
+    hasActiveWorkflowRuns,
+    planSidebarDismissalKey,
     planSidebarOpen,
-    sidebarProposedPlan?.turnId,
   ]);
 
   useEffect(() => {
@@ -3995,6 +4011,7 @@ export default function ChatView(props: ChatViewProps) {
                   activeProposedPlan={activeProposedPlan}
                   activePlan={activePlan as { turnId?: TurnId } | null}
                   sidebarProposedPlan={sidebarProposedPlan as { turnId?: TurnId } | null}
+                  hasActiveWorkflowRuns={hasActiveWorkflowRuns}
                   planSidebarLabel={planSidebarLabel}
                   planSidebarOpen={planSidebarOpen}
                   runtimeMode={runtimeMode}
