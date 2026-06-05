@@ -37,6 +37,7 @@ const enablePiWorkflows = process.env.T3_ACP_ENABLE_PI_WORKFLOWS === "1";
 const emitWorkflowReplayOnLoad = process.env.T3_ACP_EMIT_WORKFLOW_REPLAY_ON_LOAD === "1";
 const workflowReplaySequence =
   parseNonNegativeIntOrZero(process.env.T3_ACP_WORKFLOW_REPLAY_SEQUENCE) || 1;
+const workflowListRunIds = parseCommaSeparatedList(process.env.T3_ACP_WORKFLOW_LIST_RUN_IDS);
 const failLoadSession = process.env.T3_ACP_FAIL_LOAD_SESSION === "1";
 const failCreateSessionCount = parseNonNegativeIntOrZero(
   process.env.T3_ACP_FAIL_CREATE_SESSION_COUNT,
@@ -65,6 +66,13 @@ function parseNonNegativeIntOrZero(value: string | undefined): number {
   if (value === undefined) return 0;
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function parseCommaSeparatedList(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
 }
 
 function readCreateSessionFailureAttempts(): number {
@@ -818,16 +826,15 @@ const program = Effect.gen(function* () {
         typeof params === "object" && params !== null ? (params as Record<string, unknown>) : {};
       const runId = typeof payload.runId === "string" ? payload.runId : "workflow-run-1";
       if (method === "_pi/workflows/list") {
+        const listedRunIds = workflowListRunIds.length > 0 ? workflowListRunIds : [runId];
         return Effect.succeed({
-          runs: [
-            {
-              id: runId,
-              runId,
-              status: "running",
-              runDir: "/tmp/workflow-run-1",
-              auditPath: "/tmp/workflow-run-1/audit.md",
-            },
-          ],
+          runs: listedRunIds.map((listedRunId) => ({
+            id: listedRunId,
+            runId: listedRunId,
+            status: "running",
+            runDir: `/tmp/${listedRunId}`,
+            auditPath: `/tmp/${listedRunId}/audit.md`,
+          })),
         });
       }
       if (method === "_pi/workflows/events") {

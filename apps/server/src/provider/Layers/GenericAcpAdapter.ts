@@ -149,6 +149,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function mergeWorkflowRunCursor(
+  previous: PiWorkflowResumeRun | undefined,
+  next: PiWorkflowResumeRun,
+): PiWorkflowResumeRun {
+  if (!previous) return next;
+  return {
+    runId: next.runId,
+    lastSequence: Math.max(previous.lastSequence, next.lastSequence),
+    ...((next.runDir ?? previous.runDir) ? { runDir: next.runDir ?? previous.runDir } : {}),
+    ...((next.auditPath ?? previous.auditPath)
+      ? { auditPath: next.auditPath ?? previous.auditPath }
+      : {}),
+    ...((next.status ?? previous.status) ? { status: next.status ?? previous.status } : {}),
+  };
+}
+
 function requiresStrictPiAcpResume(raw: unknown, piSteeringMethod: string | undefined): boolean {
   if (piSteeringMethod !== undefined) return true;
   if (!isRecord(raw)) return false;
@@ -297,7 +313,11 @@ export function makeGenericAcpAdapter(
       terminal: boolean,
     ) => {
       if (terminal) ctx.workflowRuns.delete(run.runId);
-      else ctx.workflowRuns.set(run.runId, run);
+      else
+        ctx.workflowRuns.set(
+          run.runId,
+          mergeWorkflowRunCursor(ctx.workflowRuns.get(run.runId), run),
+        );
       refreshResumeCursor(ctx);
     };
 
@@ -326,7 +346,6 @@ export function makeGenericAcpAdapter(
     const discoverActiveWorkflowRuns = (ctx: GenericAcpSessionContext) =>
       Effect.gen(function* () {
         const knownRuns = Array.from(ctx.workflowRuns.values());
-        if (knownRuns.length > 0) return knownRuns;
         const listMethod = ctx.piWorkflowCapabilities?.listMethod;
         if (!listMethod) return knownRuns;
         const payload = {
@@ -338,10 +357,14 @@ export function makeGenericAcpAdapter(
           .request(listMethod, payload)
           .pipe(Effect.exit, Effect.timeoutOption(Duration.millis(ACP_CANCEL_WATCHDOG_GRACE_MS)));
         if (listExit._tag === "None" || Exit.isFailure(listExit.value)) return knownRuns;
-        return parsePiWorkflowRuns(listExit.value.value).filter(
+        const mergedRuns = new Map(knownRuns.map((run) => [run.runId, run] as const));
+        for (const run of parsePiWorkflowRuns(listExit.value.value).filter(
           (run) =>
             run.status !== "completed" && run.status !== "failed" && run.status !== "aborted",
-        );
+        )) {
+          mergedRuns.set(run.runId, mergeWorkflowRunCursor(mergedRuns.get(run.runId), run));
+        }
+        return Array.from(mergedRuns.values());
       });
 
     const pauseActiveWorkflows = (ctx: GenericAcpSessionContext) =>
@@ -946,13 +969,15 @@ export function makeGenericAcpAdapter(
                     const previous = ctx.workflowRuns.get(event.runId);
                     const duplicate =
                       previous !== undefined && event.sequence <= previous.lastSequence;
-                    if (duplicate) ctx.duplicateWorkflowEventRuns.add(event.runId);
-                    else ctx.duplicateWorkflowEventRuns.delete(event.runId);
+                    if (duplicate) {
+                      ctx.duplicateWorkflowEventRuns.add(event.runId);
+                      return;
+                    }
+                    ctx.duplicateWorkflowEventRuns.delete(event.runId);
                     const run = workflowRunFromRecord(event.runId, event.sequence, event.record);
                     const terminal = isTerminalWorkflowStatus(run.status);
                     upsertWorkflowRunCursor(ctx, run, terminal);
-                    if (!terminal && !duplicate)
-                      yield* emitWorkflowActionNotice(ctx, run, event.rawPayload);
+                    if (!terminal) yield* emitWorkflowActionNotice(ctx, run, event.rawPayload);
                     return;
                   }
                   case "TokenUsageUpdated":

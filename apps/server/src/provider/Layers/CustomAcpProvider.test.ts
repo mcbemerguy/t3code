@@ -841,7 +841,15 @@ describe("Custom ACP provider", () => {
       assert.isDefined(currentSession);
       assert.deepStrictEqual(
         parseCustomAcpResume(customAcpDriver, currentSession!.resumeCursor)?.activeWorkflowRuns,
-        [{ runId: "workflow-run-1", lastSequence: 7, status: "paused" }],
+        [
+          {
+            runId: "workflow-run-1",
+            lastSequence: 7,
+            runDir: "/tmp/workflow-run-1",
+            auditPath: "/tmp/workflow-run-1/audit.md",
+            status: "paused",
+          },
+        ],
       );
       yield* adapter.stopSession(threadId);
 
@@ -856,6 +864,91 @@ describe("Custom ACP provider", () => {
             (entry.params as Record<string, unknown> | undefined)?.runId === "workflow-run-1",
         ),
       ).toBe(true);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("merges fallback-discovered workflows with known workflow cursors before pausing", () =>
+    Effect.gen(function* () {
+      const requestLog = yield* Effect.promise(() => tempFile("workflow-pause-merge.jsonl"));
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({
+            T3_ACP_ENABLE_PI_WORKFLOWS: "1",
+            T3_ACP_REQUEST_LOG_PATH: requestLog,
+            T3_ACP_WORKFLOW_LIST_RUN_IDS: "workflow-run-1,workflow-run-2",
+          }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-workflow-pause-merge");
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: {
+          schemaVersion: 2,
+          provider: customAcpDriver,
+          sessionId: "mock-session-1",
+          workflows: {
+            activeRuns: [{ runId: "workflow-run-1", lastSequence: 7 }],
+          },
+        },
+      });
+
+      yield* adapter.interruptTurn(threadId);
+      const entries = yield* Effect.promise(() => readJsonLines(requestLog));
+      const pauseRunIds = entries.flatMap((entry) =>
+        entry.method === "_pi/workflows/pause" &&
+        typeof (entry.params as Record<string, unknown> | undefined)?.runId === "string"
+          ? [(entry.params as Record<string, string>).runId]
+          : [],
+      );
+      assert.deepStrictEqual(pauseRunIds, ["workflow-run-1", "workflow-run-2"]);
+      assert.notInclude(jsonRpcMethods(entries), "session/cancel");
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("ignores duplicate workflow event replay without regressing the resume cursor", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({
+            T3_ACP_ENABLE_PI_WORKFLOWS: "1",
+            T3_ACP_EMIT_WORKFLOW_REPLAY_ON_LOAD: "1",
+            T3_ACP_WORKFLOW_REPLAY_SEQUENCE: "3",
+          }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-workflow-duplicate-replay");
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: {
+          schemaVersion: 2,
+          provider: customAcpDriver,
+          sessionId: "mock-session-1",
+          workflows: {
+            activeRuns: [{ runId: "workflow-run-1", lastSequence: 7 }],
+          },
+        },
+      });
+
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
+      const sessions = yield* adapter.listSessions();
+      const currentSession = sessions.find((session) => session.threadId === threadId);
+      assert.isDefined(currentSession);
+      assert.deepStrictEqual(
+        parseCustomAcpResume(customAcpDriver, currentSession!.resumeCursor)?.activeWorkflowRuns,
+        [{ runId: "workflow-run-1", lastSequence: 7 }],
+      );
+      yield* adapter.stopSession(threadId);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
