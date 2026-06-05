@@ -51,6 +51,7 @@ import {
   collapseExpandedComposerCursor,
   parseStandaloneComposerSlashCommand,
 } from "../composer-logic";
+import { resolveWorkflowAbortSlashCommand } from "../workflowSlashCommand";
 import {
   deriveCompletionDividerBeforeEntryId,
   derivePendingApprovals,
@@ -3005,10 +3006,32 @@ export default function ChatView(props: ChatViewProps) {
         ? parseStandaloneComposerSlashCommand(trimmed)
         : null;
     if (standaloneSlashCommand) {
-      handleInteractionModeChange(standaloneSlashCommand);
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
+      if (standaloneSlashCommand.kind === "interaction-mode") {
+        handleInteractionModeChange(standaloneSlashCommand.mode);
+        return;
+      }
+
+      const abortResolution = resolveWorkflowAbortSlashCommand({
+        command: standaloneSlashCommand,
+        workflowRuns: activeWorkflowRuns,
+      });
+      if (abortResolution.status === "error") {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: abortResolution.title,
+            description: abortResolution.description,
+          }),
+        );
+        if (activeThreadId) {
+          setThreadError(activeThreadId, abortResolution.description);
+        }
+        return;
+      }
+      await onControlWorkflowRun(abortResolution.runId, "abort");
       return;
     }
     if (!hasSendableContent) {
