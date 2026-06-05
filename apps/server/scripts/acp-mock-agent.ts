@@ -36,6 +36,7 @@ const enableSessionClose = process.env.T3_ACP_ENABLE_SESSION_CLOSE === "1";
 const enableSessionDelete = process.env.T3_ACP_ENABLE_SESSION_DELETE === "1";
 const failSessionClose = process.env.T3_ACP_FAIL_SESSION_CLOSE === "1";
 const failSessionDelete = process.env.T3_ACP_FAIL_SESSION_DELETE === "1";
+const failSessionDeleteDetail = process.env.T3_ACP_FAIL_SESSION_DELETE_DETAIL;
 const enablePiSteering = process.env.T3_ACP_ENABLE_PI_STEERING === "1";
 const enablePiWorkflows = process.env.T3_ACP_ENABLE_PI_WORKFLOWS === "1";
 const emitWorkflowReplayOnLoad = process.env.T3_ACP_EMIT_WORKFLOW_REPLAY_ON_LOAD === "1";
@@ -964,10 +965,13 @@ const program = Effect.gen(function* () {
       }
       if (failSessionDelete) {
         return Effect.fail(
-          AcpError.AcpRequestError.internalError(`Mock failed ${method}`, {
-            method,
-            params,
-          }),
+          AcpError.AcpRequestError.internalError(
+            failSessionDeleteDetail ?? `Mock failed ${method}`,
+            {
+              method,
+              params,
+            },
+          ),
         );
       }
       const payload =

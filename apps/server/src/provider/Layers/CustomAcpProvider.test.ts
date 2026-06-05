@@ -1104,7 +1104,7 @@ describe("Custom ACP provider", () => {
       const requested = yield* Deferred.make<ProviderRuntimeEvent>();
       const workflowUpdated = yield* Deferred.make<ProviderRuntimeWorkflowRunUpdatedEvent>();
 
-      yield* Stream.runForEach(adapter.streamEvents, (event) => {
+      const eventFiber = yield* Stream.runForEach(adapter.streamEvents, (event) => {
         if (event.threadId !== threadId) return Effect.void;
         if (event.type === "request.opened") {
           return Deferred.succeed(requested, event).pipe(Effect.ignore);
@@ -1141,6 +1141,7 @@ describe("Custom ACP provider", () => {
       yield* adapter.interruptTurn(threadId);
       yield* Fiber.join(turnFiber);
       const updated = yield* Deferred.await(workflowUpdated);
+      yield* Fiber.interrupt(eventFiber);
       assert.equal(updated.payload.run.status, "interrupted");
       assert.isAtLeast(updated.payload.run.lastSequence, 7);
 
@@ -1184,7 +1185,7 @@ describe("Custom ACP provider", () => {
         const requested = yield* Deferred.make<ProviderRuntimeEvent>();
         const workflowUpdated = yield* Deferred.make<ProviderRuntimeWorkflowRunUpdatedEvent>();
 
-        yield* Stream.runForEach(adapter.streamEvents, (event) => {
+        const eventFiber = yield* Stream.runForEach(adapter.streamEvents, (event) => {
           if (event.threadId !== threadId) return Effect.void;
           if (event.type === "request.opened") {
             return Deferred.succeed(requested, event).pipe(Effect.ignore);
@@ -1221,6 +1222,7 @@ describe("Custom ACP provider", () => {
         yield* adapter.interruptTurn(threadId);
         yield* Fiber.join(turnFiber);
         const updated = yield* Deferred.await(workflowUpdated);
+        yield* Fiber.interrupt(eventFiber);
         assert.equal(updated.payload.run.status, "interrupted");
         assert.isAtLeast(updated.payload.run.lastSequence, 7);
         yield* adapter.stopSession(threadId);
@@ -1231,6 +1233,125 @@ describe("Custom ACP provider", () => {
         assert.include(methods, "_pi/workflows/get");
         assert.notInclude(methods, "_pi/workflows/pause");
       }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("marks known Pi workflow runs interrupted before forced post-cancel teardown", () =>
+    Effect.gen(function* () {
+      const requestLog = yield* Effect.promise(() =>
+        tempFile("workflow-stop-forced-teardown.jsonl"),
+      );
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({
+            T3_ACP_ENABLE_PI_WORKFLOWS: "1",
+            T3_ACP_EMIT_TOOL_CALLS: "1",
+            T3_ACP_HANG_CANCEL: "1",
+            T3_ACP_HANG_PROMPT_AFTER_CANCEL: "1",
+            T3_ACP_REQUEST_LOG_PATH: requestLog,
+          }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-workflow-stop-forced-teardown");
+      const requested = yield* Deferred.make<ProviderRuntimeEvent>();
+      const workflowUpdated = yield* Deferred.make<ProviderRuntimeWorkflowRunUpdatedEvent>();
+
+      const eventFiber = yield* Stream.runForEach(adapter.streamEvents, (event) => {
+        if (event.threadId !== threadId) return Effect.void;
+        if (event.type === "request.opened") {
+          return Deferred.succeed(requested, event).pipe(Effect.ignore);
+        }
+        if (
+          isWorkflowRunUpdatedEvent(event) &&
+          event.payload.run.runId === "workflow-run-1" &&
+          event.payload.run.status === "interrupted"
+        ) {
+          return Deferred.succeed(workflowUpdated, event).pipe(Effect.ignore);
+        }
+        return Effect.void;
+      }).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+        resumeCursor: {
+          schemaVersion: 2,
+          provider: customAcpDriver,
+          sessionId: "mock-session-1",
+          workflows: {
+            activeRuns: [{ runId: "workflow-run-1", lastSequence: 7, status: "running" }],
+          },
+        },
+      });
+      const turnFiber = yield* adapter
+        .sendTurn({ threadId, input: "needs approval", attachments: [] })
+        .pipe(Effect.forkChild);
+
+      yield* Deferred.await(requested);
+      yield* adapter.interruptTurn(threadId);
+      yield* Fiber.join(turnFiber);
+      const updated = yield* Deferred.await(workflowUpdated);
+      yield* Fiber.interrupt(eventFiber);
+      assert.equal(updated.payload.run.status, "interrupted");
+      assert.equal(updated.payload.run.lastSequence, 7);
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
+      assert.isFalse(yield* adapter.hasSession(threadId));
+
+      const methods = jsonRpcMethods(yield* Effect.promise(() => readJsonLines(requestLog)));
+      assert.include(methods, "session/cancel");
+      assert.notInclude(methods, "_pi/workflows/pause");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("does not let stale post-Stop refresh overwrite later workflow control state", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({
+            T3_ACP_ENABLE_PI_WORKFLOWS: "1",
+          }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-workflow-stop-refresh-stale-control");
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: {
+          schemaVersion: 2,
+          provider: customAcpDriver,
+          sessionId: "mock-session-1",
+          workflows: {
+            activeRuns: [{ runId: "workflow-run-1", lastSequence: 7, status: "running" }],
+          },
+        },
+      });
+
+      yield* adapter.interruptTurn(threadId);
+      const resumed = yield* adapter.controlWorkflowRun!({
+        threadId,
+        runId: "workflow-run-1",
+        action: "continue",
+      });
+      assert.equal(resumed.run.status, "recovering");
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 250)));
+
+      const sessions = yield* adapter.listSessions();
+      const currentSession = sessions.find((session) => session.threadId === threadId);
+      assert.isDefined(currentSession);
+      const activeWorkflowRuns = parseCustomAcpResume(
+        customAcpDriver,
+        currentSession!.resumeCursor,
+      )?.activeWorkflowRuns;
+      assert.equal(activeWorkflowRuns?.[0]?.runId, "workflow-run-1");
+      assert.equal(activeWorkflowRuns?.[0]?.status, "recovering");
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
   it.effect(

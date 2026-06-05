@@ -143,6 +143,11 @@ interface GenericAcpSessionContext {
   stopped: boolean;
 }
 
+interface PostCancelWorkflowRunSnapshot {
+  readonly runId: string;
+  readonly lastSequence: number;
+}
+
 export interface GenericAcpAdapterOptions {
   readonly provider?: ProviderDriverKind;
   readonly environment?: NodeJS.ProcessEnv;
@@ -712,7 +717,10 @@ export function makeGenericAcpAdapter(
     const refreshWorkflowRunFromGet = (
       ctx: GenericAcpSessionContext,
       run: PiWorkflowResumeRun,
-      options: { readonly assumeInterruptedWhenStillRunning: boolean },
+      options: {
+        readonly assumeInterruptedWhenStillRunning: boolean;
+        readonly cancelledAtSequence: number;
+      },
     ) =>
       Effect.gen(function* () {
         const method = ctx.piWorkflowCapabilities?.getMethod;
@@ -748,7 +756,9 @@ export function makeGenericAcpAdapter(
         const fallbackToInterrupted =
           options.assumeInterruptedWhenStillRunning &&
           rawCursor.status === "running" &&
-          ctx.activeTurnId === undefined;
+          ctx.activeTurnId === undefined &&
+          current.lastSequence <= options.cancelledAtSequence &&
+          rawCursor.lastSequence <= options.cancelledAtSequence;
         const nextStatus = fallbackToInterrupted
           ? "interrupted"
           : (refreshedRun.status ?? current.status);
@@ -788,12 +798,39 @@ export function makeGenericAcpAdapter(
         ),
       );
 
-    const markRunningWorkflowRunsInterruptedAfterCancel = (ctx: GenericAcpSessionContext) =>
+    const snapshotWorkflowRunsForCancel = (
+      ctx: GenericAcpSessionContext,
+    ): ReadonlyArray<PostCancelWorkflowRunSnapshot> =>
+      Array.from(ctx.workflowRuns.values()).flatMap((run) => {
+        const cursor = ctx.workflowCursors.get(run.runId);
+        const status = run.status ?? cursor?.status ?? "running";
+        if (cursor?.terminal || status !== "running") return [];
+        return [{ runId: run.runId, lastSequence: run.lastSequence }];
+      });
+
+    const currentCancelTargetRun = (
+      ctx: GenericAcpSessionContext,
+      snapshot: PostCancelWorkflowRunSnapshot,
+    ): PiWorkflowResumeRun | undefined => {
+      const current = ctx.workflowRuns.get(snapshot.runId);
+      if (!current) return undefined;
+      const cursor = ctx.workflowCursors.get(snapshot.runId);
+      const status = current.status ?? cursor?.status ?? "running";
+      if (cursor?.terminal || status !== "running") return undefined;
+      if (current.lastSequence > snapshot.lastSequence) return undefined;
+      return current;
+    };
+
+    const markRunningWorkflowRunsInterruptedAfterCancel = (
+      ctx: GenericAcpSessionContext,
+      snapshots: ReadonlyArray<PostCancelWorkflowRunSnapshot> = snapshotWorkflowRunsForCancel(ctx),
+    ) =>
       Effect.gen(function* () {
         if (!ctx.piWorkflowCapabilities) return;
-        for (const run of Array.from(ctx.workflowRuns.values())) {
+        for (const snapshot of snapshots) {
+          const run = currentCancelTargetRun(ctx, snapshot);
+          if (!run) continue;
           const cursor = ctx.workflowCursors.get(run.runId);
-          if (cursor?.terminal || (run.status && run.status !== "running")) continue;
           const nextRun: PiWorkflowResumeRun = { ...run, status: "interrupted" };
           const nextCursor = workflowCursorFromResumeRun({
             run: nextRun,
@@ -809,38 +846,35 @@ export function makeGenericAcpAdapter(
         }
       });
 
-    const refreshKnownWorkflowRunsAfterCancel = (ctx: GenericAcpSessionContext) =>
+    const refreshKnownWorkflowRunsAfterCancel = (
+      ctx: GenericAcpSessionContext,
+      snapshots: ReadonlyArray<PostCancelWorkflowRunSnapshot>,
+    ) =>
       Effect.gen(function* () {
         if (!ctx.piWorkflowCapabilities?.eventsMethod && !ctx.piWorkflowCapabilities?.getMethod)
           return;
+        if (snapshots.length === 0) return;
         for (let index = 0; index < POST_CANCEL_WORKFLOW_REFRESH_DELAYS_MS.length; index += 1) {
           yield* Effect.sleep(Duration.millis(POST_CANCEL_WORKFLOW_REFRESH_DELAYS_MS[index]!));
           if (ctx.stopped) return;
-          const runs = Array.from(ctx.workflowRuns.values()).filter((run) => {
-            const cursor = ctx.workflowCursors.get(run.runId);
-            return !cursor?.terminal;
-          });
-          if (runs.length === 0) return;
           const lastAttempt = index === POST_CANCEL_WORKFLOW_REFRESH_DELAYS_MS.length - 1;
-          for (const run of runs) {
+          let hasRemainingCancelTargets = false;
+          for (const snapshot of snapshots) {
+            const run = currentCancelTargetRun(ctx, snapshot);
+            if (!run) continue;
+            hasRemainingCancelTargets = true;
             yield* refreshWorkflowRunFromEvents(ctx, run);
-            const current = ctx.workflowRuns.get(run.runId);
+            const current = currentCancelTargetRun(ctx, snapshot);
             if (!current) continue;
-            const cursor = ctx.workflowCursors.get(run.runId);
-            if (
-              cursor?.terminal ||
-              cursor?.status === "interrupted" ||
-              cursor?.status === "paused"
-            ) {
-              continue;
-            }
             yield* refreshWorkflowRunFromGet(ctx, current, {
               assumeInterruptedWhenStillRunning: lastAttempt,
+              cancelledAtSequence: snapshot.lastSequence,
             });
           }
+          if (!hasRemainingCancelTargets) return;
         }
         if (ctx.activeTurnId === undefined) {
-          yield* markRunningWorkflowRunsInterruptedAfterCancel(ctx);
+          yield* markRunningWorkflowRunsInterruptedAfterCancel(ctx, snapshots);
         }
       });
 
@@ -1694,6 +1728,7 @@ export function makeGenericAcpAdapter(
       Effect.gen(function* () {
         const ctx = yield* requireSession(threadId);
         const interruptedTurnId = turnId ?? ctx.activeTurnId;
+        const postCancelWorkflowSnapshots = snapshotWorkflowRunsForCancel(ctx);
         if (interruptedTurnId && !ctx.completedTurnIds.has(interruptedTurnId)) {
           ctx.cancellingTurnIds.add(interruptedTurnId);
           const cancelSignal = ctx.turnCancelSignals.get(interruptedTurnId);
@@ -1719,6 +1754,10 @@ export function makeGenericAcpAdapter(
                           }),
                         ),
                       ).pipe(Effect.ignore);
+                      yield* markRunningWorkflowRunsInterruptedAfterCancel(
+                        ctx,
+                        postCancelWorkflowSnapshots,
+                      );
                       yield* stopSessionWithoutWaitingForPrompt(ctx);
                     }),
                   ),
@@ -1746,13 +1785,15 @@ export function makeGenericAcpAdapter(
               state: "cancelled",
               stopReason: "session/cancel requested",
             }).pipe(
-              Effect.andThen(markRunningWorkflowRunsInterruptedAfterCancel(ctx)),
+              Effect.andThen(
+                markRunningWorkflowRunsInterruptedAfterCancel(ctx, postCancelWorkflowSnapshots),
+              ),
               Effect.andThen(stopSessionInternal(ctx)),
             );
           }),
           Effect.forkDetach,
         );
-        yield* refreshKnownWorkflowRunsAfterCancel(ctx).pipe(
+        yield* refreshKnownWorkflowRunsAfterCancel(ctx, postCancelWorkflowSnapshots).pipe(
           Effect.forkDetach({ startImmediately: true }),
         );
       });

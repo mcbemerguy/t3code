@@ -1,9 +1,12 @@
+import { fileURLToPath } from "node:url";
+
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
 import {
   CommandId,
+  CustomAcpSettings,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   EventId,
@@ -40,6 +43,7 @@ import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
+import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import {
@@ -85,6 +89,11 @@ import {
 } from "./provider/Services/ProviderRegistry.ts";
 import { ProviderService, type ProviderServiceShape } from "./provider/Services/ProviderService.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "./provider/providerMaintenance.ts";
+import { makeGenericAcpAdapter } from "./provider/Layers/GenericAcpAdapter.ts";
+import {
+  NoOpProviderEventLoggers,
+  ProviderEventLoggers,
+} from "./provider/Layers/ProviderEventLoggers.ts";
 import { ServerLifecycleEvents, type ServerLifecycleEventsShape } from "./serverLifecycleEvents.ts";
 import { ServerRuntimeStartup, type ServerRuntimeStartupShape } from "./serverRuntimeStartup.ts";
 import { ServerSettingsService, type ServerSettingsShape } from "./serverSettings.ts";
@@ -127,6 +136,14 @@ import * as Data from "effect/Data";
 
 const defaultProjectId = ProjectId.make("project-default");
 const defaultThreadId = ThreadId.make("thread-default");
+const acpMockAgentPath = fileURLToPath(new URL("../scripts/acp-mock-agent.ts", import.meta.url));
+const decodeCustomAcpSettings = Schema.decodeSync(CustomAcpSettings);
+const customAcpAdapterTestLayer = ServerConfig.layerTest(process.cwd(), {
+  prefix: "t3-router-custom-acp-adapter-test-",
+}).pipe(
+  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+);
 const defaultDesktopBootstrapToken = "test-desktop-bootstrap-token";
 const defaultModelSelection = {
   instanceId: ProviderInstanceId.make("codex"),
@@ -3733,13 +3750,23 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
   );
 
   it.effect(
-    "deletes workflow-emails-monitor stuck state with warning-only backing cleanup diagnostics",
+    "deletes workflow-emails-monitor stuck state with warning-only Custom ACP cleanup diagnostics",
     () =>
       Effect.gen(function* () {
         const threadId = ThreadId.make("thread-workflow-emails-monitor-stuck");
         const turnId = TurnId.make("turn-workflow-emails-monitor-stale");
+        const customAcpDriver = ProviderDriverKind.make("customAcp");
+        const customAcpInstanceId = ProviderInstanceId.make("custom-acp");
+        const missingBackingSessionDetail =
+          "Missing Pi backing session for workflow-emails-monitor; workflow run is already aborted.";
         const effects: string[] = [];
         const readModel = makeDefaultOrchestrationReadModel();
+        const fileSystem = yield* FileSystem.FileSystem;
+        const pathService = yield* Path.Path;
+        const requestLogDir = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "workflow-emails-monitor-delete-",
+        });
+        const requestLogPath = pathService.join(requestLogDir, "requests.jsonl");
         const now = "2026-01-01T00:00:00.000Z";
         const completedAt = "2026-01-01T00:03:00.000Z";
         const thread = {
@@ -3759,7 +3786,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             threadId,
             status: "running" as const,
             providerName: "customAcp",
-            providerInstanceId: ProviderInstanceId.make("custom-acp"),
+            providerInstanceId: customAcpInstanceId,
             runtimeMode: "full-access" as const,
             activeTurnId: turnId,
             lastError: null,
@@ -3798,6 +3825,39 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             },
           ],
         };
+        const adapter = yield* makeGenericAcpAdapter(
+          decodeCustomAcpSettings({
+            command: "bun",
+            args: acpMockAgentPath,
+            env: [
+              `T3_ACP_REQUEST_LOG_PATH=${requestLogPath}`,
+              "T3_ACP_ENABLE_SESSION_DELETE=1",
+              "T3_ACP_FAIL_SESSION_DELETE=1",
+              `T3_ACP_FAIL_SESSION_DELETE_DETAIL=${missingBackingSessionDetail}`,
+            ].join("\n"),
+          }),
+          { instanceId: customAcpInstanceId },
+        );
+        yield* adapter.startSession({
+          threadId,
+          provider: customAcpDriver,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          resumeCursor: {
+            schemaVersion: 2,
+            provider: customAcpDriver,
+            sessionId: "mock-session-1",
+            workflows: {
+              activeRuns: [
+                {
+                  runId: "workflow-emails-monitor",
+                  lastSequence: 42,
+                  status: "aborted",
+                },
+              ],
+            },
+          },
+        });
 
         yield* buildAppUnderTest({
           layers: {
@@ -3807,12 +3867,12 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                   effects.push(`provider.stop:${input.threadId}:${input.deleteBackingSession}`);
                 }).pipe(
                   Effect.andThen(
-                    Effect.die(
-                      new Error(
-                        "Missing Pi backing session for workflow-emails-monitor; workflow run is already aborted.",
-                      ),
+                    adapter.stopSession(
+                      input.threadId,
+                      input.deleteBackingSession === true ? { deleteBackingSession: true } : {},
                     ),
                   ),
+                  Effect.orDie,
                 ),
             },
             orchestrationEngine: {
@@ -3842,16 +3902,28 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             }),
           ),
         );
+        const requestLog = yield* fileSystem.readFileString(requestLogPath);
+        const methods = requestLog
+          .split("\n")
+          .filter((line) => line.trim().length > 0)
+          .map((line) => JSON.parse(line) as { method?: unknown })
+          .flatMap((entry) => (typeof entry.method === "string" ? [entry.method] : []));
 
         assert.equal(dispatchResult.sequence, 1);
         assert.equal(dispatchResult.warnings?.[0]?.code, "provider_backing_session_delete_failed");
         assert.include(dispatchResult.warnings?.[0]?.detail ?? "", "Missing Pi backing session");
+        assert.include(methods, "_pi/session/delete");
+        assert.notInclude(methods, "session/close");
+        assert.isFalse(yield* adapter.hasSession(threadId));
         assert.deepEqual(effects, [
           "query:command-read-model",
           "dispatch:thread.delete",
           `provider.stop:${threadId}:true`,
         ]);
-      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(Layer.mergeAll(NodeHttpServer.layerTest, customAcpAdapterTestLayer)),
+      ),
   );
 
   it.effect(

@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ProviderDriverKind, type ScopedThreadRef } from "@t3tools/contracts";
+import {
+  ProviderDriverKind,
+  type ClientOrchestrationCommand,
+  type EnvironmentApi,
+  type ScopedThreadRef,
+} from "@t3tools/contracts";
 
 import {
   createThreadJumpHintVisibilityController,
@@ -36,6 +41,7 @@ import {
   type Project,
   type Thread,
 } from "../types";
+import { dispatchThreadDeleteFirst } from "../hooks/threadDeleteAction.logic";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
 
@@ -929,7 +935,37 @@ describe("deleteSelectedSidebarThreads", () => {
         }),
       ],
     ]);
-    const deleteThread = vi.fn(async () => undefined);
+    const toast = { add: vi.fn() };
+    const warnings = [
+      {
+        code: "provider_backing_session_delete_failed",
+        message: "Thread deleted, but the provider backing session may still exist.",
+        detail:
+          "Missing Pi backing session for workflow-emails-monitor; workflow run is already aborted.",
+      },
+    ];
+    const dispatchCommand = vi.fn(
+      async (command: {
+        threadId: ThreadId;
+      }): Promise<{ sequence: number; warnings?: typeof warnings }> => ({
+        sequence: 17,
+        ...(command.threadId === ThreadId.make("thread-workflow-emails-monitor-archived")
+          ? { warnings }
+          : {}),
+      }),
+    );
+    const api = {
+      orchestration: { dispatchCommand },
+      terminal: { close: vi.fn() },
+    } as unknown as EnvironmentApi;
+    const deleteThread = vi.fn(async (threadRef: ScopedThreadRef) => {
+      await dispatchThreadDeleteFirst({
+        api,
+        target: threadRef,
+        commandId: `cmd-delete:${threadRef.threadId}` as ClientOrchestrationCommand["commandId"],
+        toast,
+      });
+    });
 
     const result = await deleteSelectedSidebarThreads({
       threadKeys: ["key-stuck-archived", "key-normal-stopped"],
@@ -938,6 +974,20 @@ describe("deleteSelectedSidebarThreads", () => {
     });
 
     expect(deleteThread).toHaveBeenCalledTimes(2);
+    expect(dispatchCommand).toHaveBeenCalledTimes(2);
+    expect(dispatchCommand).toHaveBeenCalledWith({
+      type: "thread.delete",
+      commandId: "cmd-delete:thread-workflow-emails-monitor-archived",
+      threadId: ThreadId.make("thread-workflow-emails-monitor-archived"),
+    });
+    expect(toast.add).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "warning",
+        title: "Thread deleted, but backing session cleanup failed",
+        description:
+          "Missing Pi backing session for workflow-emails-monitor; workflow run is already aborted.",
+      }),
+    );
     expect(result.deletedThreadKeys).toEqual(["key-stuck-archived", "key-normal-stopped"]);
     expect(result.failures).toEqual([]);
   });
