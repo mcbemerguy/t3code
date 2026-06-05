@@ -1257,11 +1257,16 @@ describe("Custom ACP provider", () => {
       const threadId = ThreadId.make("custom-acp-workflow-stop-forced-teardown");
       const requested = yield* Deferred.make<ProviderRuntimeEvent>();
       const workflowUpdated = yield* Deferred.make<ProviderRuntimeWorkflowRunUpdatedEvent>();
+      const sessionExited =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "session.exited" }>>();
 
       const eventFiber = yield* Stream.runForEach(adapter.streamEvents, (event) => {
         if (event.threadId !== threadId) return Effect.void;
         if (event.type === "request.opened") {
           return Deferred.succeed(requested, event).pipe(Effect.ignore);
+        }
+        if (event.type === "session.exited") {
+          return Deferred.succeed(sessionExited, event).pipe(Effect.ignore);
         }
         if (
           isWorkflowRunUpdatedEvent(event) &&
@@ -1295,10 +1300,10 @@ describe("Custom ACP provider", () => {
       yield* adapter.interruptTurn(threadId);
       yield* Fiber.join(turnFiber);
       const updated = yield* Deferred.await(workflowUpdated);
-      yield* Fiber.interrupt(eventFiber);
       assert.equal(updated.payload.run.status, "interrupted");
       assert.equal(updated.payload.run.lastSequence, 7);
-      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 2_800)));
+      yield* Deferred.await(sessionExited).pipe(Effect.timeout("5 seconds"));
+      yield* Fiber.interrupt(eventFiber);
       assert.isFalse(yield* adapter.hasSession(threadId));
 
       const methods = jsonRpcMethods(yield* Effect.promise(() => readJsonLines(requestLog)));
