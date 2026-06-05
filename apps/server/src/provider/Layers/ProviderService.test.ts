@@ -22,6 +22,7 @@ import {
 import { createModelSelection } from "@t3tools/shared/model";
 import { it, assert, vi } from "@effect/vitest";
 
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -1051,6 +1052,63 @@ routing.layer("ProviderServiceLive routing", (it) => {
         );
       }
     }),
+  );
+
+  it.effect(
+    "keeps destructive backing-session cleanup single-flight after caller interruption",
+    () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const runtimeRepository = yield* ProviderSessionRuntimeRepository;
+        const threadId = asThreadId("thread-delete-single-flight-interrupt");
+        const cleanupStarted = yield* Deferred.make<void>();
+        const releaseCleanup = yield* Deferred.make<void>();
+
+        const initial = yield* provider.startSession(threadId, {
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId: codexInstanceId,
+          threadId,
+          cwd: "/tmp/project-delete-single-flight-interrupt",
+          runtimeMode: "full-access",
+        });
+
+        routing.codex.stopSession.mockClear();
+        routing.codex.stopSession.mockImplementationOnce((stoppedThreadId, options) =>
+          Effect.gen(function* () {
+            assert.equal(stoppedThreadId, threadId);
+            assert.equal(options?.deleteBackingSession, true);
+            yield* Deferred.succeed(cleanupStarted, undefined);
+            yield* Deferred.await(releaseCleanup);
+          }),
+        );
+
+        const interruptedCaller = yield* provider
+          .stopSession({ threadId: initial.threadId, deleteBackingSession: true })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(cleanupStarted);
+        yield* Fiber.interrupt(interruptedCaller);
+
+        const secondCaller = yield* provider
+          .stopSession({ threadId: initial.threadId, deleteBackingSession: true })
+          .pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        assert.equal(routing.codex.stopSession.mock.calls.length, 1);
+
+        yield* Deferred.succeed(releaseCleanup, undefined);
+        yield* Fiber.join(secondCaller);
+
+        assert.equal(routing.codex.stopSession.mock.calls.length, 1);
+        const persistedAfterDelete = yield* runtimeRepository.getByThreadId({ threadId });
+        assert.equal(Option.isSome(persistedAfterDelete), true);
+        if (Option.isSome(persistedAfterDelete)) {
+          assert.equal(persistedAfterDelete.value.status, "stopped");
+          assert.equal(
+            (persistedAfterDelete.value.runtimePayload as { deletedBackingSession?: boolean })
+              .deletedBackingSession,
+            true,
+          );
+        }
+      }),
   );
 
   it.effect("routes explicit claudeAgent provider session starts to the claude adapter", () =>

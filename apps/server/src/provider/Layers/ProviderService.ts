@@ -28,7 +28,9 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
@@ -47,7 +49,11 @@ import {
   providerTurnMetricAttributes,
   withMetrics,
 } from "../../observability/Metrics.ts";
-import { type ProviderAdapterError, ProviderValidationError } from "../Errors.ts";
+import {
+  type ProviderAdapterError,
+  type ProviderServiceError,
+  ProviderValidationError,
+} from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
 import { ProviderService, type ProviderServiceShape } from "../Services/ProviderService.ts";
@@ -226,6 +232,49 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const directory = yield* ProviderSessionDirectory;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+  const destructiveStopWaiters = new Map<ThreadId, Deferred.Deferred<void, ProviderServiceError>>();
+
+  const runDestructiveStopOnce = (
+    threadId: ThreadId,
+    effect: Effect.Effect<void, ProviderServiceError>,
+  ): Effect.Effect<void, ProviderServiceError> =>
+    Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const deferred = yield* Deferred.make<void, ProviderServiceError>();
+        const entry = yield* Effect.sync(() => {
+          const existing = destructiveStopWaiters.get(threadId);
+          if (existing) return { owner: false as const, deferred: existing };
+          destructiveStopWaiters.set(threadId, deferred);
+          return { owner: true as const, deferred };
+        });
+
+        if (entry.owner) {
+          yield* effect.pipe(
+            Effect.exit,
+            Effect.flatMap((exit) =>
+              Effect.gen(function* () {
+                yield* Deferred.done(entry.deferred, exit);
+                yield* Effect.sync(() => {
+                  if (destructiveStopWaiters.get(threadId) === entry.deferred) {
+                    destructiveStopWaiters.delete(threadId);
+                  }
+                });
+              }),
+            ),
+            Effect.forkDetach({ startImmediately: true }),
+          );
+        } else {
+          yield* Effect.logDebug("provider destructive session stop already in progress", {
+            threadId,
+          });
+        }
+
+        const exit = yield* restore(Deferred.await(entry.deferred).pipe(Effect.exit));
+        if (Exit.isFailure(exit)) {
+          return yield* Effect.failCause(exit.cause);
+        }
+      }),
+    );
 
   const publishRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
     Effect.succeed(event).pipe(
@@ -863,9 +912,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         schema: ProviderStopSessionInput,
         payload: rawInput,
       });
+      const deleteBackingSession = input.deleteBackingSession === true;
       let metricProvider = "unknown";
-      return yield* Effect.gen(function* () {
-        const deleteBackingSession = input.deleteBackingSession === true;
+      const stopEffect = Effect.gen(function* () {
         if (deleteBackingSession) {
           const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
           if (!binding) {
@@ -943,6 +992,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             }),
         }),
       );
+
+      const stopEffectToRun = deleteBackingSession
+        ? runDestructiveStopOnce(input.threadId, stopEffect)
+        : stopEffect;
+      return yield* stopEffectToRun;
     },
   );
 
