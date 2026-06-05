@@ -33,7 +33,7 @@ Long term maintainability is a core priority. If you add new functionality, firs
 
 ## Custom ACP / Pi workflow recovery
 
-When working on Custom ACP workflow recovery, read `docs/providers/custom-acp.md` and the Pi smoke checklist at `../../agent/extensions/workflows/scripts/recovery-smoke.md`. Keep Stop mapped to standard ACP `session/cancel` for active turns; route Pi-specific Continue/Resume, Interrupt/Pause, and Abort through the provider workflow-control seam instead of assistant-text instructions.
+When working on Custom ACP workflow recovery, read `docs/providers/custom-acp.md` and the Pi smoke checklist at `../../agent/extensions/workflows/scripts/recovery-smoke.md`. Keep Stop mapped to standard ACP `session/cancel` for active turns, not `_pi/workflows/pause` or terminal abort. Do not reintroduce a composer-level workflow-control row/window; surface recoverable runs through Tasks/sidebar/provider controls and `/workflow-abort` fallback. Route Pi-specific Continue/Resume, Interrupt/Pause, and explicit terminal Abort through the provider workflow-control seam instead of assistant-text instructions. Recovery must come from Pi artifacts and ACP replay, not model-visible transcript injection.
 
 Custom ACP lifecycle contract: Stop/Close is non-destructive and must preserve backing ACP history; thread Delete is the only path that may request destructive backing-session cleanup. Prefer the T3Code/pi-acp private extension (`deleteBackingSession: true` / `_pi/session/delete`, advertised via `_meta.piAcp.sessionDelete` and `sessionDeleteMethod`); treat legacy `session/delete` only as experimental backward compatibility, not stable ACP. Archive and ordinary Stop must not delete backing sessions.
 
