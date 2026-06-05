@@ -85,8 +85,11 @@ import {
   PI_WORKFLOWS_EVENTS_METHOD,
   workflowCursorFromControlResponse,
   workflowCursorFromResumeRun,
+  workflowCursorFromRunResponse,
+  workflowEventsFromRefreshResponse,
   workflowMetaFromRawPayload,
   workflowRunFromRecord,
+  workflowRunFromRefreshResponse,
 } from "../acp/PiWorkflowExtension.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
@@ -96,6 +99,8 @@ const CUSTOM_ACP_PROVIDER = ProviderDriverKind.make("customAcp");
 const ACP_CANCEL_WATCHDOG_GRACE_MS = 2_500;
 const ACP_CANCEL_PROMPT_DRAIN_MS = 500;
 const ACP_SESSION_LIFECYCLE_GRACE_MS = 2_500;
+const POST_CANCEL_WORKFLOW_REFRESH_DELAYS_MS = [100, 500, 1_000, 1_500] as const;
+const POST_CANCEL_WORKFLOW_REFRESH_REQUEST_TIMEOUT_MS = 750;
 
 interface PendingApproval {
   readonly decision: Deferred.Deferred<ProviderApprovalDecision>;
@@ -363,6 +368,47 @@ export function makeGenericAcpAdapter(
       refreshResumeCursor(ctx);
     };
 
+    const workflowCursorChanged = (
+      previous: ProviderWorkflowRunCursor | undefined,
+      next: ProviderWorkflowRunCursor,
+    ) =>
+      !previous ||
+      previous.status !== next.status ||
+      previous.terminal !== next.terminal ||
+      previous.lastSequence !== next.lastSequence ||
+      previous.runDir !== next.runDir ||
+      previous.auditPath !== next.auditPath ||
+      previous.actions.join("\u0000") !== next.actions.join("\u0000");
+
+    const applyWorkflowEventRecord = (
+      ctx: GenericAcpSessionContext,
+      input: {
+        readonly runId: string;
+        readonly sequence: number;
+        readonly record: Record<string, unknown>;
+        readonly rawPayload: unknown;
+      },
+    ) =>
+      Effect.gen(function* () {
+        const previous = ctx.workflowRuns.get(input.runId);
+        const duplicate = previous !== undefined && input.sequence <= previous.lastSequence;
+        if (duplicate) {
+          ctx.duplicateWorkflowEventRuns.add(input.runId);
+          return false;
+        }
+        ctx.duplicateWorkflowEventRuns.delete(input.runId);
+        const run = workflowRunFromRecord(input.runId, input.sequence, input.record, previous);
+        const cursor = workflowCursorFromResumeRun({
+          run,
+          capabilities: ctx.piWorkflowCapabilities,
+          updatedAt: yield* nowIso,
+        });
+        if (!cursor) return false;
+        upsertWorkflowRunCursor(ctx, run, cursor);
+        yield* emitWorkflowRunUpdated(ctx, cursor, input.rawPayload);
+        return true;
+      });
+
     const getThreadSemaphore = (threadId: string) =>
       SynchronizedRef.modifyEffect(threadLocksRef, (current) => {
         const existing = Option.fromNullishOr(current.get(threadId));
@@ -603,6 +649,200 @@ export function makeGenericAcpAdapter(
           }),
         ),
       );
+
+    const emitWorkflowRefreshWarning = (
+      ctx: GenericAcpSessionContext,
+      method: string,
+      detail: unknown,
+    ) =>
+      emitLifecycleWarning(ctx, `Pi workflow refresh via ${method} failed.`, {
+        method,
+        detail: detail instanceof Error ? detail.message : String(detail),
+      });
+
+    const refreshWorkflowRunFromEvents = (
+      ctx: GenericAcpSessionContext,
+      run: PiWorkflowResumeRun,
+    ) =>
+      Effect.gen(function* () {
+        const method = ctx.piWorkflowCapabilities?.eventsMethod;
+        if (!method) return false;
+        const current = ctx.workflowRuns.get(run.runId) ?? run;
+        const payload = {
+          sessionId: ctx.acpSessionId,
+          runId: current.runId,
+          sinceSequence: current.lastSequence,
+          includeTerminalFallback: true,
+        };
+        yield* logNative(ctx.threadId, method, payload, "acp.extension");
+        const rawOption = yield* ctx.acp.request(method, payload).pipe(
+          Effect.mapError((error) => mapAcpToAdapterError(provider, ctx.threadId, method, error)),
+          Effect.timeoutOption(Duration.millis(POST_CANCEL_WORKFLOW_REFRESH_REQUEST_TIMEOUT_MS)),
+        );
+        if (rawOption._tag === "None") {
+          return yield* new ProviderAdapterRequestError({
+            provider,
+            method,
+            detail: `${method} did not settle during post-cancel workflow refresh.`,
+          });
+        }
+        const raw = rawOption.value;
+        let changed = false;
+        for (const event of workflowEventsFromRefreshResponse(raw)) {
+          if (event.runId !== current.runId) continue;
+          const applied = yield* applyWorkflowEventRecord(ctx, {
+            runId: event.runId,
+            sequence: event.sequence,
+            record: event.record,
+            rawPayload: raw,
+          });
+          changed = changed || applied;
+        }
+        return changed;
+      }).pipe(
+        Effect.catch((error) =>
+          emitWorkflowRefreshWarning(
+            ctx,
+            ctx.piWorkflowCapabilities?.eventsMethod ?? PI_WORKFLOWS_EVENTS_METHOD,
+            error,
+          ).pipe(Effect.as(false)),
+        ),
+      );
+
+    const refreshWorkflowRunFromGet = (
+      ctx: GenericAcpSessionContext,
+      run: PiWorkflowResumeRun,
+      options: { readonly assumeInterruptedWhenStillRunning: boolean },
+    ) =>
+      Effect.gen(function* () {
+        const method = ctx.piWorkflowCapabilities?.getMethod;
+        if (!method) return false;
+        const current = ctx.workflowRuns.get(run.runId) ?? run;
+        const payload = { sessionId: ctx.acpSessionId, runId: current.runId };
+        yield* logNative(ctx.threadId, method, payload, "acp.extension");
+        const rawOption = yield* ctx.acp.request(method, payload).pipe(
+          Effect.mapError((error) => mapAcpToAdapterError(provider, ctx.threadId, method, error)),
+          Effect.timeoutOption(Duration.millis(POST_CANCEL_WORKFLOW_REFRESH_REQUEST_TIMEOUT_MS)),
+        );
+        if (rawOption._tag === "None") {
+          return yield* new ProviderAdapterRequestError({
+            provider,
+            method,
+            detail: `${method} did not settle during post-cancel workflow refresh.`,
+          });
+        }
+        const raw = rawOption.value;
+        const refreshedRun = workflowRunFromRefreshResponse({
+          runId: current.runId,
+          lastSequence: current.lastSequence,
+          raw,
+        });
+        const rawCursor = workflowCursorFromRunResponse({
+          runId: current.runId,
+          lastSequence: current.lastSequence,
+          raw,
+          capabilities: ctx.piWorkflowCapabilities,
+          updatedAt: yield* nowIso,
+        });
+        if (!refreshedRun || !rawCursor) return false;
+        const fallbackToInterrupted =
+          options.assumeInterruptedWhenStillRunning &&
+          rawCursor.status === "running" &&
+          ctx.activeTurnId === undefined;
+        const nextStatus = fallbackToInterrupted
+          ? "interrupted"
+          : (refreshedRun.status ?? current.status);
+        const nextRun: PiWorkflowResumeRun = {
+          runId: refreshedRun.runId,
+          lastSequence: Math.max(current.lastSequence, refreshedRun.lastSequence),
+          ...((refreshedRun.runDir ?? current.runDir)
+            ? { runDir: refreshedRun.runDir ?? current.runDir }
+            : {}),
+          ...((refreshedRun.auditPath ?? current.auditPath)
+            ? { auditPath: refreshedRun.auditPath ?? current.auditPath }
+            : {}),
+          ...(nextStatus ? { status: nextStatus } : {}),
+        };
+        const cursor = workflowCursorFromResumeRun({
+          run: nextRun,
+          capabilities: ctx.piWorkflowCapabilities,
+          updatedAt: yield* nowIso,
+        });
+        if (!cursor || !workflowCursorChanged(ctx.workflowCursors.get(nextRun.runId), cursor)) {
+          return false;
+        }
+        upsertWorkflowRunCursor(ctx, nextRun, cursor);
+        yield* emitWorkflowRunUpdated(ctx, cursor, {
+          refresh: "post-cancel",
+          ...(fallbackToInterrupted ? { assumedInterruptedAfterCancel: true } : {}),
+          response: raw,
+        });
+        return true;
+      }).pipe(
+        Effect.catch((error) =>
+          emitWorkflowRefreshWarning(
+            ctx,
+            ctx.piWorkflowCapabilities?.getMethod ?? "_pi/workflows/get",
+            error,
+          ).pipe(Effect.as(false)),
+        ),
+      );
+
+    const markRunningWorkflowRunsInterruptedAfterCancel = (ctx: GenericAcpSessionContext) =>
+      Effect.gen(function* () {
+        if (!ctx.piWorkflowCapabilities) return;
+        for (const run of Array.from(ctx.workflowRuns.values())) {
+          const cursor = ctx.workflowCursors.get(run.runId);
+          if (cursor?.terminal || (run.status && run.status !== "running")) continue;
+          const nextRun: PiWorkflowResumeRun = { ...run, status: "interrupted" };
+          const nextCursor = workflowCursorFromResumeRun({
+            run: nextRun,
+            capabilities: ctx.piWorkflowCapabilities,
+            updatedAt: yield* nowIso,
+          });
+          if (!nextCursor || !workflowCursorChanged(cursor, nextCursor)) continue;
+          upsertWorkflowRunCursor(ctx, nextRun, nextCursor);
+          yield* emitWorkflowRunUpdated(ctx, nextCursor, {
+            refresh: "post-cancel-timeout",
+            assumedInterruptedAfterCancel: true,
+          });
+        }
+      });
+
+    const refreshKnownWorkflowRunsAfterCancel = (ctx: GenericAcpSessionContext) =>
+      Effect.gen(function* () {
+        if (!ctx.piWorkflowCapabilities?.eventsMethod && !ctx.piWorkflowCapabilities?.getMethod)
+          return;
+        for (let index = 0; index < POST_CANCEL_WORKFLOW_REFRESH_DELAYS_MS.length; index += 1) {
+          yield* Effect.sleep(Duration.millis(POST_CANCEL_WORKFLOW_REFRESH_DELAYS_MS[index]!));
+          if (ctx.stopped) return;
+          const runs = Array.from(ctx.workflowRuns.values()).filter((run) => {
+            const cursor = ctx.workflowCursors.get(run.runId);
+            return !cursor?.terminal;
+          });
+          if (runs.length === 0) return;
+          const lastAttempt = index === POST_CANCEL_WORKFLOW_REFRESH_DELAYS_MS.length - 1;
+          for (const run of runs) {
+            yield* refreshWorkflowRunFromEvents(ctx, run);
+            const current = ctx.workflowRuns.get(run.runId);
+            if (!current) continue;
+            const cursor = ctx.workflowCursors.get(run.runId);
+            if (
+              cursor?.terminal ||
+              cursor?.status === "interrupted" ||
+              cursor?.status === "paused"
+            ) {
+              continue;
+            }
+            yield* refreshWorkflowRunFromGet(ctx, current, {
+              assumeInterruptedWhenStillRunning: lastAttempt,
+            });
+          }
+        }
+        if (ctx.activeTurnId === undefined) {
+          yield* markRunningWorkflowRunsInterruptedAfterCancel(ctx);
+        }
+      });
 
     const closeAcpSessionIfSupported = (ctx: GenericAcpSessionContext) => {
       if (!ctx.acpSessionLifecycleCapabilities.close) return Effect.void;
@@ -1115,37 +1355,20 @@ export function makeGenericAcpAdapter(
                       }),
                     );
                     return;
-                  case "WorkflowEventObserved": {
+                  case "WorkflowEventObserved":
                     yield* logNative(
                       ctx.threadId,
                       ctx.piWorkflowCapabilities?.eventsMethod ?? PI_WORKFLOWS_EVENTS_METHOD,
                       event.rawPayload,
                       "acp.extension",
                     );
-                    const previous = ctx.workflowRuns.get(event.runId);
-                    const duplicate =
-                      previous !== undefined && event.sequence <= previous.lastSequence;
-                    if (duplicate) {
-                      ctx.duplicateWorkflowEventRuns.add(event.runId);
-                      return;
-                    }
-                    ctx.duplicateWorkflowEventRuns.delete(event.runId);
-                    const run = workflowRunFromRecord(
-                      event.runId,
-                      event.sequence,
-                      event.record,
-                      previous,
-                    );
-                    const cursor = workflowCursorFromResumeRun({
-                      run,
-                      capabilities: ctx.piWorkflowCapabilities,
-                      updatedAt: yield* nowIso,
+                    yield* applyWorkflowEventRecord(ctx, {
+                      runId: event.runId,
+                      sequence: event.sequence,
+                      record: event.record,
+                      rawPayload: event.rawPayload,
                     });
-                    if (!cursor) return;
-                    upsertWorkflowRunCursor(ctx, run, cursor);
-                    yield* emitWorkflowRunUpdated(ctx, cursor, event.rawPayload);
                     return;
-                  }
                   case "TokenUsageUpdated":
                     yield* logNative(
                       ctx.threadId,
@@ -1522,9 +1745,15 @@ export function makeGenericAcpAdapter(
             return completeTurnLocally(ctx, interruptedTurnId, {
               state: "cancelled",
               stopReason: "session/cancel requested",
-            }).pipe(Effect.andThen(stopSessionInternal(ctx)));
+            }).pipe(
+              Effect.andThen(markRunningWorkflowRunsInterruptedAfterCancel(ctx)),
+              Effect.andThen(stopSessionInternal(ctx)),
+            );
           }),
           Effect.forkDetach,
+        );
+        yield* refreshKnownWorkflowRunsAfterCancel(ctx).pipe(
+          Effect.forkDetach({ startImmediately: true }),
         );
       });
 

@@ -295,17 +295,63 @@ export function workflowCursorFromControlResponse(input: {
   readonly capabilities: PiWorkflowCapabilities | undefined;
   readonly updatedAt: string;
 }): ProviderWorkflowRunCursor | undefined {
-  const rawRun = isRecord(input.raw) && isRecord(input.raw.run) ? input.raw.run : undefined;
-  const runDir = stringField(rawRun?.runDir);
-  const auditPath = stringField(rawRun?.auditPath);
-  return workflowCursorFromFields({
-    runId: stringField(rawRun?.runId) ?? stringField(rawRun?.id) ?? input.runId,
-    status: stringField(rawRun?.status) ?? "running",
-    lastSequence: numberField(rawRun?.lastSequence) ?? input.lastSequence,
-    ...(runDir ? { runDir } : {}),
-    ...(auditPath ? { auditPath } : {}),
+  const run = workflowRunFromRefreshResponse(input);
+  if (!run) return undefined;
+  return workflowCursorFromResumeRun({
+    run,
     capabilities: input.capabilities,
     updatedAt: input.updatedAt,
+  });
+}
+
+export function workflowRunFromRefreshResponse(input: {
+  readonly runId: string;
+  readonly lastSequence: number;
+  readonly raw: unknown;
+}): PiWorkflowResumeRun | undefined {
+  if (!isRecord(input.raw)) return undefined;
+  const rawRun = isRecord(input.raw.run) ? input.raw.run : input.raw;
+  const runId = stringField(rawRun.runId) ?? stringField(rawRun.id) ?? input.runId;
+  if (!runId) return undefined;
+  const runDir = stringField(rawRun.runDir);
+  const auditPath = stringField(rawRun.auditPath);
+  const status = stringField(rawRun.status);
+  return {
+    runId,
+    lastSequence: numberField(rawRun.lastSequence) ?? input.lastSequence,
+    ...(runDir ? { runDir } : {}),
+    ...(auditPath ? { auditPath } : {}),
+    ...(status ? { status } : {}),
+  };
+}
+
+export function workflowCursorFromRunResponse(input: {
+  readonly runId: string;
+  readonly lastSequence: number;
+  readonly raw: unknown;
+  readonly capabilities: PiWorkflowCapabilities | undefined;
+  readonly updatedAt: string;
+}): ProviderWorkflowRunCursor | undefined {
+  const run = workflowRunFromRefreshResponse(input);
+  if (!run) return undefined;
+  return workflowCursorFromResumeRun({
+    run,
+    capabilities: input.capabilities,
+    updatedAt: input.updatedAt,
+  });
+}
+
+export function workflowEventsFromRefreshResponse(
+  raw: unknown,
+): ReadonlyArray<PiWorkflowEventNotification> {
+  if (!isRecord(raw) || !Array.isArray(raw.events)) return [];
+  return raw.events.flatMap((entry) => {
+    if (!isRecord(entry)) return [];
+    const record = isRecord(entry.event) ? entry.event : entry;
+    const runId = stringField(entry.runId) ?? stringField(record.runId);
+    const sequence = numberField(entry.sequence) ?? numberField(record.sequence);
+    if (!runId || sequence === undefined) return [];
+    return [{ runId, sequence, record }];
   });
 }
 

@@ -41,6 +41,11 @@ const enablePiWorkflows = process.env.T3_ACP_ENABLE_PI_WORKFLOWS === "1";
 const emitWorkflowReplayOnLoad = process.env.T3_ACP_EMIT_WORKFLOW_REPLAY_ON_LOAD === "1";
 const workflowReplaySequence =
   parseNonNegativeIntOrZero(process.env.T3_ACP_WORKFLOW_REPLAY_SEQUENCE) || 1;
+const workflowRefreshAfterCancelStatus = process.env.T3_ACP_WORKFLOW_REFRESH_STATUS_AFTER_CANCEL;
+const workflowRefreshAfterCancelEvents =
+  process.env.T3_ACP_WORKFLOW_REFRESH_EVENTS_AFTER_CANCEL !== "0";
+const workflowRefreshAfterCancelSequence =
+  parseNonNegativeIntOrZero(process.env.T3_ACP_WORKFLOW_REFRESH_SEQUENCE_AFTER_CANCEL) || 8;
 const failLoadSession = process.env.T3_ACP_FAIL_LOAD_SESSION === "1";
 const failCreateSessionCount = parseNonNegativeIntOrZero(
   process.env.T3_ACP_FAIL_CREATE_SESSION_COUNT,
@@ -64,6 +69,7 @@ let currentReasoning = "medium";
 let currentContext = "272k";
 let currentFast = false;
 const cancelledSessions = new Set<string>();
+const workflowInterruptedSessions = new Set<string>();
 
 function parseNonNegativeIntOrZero(value: string | undefined): number {
   if (value === undefined) return 0;
@@ -509,7 +515,9 @@ const program = Effect.gen(function* () {
     hangCancel
       ? Effect.never
       : Effect.sync(() => {
-          cancelledSessions.add(String(sessionId ?? "mock-session-1"));
+          const cancelledSessionId = String(sessionId ?? "mock-session-1");
+          cancelledSessions.add(cancelledSessionId);
+          workflowInterruptedSessions.add(cancelledSessionId);
         }),
   );
 
@@ -522,10 +530,74 @@ const program = Effect.gen(function* () {
           }),
         )
       : Effect.sync(() => {
-          cancelledSessions.add(String(request.sessionId ?? "mock-session-1"));
+          const cancelledSessionId = String(request.sessionId ?? "mock-session-1");
+          cancelledSessions.add(cancelledSessionId);
+          workflowInterruptedSessions.add(cancelledSessionId);
           return {};
         }),
   );
+
+  for (const method of [
+    "_pi/workflows/list",
+    "_pi/workflows/get",
+    "_pi/workflows/events",
+  ] as const) {
+    yield* agent.handleExtRequest(method, Schema.Unknown, (params) => {
+      const payload =
+        typeof params === "object" && params !== null ? (params as Record<string, unknown>) : {};
+      const runId = typeof payload.runId === "string" ? payload.runId : "workflow-run-1";
+      const requestedSessionId =
+        typeof payload.sessionId === "string" ? payload.sessionId : "mock-session-1";
+      const workflowStatus =
+        workflowRefreshAfterCancelStatus && workflowInterruptedSessions.has(requestedSessionId)
+          ? workflowRefreshAfterCancelStatus
+          : "running";
+      const workflowRun = {
+        id: runId,
+        runId,
+        status: workflowStatus,
+        lastSequence: workflowRefreshAfterCancelSequence,
+        runDir: "/tmp/workflow-run-1",
+        auditPath: "/tmp/workflow-run-1/audit.md",
+      };
+      if (method === "_pi/workflows/list") return Effect.succeed({ runs: [workflowRun] });
+      if (method === "_pi/workflows/get") return Effect.succeed({ run: workflowRun });
+      const sinceSequence =
+        typeof payload.sinceSequence === "number" && Number.isFinite(payload.sinceSequence)
+          ? payload.sinceSequence
+          : 0;
+      const shouldReturnCancelEvent =
+        workflowRefreshAfterCancelEvents &&
+        workflowRefreshAfterCancelStatus &&
+        workflowInterruptedSessions.has(requestedSessionId) &&
+        workflowRefreshAfterCancelSequence > sinceSequence;
+      return Effect.succeed({
+        events: shouldReturnCancelEvent
+          ? [
+              {
+                type:
+                  workflowRefreshAfterCancelStatus === "interrupted"
+                    ? "run_interrupted"
+                    : workflowRefreshAfterCancelStatus === "paused"
+                      ? "run_paused"
+                      : workflowRefreshAfterCancelStatus === "aborted"
+                        ? "run_end"
+                        : "step_update",
+                runId,
+                sequence: workflowRefreshAfterCancelSequence,
+                workflowId: "mock-workflow",
+                runDir: "/tmp/workflow-run-1",
+                auditPath: "/tmp/workflow-run-1/audit.md",
+                status: workflowRefreshAfterCancelStatus,
+              },
+            ]
+          : [],
+        nextOffset: 0,
+        lastSequence: workflowRefreshAfterCancelSequence,
+        malformedLineCount: 0,
+      });
+    });
+  }
 
   for (const method of [
     "_pi/workflows/resume",
@@ -900,7 +972,9 @@ const program = Effect.gen(function* () {
       }
       const payload =
         typeof params === "object" && params !== null ? (params as Record<string, unknown>) : {};
-      cancelledSessions.add(String(payload.sessionId ?? sessionId));
+      const cancelledSessionId = String(payload.sessionId ?? sessionId);
+      cancelledSessions.add(cancelledSessionId);
+      workflowInterruptedSessions.add(cancelledSessionId);
       return Effect.succeed({});
     }
 
