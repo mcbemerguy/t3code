@@ -9,6 +9,7 @@ import {
   ProviderRuntimeEvent,
   ProviderSession,
   ProviderInstanceId,
+  type ProviderWorkflowRunCursor,
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
@@ -61,6 +62,23 @@ const asEventId = (value: string): EventId => EventId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asThreadId = (value: string): ThreadId => ThreadId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
+
+function workflowRun(
+  overrides: Partial<ProviderWorkflowRunCursor> = {},
+): ProviderWorkflowRunCursor {
+  return {
+    runId: "workflow-run-1",
+    status: "running",
+    terminal: false,
+    lastSequence: 1,
+    workflowId: "mock-workflow",
+    runDir: "/tmp/workflow-run-1",
+    auditPath: "/tmp/workflow-run-1/audit.md",
+    actions: ["interrupt", "abort"],
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
 
 type LegacyProviderRuntimeEvent = {
   readonly type: string;
@@ -359,6 +377,120 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("error");
     expect(thread.session?.lastError).toBe("turn failed");
+  });
+
+  it("marks sessions working for running Pi workflow updates without an active turn", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "workflow.run.updated",
+      eventId: asEventId("evt-workflow-running"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: { run: workflowRun() },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.session?.status === "running" &&
+        entry.session?.activeTurnId === null &&
+        entry.session?.workflowRuns?.[0]?.runId === "workflow-run-1",
+    );
+    expect(thread.session?.status).toBe("running");
+    expect(thread.session?.activeTurnId).toBeNull();
+    expect(thread.session?.workflowRuns?.[0]?.status).toBe("running");
+  });
+
+  it("keeps sessions working when a turn completes while a Pi workflow is still running", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-workflow-turn-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: asTurnId("turn-workflow"),
+    });
+    await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.activeTurnId === "turn-workflow",
+    );
+
+    harness.emit({
+      type: "workflow.run.updated",
+      eventId: asEventId("evt-workflow-running-during-turn"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: asTurnId("turn-workflow"),
+      payload: { run: workflowRun({ lastSequence: 2 }) },
+    });
+    await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.workflowRuns?.[0]?.lastSequence === 2,
+    );
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-workflow-turn-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: asTurnId("turn-workflow"),
+      payload: { state: "completed" },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "running" && entry.session?.activeTurnId === null,
+    );
+    expect(thread.session?.status).toBe("running");
+    expect(thread.session?.workflowRuns?.[0]?.status).toBe("running");
+  });
+
+  it("marks sessions ready when Pi workflows become recoverable but not working", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "workflow.run.updated",
+      eventId: asEventId("evt-workflow-running-before-interrupt"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: { run: workflowRun({ lastSequence: 3 }) },
+    });
+    await waitForThread(harness.readModel, (entry) => entry.session?.status === "running");
+
+    harness.emit({
+      type: "workflow.run.updated",
+      eventId: asEventId("evt-workflow-interrupted"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: {
+        run: workflowRun({
+          status: "interrupted",
+          terminal: false,
+          lastSequence: 4,
+          actions: ["continue", "abort"],
+        }),
+      },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.session?.status === "ready" &&
+        entry.session?.workflowRuns?.[0]?.status === "interrupted",
+    );
+    expect(thread.session?.status).toBe("ready");
+    expect(thread.session?.workflowRuns?.[0]?.actions).toEqual(["continue", "abort"]);
   });
 
   it("applies provider session.state.changed transitions directly", async () => {

@@ -23,6 +23,7 @@ import {
   type OrchestrationThreadShell,
   ModelSelection,
   ProjectId,
+  ProviderWorkflowRunCursor,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Arr from "effect/Array";
@@ -87,7 +88,11 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
     sequence: Schema.NullOr(NonNegativeInt),
   }),
 );
-const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession;
+const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession.mapFields(
+  Struct.assign({
+    workflowRuns: Schema.fromJsonString(Schema.Array(ProviderWorkflowRunCursor)),
+  }),
+);
 const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
   Struct.assign({
     files: Schema.fromJsonString(Schema.Array(OrchestrationCheckpointFile)),
@@ -222,8 +227,14 @@ function mapSessionRow(
     row.activeTurnId !== null &&
     latestTurnNonRunning &&
     latestTurn?.turnId === row.activeTurnId;
+  const hasWorkingWorkflowRun = row.workflowRuns.some(
+    (run) => !run.terminal && (run.status === "running" || run.status === "recovering"),
+  );
   const idleRunningSessionSettled =
-    row.status === "running" && row.activeTurnId === null && latestTurnNonRunning;
+    row.status === "running" &&
+    row.activeTurnId === null &&
+    latestTurnNonRunning &&
+    !hasWorkingWorkflowRun;
   const repairSettledRunningSession = activeTurnSettled || idleRunningSessionSettled;
   return {
     threadId: row.threadId,
@@ -233,6 +244,7 @@ function mapSessionRow(
     runtimeMode: row.runtimeMode,
     activeTurnId: repairSettledRunningSession ? null : row.activeTurnId,
     lastError: repairSettledRunningSession ? null : row.lastError,
+    workflowRuns: row.workflowRuns,
     updatedAt: row.updatedAt,
   };
 }
@@ -496,6 +508,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           runtime_mode AS "runtimeMode",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
+          workflow_runs_json AS "workflowRuns",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         ORDER BY thread_id ASC
@@ -517,6 +530,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.runtime_mode AS "runtimeMode",
           sessions.active_turn_id AS "activeTurnId",
           sessions.last_error AS "lastError",
+          sessions.workflow_runs_json AS "workflowRuns",
           sessions.updated_at AS "updatedAt"
         FROM projection_thread_sessions sessions
         INNER JOIN projection_threads threads
@@ -542,6 +556,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.runtime_mode AS "runtimeMode",
           sessions.active_turn_id AS "activeTurnId",
           sessions.last_error AS "lastError",
+          sessions.workflow_runs_json AS "workflowRuns",
           sessions.updated_at AS "updatedAt"
         FROM projection_thread_sessions sessions
         INNER JOIN projection_threads threads
@@ -860,6 +875,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           runtime_mode AS "runtimeMode",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
+          workflow_runs_json AS "workflowRuns",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         WHERE thread_id = ${threadId}

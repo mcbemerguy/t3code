@@ -7,6 +7,7 @@ import {
   type OrchestrationEvent,
   type OrchestrationMessage,
   type OrchestrationProposedPlanId,
+  type OrchestrationSessionStatus,
   CheckpointRef,
   isToolLifecycleItemType,
   ThreadId,
@@ -283,6 +284,19 @@ function mergeWorkflowRunCursors(
   return Array.from(byRunId.values()).toSorted((left, right) =>
     left.runId.localeCompare(right.runId),
   );
+}
+
+function hasWorkingWorkflowRun(workflowRuns: ReadonlyArray<ProviderWorkflowRunCursor>): boolean {
+  return workflowRuns.some(
+    (run) => !run.terminal && (run.status === "running" || run.status === "recovering"),
+  );
+}
+
+function sessionStatusWithoutWorkingWorkflow(
+  status: OrchestrationSessionStatus | undefined,
+): OrchestrationSessionStatus {
+  if (status === undefined || status === "idle" || status === "running") return "ready";
+  return status;
 }
 
 function requestKindFromCanonicalRequestType(
@@ -1456,16 +1470,21 @@ const make = Effect.gen(function* () {
             : event.type === "turn.completed" || event.type === "session.exited"
               ? null
               : activeTurnId;
+        const nextWorkflowRuns =
+          event.type === "workflow.run.updated"
+            ? mergeWorkflowRunCursors(thread.session?.workflowRuns, event.payload.run)
+            : (thread.session?.workflowRuns ?? []);
+        const hasWorkingWorkflow = hasWorkingWorkflowRun(nextWorkflowRuns);
         const status = (() => {
           switch (event.type) {
-            case "session.state.changed":
-              return orchestrationSessionStatusFromRuntimeState(event.payload.state);
+            case "session.state.changed": {
+              const runtimeStatus = orchestrationSessionStatusFromRuntimeState(event.payload.state);
+              return runtimeStatus === "ready" && hasWorkingWorkflow ? "running" : runtimeStatus;
+            }
             case "workflow.run.updated":
-              return activeTurnId !== null
+              return activeTurnId !== null || hasWorkingWorkflow
                 ? "running"
-                : thread.session?.status === "idle"
-                  ? "ready"
-                  : (thread.session?.status ?? "ready");
+                : sessionStatusWithoutWorkingWorkflow(thread.session?.status);
             case "turn.started":
               return "running";
             case "session.exited":
@@ -1473,12 +1492,14 @@ const make = Effect.gen(function* () {
             case "turn.completed":
               return normalizeRuntimeTurnState(event.payload.state) === "failed"
                 ? "error"
-                : "ready";
+                : hasWorkingWorkflow
+                  ? "running"
+                  : "ready";
             case "session.started":
             case "thread.started":
               // Provider thread/session start notifications can arrive during an
               // active turn; preserve turn-running state in that case.
-              return activeTurnId !== null ? "running" : "ready";
+              return activeTurnId !== null || hasWorkingWorkflow ? "running" : "ready";
           }
         })();
         const lastError =
@@ -1526,10 +1547,7 @@ const make = Effect.gen(function* () {
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: nextActiveTurnId,
               lastError,
-              workflowRuns:
-                event.type === "workflow.run.updated"
-                  ? mergeWorkflowRunCursors(thread.session?.workflowRuns, event.payload.run)
-                  : (thread.session?.workflowRuns ?? []),
+              workflowRuns: nextWorkflowRuns,
               updatedAt: now,
             },
             createdAt: now,
