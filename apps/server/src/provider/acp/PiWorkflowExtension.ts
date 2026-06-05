@@ -62,11 +62,13 @@ function numberField(value: unknown): number | undefined {
 
 function collectWorkflowRuns(raw: unknown): ReadonlyArray<PiWorkflowResumeRun> {
   if (!isRecord(raw)) return [];
-  const runs = Array.isArray(raw.activeRuns)
-    ? raw.activeRuns
-    : Array.isArray(raw.activeWorkflowRuns)
-      ? raw.activeWorkflowRuns
-      : [];
+  const runs = Array.isArray(raw.runs)
+    ? raw.runs
+    : Array.isArray(raw.activeRuns)
+      ? raw.activeRuns
+      : Array.isArray(raw.activeWorkflowRuns)
+        ? raw.activeWorkflowRuns
+        : [];
   return runs.flatMap((entry) => {
     if (!isRecord(entry)) return [];
     const runId = stringField(entry.runId) ?? stringField(entry.id);
@@ -81,6 +83,10 @@ function collectWorkflowRuns(raw: unknown): ReadonlyArray<PiWorkflowResumeRun> {
       } satisfies PiWorkflowResumeRun,
     ];
   });
+}
+
+export function parsePiWorkflowRuns(raw: unknown): ReadonlyArray<PiWorkflowResumeRun> {
+  return collectWorkflowRuns(raw);
 }
 
 export function parseCustomAcpResume(
@@ -113,13 +119,16 @@ export function makeCustomAcpResumeCursor(input: {
 }): Record<string, unknown> {
   const activeRuns = (input.activeWorkflowRuns ?? [])
     .filter((run) => run.runId.trim())
-    .map((run) => ({
-      runId: run.runId,
-      lastSequence: run.lastSequence,
-      ...(run.runDir ? { runDir: run.runDir } : {}),
-      ...(run.auditPath ? { auditPath: run.auditPath } : {}),
-      ...(run.status ? { status: run.status } : {}),
-    }));
+    .map((run) => {
+      const record: Record<string, unknown> = {
+        runId: run.runId,
+        lastSequence: run.lastSequence,
+      };
+      if (run.runDir) record.runDir = run.runDir;
+      if (run.auditPath) record.auditPath = run.auditPath;
+      if (run.status) record.status = run.status;
+      return record;
+    });
   return {
     schemaVersion: CUSTOM_ACP_RESUME_VERSION,
     provider: input.provider,

@@ -74,6 +74,7 @@ import {
   isTerminalWorkflowStatus,
   makeCustomAcpResumeCursor,
   parseCustomAcpResume,
+  parsePiWorkflowRuns,
   type PiWorkflowCapabilities,
   type PiWorkflowResumeRun,
   workflowMetaFromRawPayload,
@@ -322,11 +323,33 @@ export function makeGenericAcpAdapter(
         );
       });
 
+    const discoverActiveWorkflowRuns = (ctx: GenericAcpSessionContext) =>
+      Effect.gen(function* () {
+        const knownRuns = Array.from(ctx.workflowRuns.values());
+        if (knownRuns.length > 0) return knownRuns;
+        const listMethod = ctx.piWorkflowCapabilities?.listMethod;
+        if (!listMethod) return knownRuns;
+        const payload = {
+          sessionId: ctx.acpSessionId,
+          status: ["running", "recovering"],
+        };
+        yield* logNative(ctx.threadId, listMethod, payload, "acp.extension");
+        const listExit = yield* ctx.acp
+          .request(listMethod, payload)
+          .pipe(Effect.exit, Effect.timeoutOption(Duration.millis(ACP_CANCEL_WATCHDOG_GRACE_MS)));
+        if (listExit._tag === "None" || Exit.isFailure(listExit.value)) return knownRuns;
+        return parsePiWorkflowRuns(listExit.value.value).filter(
+          (run) =>
+            run.status !== "completed" && run.status !== "failed" && run.status !== "aborted",
+        );
+      });
+
     const pauseActiveWorkflows = (ctx: GenericAcpSessionContext) =>
       Effect.gen(function* () {
         const pauseMethod = ctx.piWorkflowCapabilities?.pauseMethod;
-        const runs = Array.from(ctx.workflowRuns.values());
-        if (!pauseMethod || runs.length === 0) return false;
+        if (!pauseMethod) return false;
+        const runs = yield* discoverActiveWorkflowRuns(ctx);
+        if (runs.length === 0) return false;
         for (const run of runs) {
           const payload = {
             sessionId: ctx.acpSessionId,

@@ -5,6 +5,7 @@ import {
   makeCustomAcpResumeCursor,
   parseCustomAcpResume,
   parsePiWorkflowEventNotification,
+  parsePiWorkflowRuns,
   workflowMetaFromRawPayload,
 } from "./PiWorkflowExtension.ts";
 
@@ -39,6 +40,21 @@ describe("Pi workflow ACP extension helpers", () => {
       requireResumeSession: true,
       activeWorkflowRuns: [{ runId: "run-1", lastSequence: 5, runDir: "/tmp/run-1" }],
     });
+  });
+
+  it("parses workflow list responses for stop fallback discovery", () => {
+    expect(
+      parsePiWorkflowRuns({
+        runs: [
+          { id: "run-1", lastSequence: 3, runDir: "/tmp/run-1", status: "running" },
+          { runId: "run-2", auditPath: "/tmp/run-2/audit.md", status: "paused" },
+          { id: "" },
+        ],
+      }),
+    ).toEqual([
+      { runId: "run-1", lastSequence: 3, runDir: "/tmp/run-1", status: "running" },
+      { runId: "run-2", lastSequence: 0, auditPath: "/tmp/run-2/audit.md", status: "paused" },
+    ]);
   });
 
   it("parses workflow event notifications used for replay cursor dedupe", () => {
