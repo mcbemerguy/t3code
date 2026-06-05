@@ -773,7 +773,65 @@ describe("incremental orchestration updates", () => {
     expect(activities?.[1]?.sequence).toBe(11);
   });
 
-  it("keeps recoverable workflow metadata when Stop closes the session", () => {
+  it("keeps recoverable workflow metadata when Stop interrupts the active turn", () => {
+    const workflowRuns = [
+      {
+        runId: "run-recoverable-1",
+        status: "interrupted" as const,
+        terminal: false,
+        lastSequence: 7,
+        runDir: "/tmp/pi/workflow-runs/run-recoverable-1",
+        auditPath: "/tmp/pi/workflow-runs/run-recoverable-1/audit.md",
+        actions: ["resume", "abort"] as const,
+        updatedAt: "2026-02-27T00:00:01.000Z",
+      },
+    ];
+    const thread = makeThread({
+      session: {
+        provider: ProviderDriverKind.make("customAcp"),
+        providerInstanceId: ProviderInstanceId.make("custom-acp"),
+        status: "running",
+        orchestrationStatus: "running",
+        activeTurnId: TurnId.make("turn-1"),
+        workflowRuns,
+        createdAt: "2026-02-27T00:00:00.000Z",
+        updatedAt: "2026-02-27T00:00:01.000Z",
+      },
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        state: "running",
+        requestedAt: "2026-02-27T00:00:00.000Z",
+        startedAt: "2026-02-27T00:00:01.000Z",
+        completedAt: null,
+        assistantMessageId: null,
+      },
+    });
+    const state = makeState(thread);
+
+    const next = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.turn-interrupt-requested", {
+        threadId: thread.id,
+        turnId: TurnId.make("turn-1"),
+        createdAt: "2026-02-27T00:00:02.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.latestTurn).toMatchObject({
+      turnId: TurnId.make("turn-1"),
+      state: "interrupted",
+      completedAt: "2026-02-27T00:00:02.000Z",
+    });
+    expect(threadsOf(next)[0]?.session).toMatchObject({
+      status: "running",
+      orchestrationStatus: "running",
+      activeTurnId: TurnId.make("turn-1"),
+      workflowRuns,
+    });
+  });
+
+  it("keeps recoverable workflow metadata when session stop closes the session", () => {
     const workflowRuns = [
       {
         runId: "run-recoverable-1",
