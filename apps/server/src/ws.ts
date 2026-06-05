@@ -129,6 +129,7 @@ function isThreadDetailEvent(event: OrchestrationEvent): event is Extract<
 }
 
 const PROVIDER_STATUS_DEBOUNCE_MS = 200;
+const THREAD_DELETE_BACKING_CLEANUP_TIMEOUT_MS = 1_000;
 
 function toAuthAccessStreamEvent(
   change: BootstrapCredentialChange | SessionCredentialChange,
@@ -625,7 +626,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         });
       };
 
-      const validateThreadDeleteBeforeBackingSessionDelete = (
+      const validateThreadDeleteBeforeDispatch = (
         normalizedCommand: OrchestrationCommand,
       ): Effect.Effect<void, OrchestrationDispatchCommandError> => {
         if (normalizedCommand.type !== "thread.delete") {
@@ -647,45 +648,66 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         );
       };
 
-      const deleteBackingSessionBeforeThreadDelete = (
+      const deleteBackingSessionAfterThreadDelete = (
         normalizedCommand: OrchestrationCommand,
       ): Effect.Effect<ReadonlyArray<DispatchWarning>> => {
         if (normalizedCommand.type !== "thread.delete") {
           return Effect.succeed([]);
         }
-        return providerService
-          .stopSession({ threadId: normalizedCommand.threadId, deleteBackingSession: true })
-          .pipe(
-            Effect.as([]),
-            Effect.catchCause((cause) => {
-              if (Cause.hasInterruptsOnly(cause)) {
-                return Effect.interrupt;
-              }
-              const failed = cause.reasons.find(Cause.isFailReason)?.error;
-              if (
-                isProviderValidationError(failed) &&
-                failed.issue.toLowerCase().includes("no persisted provider binding")
-              ) {
-                return Effect.succeed([]);
-              }
-              const detail = Cause.pretty(cause);
-              return Effect.logWarning(
-                "failed to delete provider backing session before thread deletion",
+        const cleanup = providerService.stopSession({
+          threadId: normalizedCommand.threadId,
+          deleteBackingSession: true,
+        });
+        return cleanup.pipe(
+          Effect.timeoutOption(Duration.millis(THREAD_DELETE_BACKING_CLEANUP_TIMEOUT_MS)),
+          Effect.flatMap((result) => {
+            if (Option.isSome(result)) return Effect.succeed([]);
+            const detail = `Provider backing session cleanup did not finish within ${THREAD_DELETE_BACKING_CLEANUP_TIMEOUT_MS}ms.`;
+            return Effect.logWarning(
+              "timed out deleting provider backing session after thread deletion",
+              {
+                threadId: normalizedCommand.threadId,
+                detail,
+              },
+            ).pipe(
+              Effect.as([
                 {
-                  threadId: normalizedCommand.threadId,
-                  cause: detail,
+                  code: "provider_backing_session_delete_failed",
+                  message: "Thread deleted, but the provider backing session cleanup timed out.",
+                  detail,
                 },
-              ).pipe(
-                Effect.as([
-                  {
-                    code: "provider_backing_session_delete_failed",
-                    message: "Thread deleted, but the provider backing session may still exist.",
-                    detail,
-                  },
-                ] satisfies ReadonlyArray<DispatchWarning>),
-              );
-            }),
-          );
+              ] satisfies ReadonlyArray<DispatchWarning>),
+            );
+          }),
+          Effect.catchCause((cause) => {
+            if (Cause.hasInterruptsOnly(cause)) {
+              return Effect.interrupt;
+            }
+            const failed = cause.reasons.find(Cause.isFailReason)?.error;
+            if (
+              isProviderValidationError(failed) &&
+              failed.issue.toLowerCase().includes("no persisted provider binding")
+            ) {
+              return Effect.succeed([]);
+            }
+            const detail = Cause.pretty(cause);
+            return Effect.logWarning(
+              "failed to delete provider backing session after thread deletion",
+              {
+                threadId: normalizedCommand.threadId,
+                cause: detail,
+              },
+            ).pipe(
+              Effect.as([
+                {
+                  code: "provider_backing_session_delete_failed",
+                  message: "Thread deleted, but the provider backing session may still exist.",
+                  detail,
+                },
+              ] satisfies ReadonlyArray<DispatchWarning>),
+            );
+          }),
+        );
       };
 
       const loadServerConfig = Effect.gen(function* () {
@@ -745,10 +767,10 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                       )
                   : false;
               yield* logThreadDeleteCommandReceipt(normalizedCommand);
-              yield* validateThreadDeleteBeforeBackingSessionDelete(normalizedCommand);
-              const preDispatchWarnings =
-                yield* deleteBackingSessionBeforeThreadDelete(normalizedCommand);
+              yield* validateThreadDeleteBeforeDispatch(normalizedCommand);
               const result = yield* dispatchNormalizedCommand(normalizedCommand);
+              const postDispatchWarnings =
+                yield* deleteBackingSessionAfterThreadDelete(normalizedCommand);
               if (normalizedCommand.type === "thread.archive") {
                 if (shouldStopSessionAfterArchive) {
                   yield* Effect.gen(function* () {
@@ -781,8 +803,8 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                   ),
                 );
               }
-              return preDispatchWarnings.length > 0
-                ? { ...result, warnings: [...preDispatchWarnings] }
+              return postDispatchWarnings.length > 0
+                ? { ...result, warnings: [...postDispatchWarnings] }
                 : result;
             }).pipe(
               Effect.mapError((cause) =>

@@ -33,11 +33,13 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import {
   Cookies,
@@ -3470,7 +3472,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("requests destructive provider cleanup before dispatching thread delete", () =>
+  it.effect("dispatches thread delete before requesting destructive provider cleanup", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread-delete-provider-cleanup");
       const effects: string[] = [];
@@ -3531,8 +3533,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.deepEqual(dispatchResult.warnings ?? [], []);
       assert.deepEqual(effects, [
         "query:command-read-model",
-        `provider.stop:${threadId}:true`,
         "dispatch:thread.delete",
+        `provider.stop:${threadId}:true`,
       ]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
@@ -3646,10 +3648,178 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(dispatchResult.warnings?.[0]?.code, "provider_backing_session_delete_failed");
       assert.deepEqual(effects, [
         "query:command-read-model",
-        `provider.stop:${threadId}:true`,
         "dispatch:thread.delete",
+        `provider.stop:${threadId}:true`,
       ]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("warns but still dispatches thread delete when backing session cleanup times out", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-delete-provider-cleanup-timeout");
+      const effects: string[] = [];
+      const cleanupStarted = yield* Deferred.make<void>();
+      const readModel = makeDefaultOrchestrationReadModel();
+      const now = "2026-01-01T00:00:00.000Z";
+      const thread = {
+        ...readModel.threads[0]!,
+        id: threadId,
+        session: {
+          threadId,
+          status: "ready" as const,
+          providerName: "customAcp",
+          providerInstanceId: ProviderInstanceId.make("custom-acp"),
+          runtimeMode: "full-access" as const,
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+      };
+
+      yield* buildAppUnderTest({
+        layers: {
+          providerService: {
+            stopSession: (input) =>
+              Effect.sync(() => {
+                effects.push(`provider.stop:${input.threadId}:${input.deleteBackingSession}`);
+              }).pipe(
+                Effect.andThen(Deferred.succeed(cleanupStarted, undefined)),
+                Effect.andThen(Effect.never),
+              ),
+          },
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                effects.push(`dispatch:${command.type}`);
+                return { sequence: 1 };
+              }),
+          },
+          projectionSnapshotQuery: {
+            getCommandReadModel: () =>
+              Effect.sync(() => {
+                effects.push("query:command-read-model");
+                return { ...readModel, threads: [thread] };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const dispatchFiber = yield* Effect.forkScoped(
+        Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+              type: "thread.delete",
+              commandId: CommandId.make("cmd-thread-delete-provider-cleanup-timeout"),
+              threadId,
+            }),
+          ),
+        ),
+      );
+      yield* Deferred.await(cleanupStarted);
+      yield* TestClock.adjust(Duration.millis(1_001));
+      const dispatchResult = yield* Fiber.join(dispatchFiber);
+
+      assert.equal(dispatchResult.sequence, 1);
+      assert.equal(dispatchResult.warnings?.[0]?.code, "provider_backing_session_delete_failed");
+      assert.include(dispatchResult.warnings?.[0]?.message ?? "", "timed out");
+      assert.deepEqual(effects, [
+        "query:command-read-model",
+        "dispatch:thread.delete",
+        `provider.stop:${threadId}:true`,
+      ]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "deletes archived stopped threads with stale pending user-input presentation state",
+    () =>
+      Effect.gen(function* () {
+        const threadId = ThreadId.make("thread-delete-archived-stale-user-input");
+        const effects: string[] = [];
+        const readModel = makeDefaultOrchestrationReadModel();
+        const now = "2026-01-01T00:00:00.000Z";
+        const thread = {
+          ...readModel.threads[0]!,
+          id: threadId,
+          archivedAt: now,
+          session: {
+            threadId,
+            status: "stopped" as const,
+            providerName: "customAcp",
+            providerInstanceId: ProviderInstanceId.make("custom-acp"),
+            runtimeMode: "full-access" as const,
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          },
+          activities: [
+            {
+              id: EventId.make("activity-stale-user-input-requested"),
+              tone: "info" as const,
+              kind: "user-input.requested",
+              summary: "User input requested",
+              payload: {
+                requestId: "stale-input-1",
+                questions: [
+                  {
+                    id: "scope",
+                    header: "Scope",
+                    question: "What should I inspect?",
+                    options: [{ label: "Server", description: "Inspect server code." }],
+                  },
+                ],
+              },
+              turnId: null,
+              createdAt: now,
+            },
+          ],
+        };
+
+        yield* buildAppUnderTest({
+          layers: {
+            providerService: {
+              stopSession: (input) =>
+                Effect.sync(() => {
+                  effects.push(`provider.stop:${input.threadId}:${input.deleteBackingSession}`);
+                }),
+            },
+            orchestrationEngine: {
+              dispatch: (command) =>
+                Effect.sync(() => {
+                  effects.push(`dispatch:${command.type}`);
+                  return { sequence: 1 };
+                }),
+            },
+            projectionSnapshotQuery: {
+              getCommandReadModel: () =>
+                Effect.sync(() => {
+                  effects.push("query:command-read-model");
+                  return { ...readModel, threads: [thread] };
+                }),
+            },
+          },
+        });
+
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const dispatchResult = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+              type: "thread.delete",
+              commandId: CommandId.make("cmd-thread-delete-archived-stale-user-input"),
+              threadId,
+            }),
+          ),
+        );
+
+        assert.equal(dispatchResult.sequence, 1);
+        assert.deepEqual(dispatchResult.warnings ?? [], []);
+        assert.deepEqual(effects, [
+          "query:command-read-model",
+          "dispatch:thread.delete",
+          `provider.stop:${threadId}:true`,
+        ]);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("checks session status before archiving removes the thread from active lookups", () =>

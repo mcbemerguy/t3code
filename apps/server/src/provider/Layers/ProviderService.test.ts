@@ -74,6 +74,8 @@ const claudeAgentInstanceId = ProviderInstanceId.make("claudeAgent");
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_AGENT_DRIVER = ProviderDriverKind.make("claudeAgent");
 const CURSOR_DRIVER = ProviderDriverKind.make("cursor");
+const CUSTOM_ACP_DRIVER = ProviderDriverKind.make("customAcp");
+const customAcpInstanceId = ProviderInstanceId.make("customAcp");
 const strictCustomAcpResumeCursor = {
   schemaVersion: 1,
   provider: ProviderDriverKind.make("customAcp"),
@@ -284,10 +286,12 @@ function makeProviderServiceLayer() {
   const codex = makeFakeCodexAdapter();
   const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
   const cursor = makeFakeCodexAdapter(CURSOR_DRIVER);
+  const customAcp = makeFakeCodexAdapter(CUSTOM_ACP_DRIVER);
   const registry = makeAdapterRegistryMock({
     [ProviderDriverKind.make("codex")]: codex.adapter,
     [ProviderDriverKind.make("claudeAgent")]: claude.adapter,
     [ProviderDriverKind.make("cursor")]: cursor.adapter,
+    [CUSTOM_ACP_DRIVER]: customAcp.adapter,
   });
 
   const providerAdapterLayer = Layer.succeed(ProviderAdapterRegistry, registry);
@@ -316,6 +320,7 @@ function makeProviderServiceLayer() {
     codex,
     claude,
     cursor,
+    customAcp,
     layer,
   };
 }
@@ -967,40 +972,36 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
-  it.effect("recovers a stopped resumable session before destructive backing-session delete", () =>
+  it.effect("marks a stale Custom ACP binding deleted without recovering the backing session", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;
+      const directory = yield* ProviderSessionDirectory;
       const runtimeRepository = yield* ProviderSessionRuntimeRepository;
-      const threadId = asThreadId("thread-delete-recovers-stopped");
+      const threadId = asThreadId("thread-delete-custom-acp-stale-binding");
 
-      const initial = yield* provider.startSession(threadId, {
-        provider: ProviderDriverKind.make("codex"),
-        providerInstanceId: codexInstanceId,
+      yield* directory.upsert({
         threadId,
-        cwd: "/tmp/project-delete-recover",
+        provider: CUSTOM_ACP_DRIVER,
+        providerInstanceId: customAcpInstanceId,
         runtimeMode: "full-access",
+        status: "stopped",
+        resumeCursor: strictCustomAcpResumeCursor,
+        runtimePayload: {
+          cwd: "/tmp/project-delete-custom-acp-stale-binding",
+        },
       });
-      yield* routing.codex.stopSession(initial.threadId);
-      routing.codex.startSession.mockClear();
-      routing.codex.stopSession.mockClear();
 
-      yield* provider.stopSession({ threadId: initial.threadId, deleteBackingSession: true });
+      routing.customAcp.hasSession.mockClear();
+      routing.customAcp.startSession.mockClear();
+      routing.customAcp.stopSession.mockClear();
 
-      assert.equal(routing.codex.startSession.mock.calls.length, 1);
-      const recoveredStartInput = routing.codex.startSession.mock.calls[0]?.[0];
-      assert.deepEqual(
-        recoveredStartInput && typeof recoveredStartInput === "object"
-          ? (recoveredStartInput as { resumeCursor?: unknown }).resumeCursor
-          : undefined,
-        initial.resumeCursor,
-      );
-      assert.deepEqual(routing.codex.stopSession.mock.calls, [
-        [initial.threadId, { deleteBackingSession: true }],
-      ]);
+      yield* provider.stopSession({ threadId, deleteBackingSession: true });
 
-      const persistedAfterDelete = yield* runtimeRepository.getByThreadId({
-        threadId: initial.threadId,
-      });
+      assert.equal(routing.customAcp.hasSession.mock.calls.length, 1);
+      assert.equal(routing.customAcp.startSession.mock.calls.length, 0);
+      assert.equal(routing.customAcp.stopSession.mock.calls.length, 0);
+
+      const persistedAfterDelete = yield* runtimeRepository.getByThreadId({ threadId });
       assert.equal(Option.isSome(persistedAfterDelete), true);
       if (Option.isSome(persistedAfterDelete)) {
         assert.equal(persistedAfterDelete.value.status, "stopped");

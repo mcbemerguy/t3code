@@ -868,39 +868,43 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         const deleteBackingSession = input.deleteBackingSession === true;
         if (deleteBackingSession) {
           const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
-          if (binding && readDeletedBackingSession(binding.runtimePayload)) {
-            const instanceId = yield* requireBindingInstanceId(
+          if (!binding) {
+            return yield* toValidationError(
               "ProviderService.stopSession",
-              binding,
+              `Cannot route thread '${input.threadId}' because no persisted provider binding exists.`,
             );
-            const adapter = yield* registry.getByInstance(instanceId);
-            metricProvider = adapter.provider;
-            const hasActiveSession = yield* adapter.hasSession(input.threadId);
-            if (!hasActiveSession) {
-              yield* directory.upsert({
-                threadId: input.threadId,
-                provider: adapter.provider,
-                providerInstanceId: instanceId,
-                status: "stopped",
-                resumeCursor: null,
-                runtimePayload: {
-                  activeTurnId: null,
-                  deletedBackingSession: true,
-                },
-              });
-              yield* analytics.record("provider.session.stopped", {
-                provider: adapter.provider,
-                deleteBackingSession: false,
-                backingSessionAlreadyDeleted: true,
-              });
-              return;
-            }
+          }
+          const instanceId = yield* requireBindingInstanceId(
+            "ProviderService.stopSession",
+            binding,
+          );
+          const adapter = yield* registry.getByInstance(instanceId);
+          metricProvider = adapter.provider;
+          const hasActiveSession = yield* adapter.hasSession(input.threadId);
+          if (!hasActiveSession) {
+            yield* directory.upsert({
+              threadId: input.threadId,
+              provider: adapter.provider,
+              providerInstanceId: instanceId,
+              status: "stopped",
+              resumeCursor: null,
+              runtimePayload: {
+                activeTurnId: null,
+                deletedBackingSession: true,
+              },
+            });
+            yield* analytics.record("provider.session.stopped", {
+              provider: adapter.provider,
+              deleteBackingSession: false,
+              backingSessionAlreadyDeleted: readDeletedBackingSession(binding.runtimePayload),
+            });
+            return;
           }
         }
         const routed = yield* resolveRoutableSession({
           threadId: input.threadId,
           operation: "ProviderService.stopSession",
-          allowRecovery: deleteBackingSession,
+          allowRecovery: false,
         });
         metricProvider = routed.adapter.provider;
         yield* Effect.annotateCurrentSpan({
