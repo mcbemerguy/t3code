@@ -190,12 +190,44 @@ function isUnknownPendingApprovalRequestError(cause: Cause.Cause<ProviderService
   );
 }
 
-function isUnknownPendingUserInputRequestError(cause: Cause.Cause<ProviderServiceError>): boolean {
+function isStalePendingUserInputFailureCause(cause: Cause.Cause<ProviderServiceError>): boolean {
   const error = findProviderAdapterRequestError(cause);
-  if (error) {
-    return error.detail.toLowerCase().includes("unknown pending user-input request");
-  }
-  return Cause.pretty(cause).toLowerCase().includes("unknown pending user-input request");
+  const detail = (error?.detail ?? Cause.pretty(cause)).toLowerCase();
+  return (
+    detail.includes("stale pending user-input request") ||
+    detail.includes("unknown pending user-input request") ||
+    detail.includes("no active provider session is bound to this thread") ||
+    detail.includes("no persisted provider binding exists") ||
+    detail.includes("no provider resume state is persisted") ||
+    detail.includes("cannot route thread") ||
+    detail.includes("cannot recover thread") ||
+    detail.includes("provider backing session") ||
+    detail.includes("backing session") ||
+    detail.includes("missing session") ||
+    detail.includes("session not found") ||
+    detail.includes("unknown session") ||
+    detail.includes("session is closed") ||
+    detail.includes("session is stopped")
+  );
+}
+
+function isMissingProviderRuntimeFailure(cause: Cause.Cause<ProviderServiceError>): boolean {
+  const error = findProviderAdapterRequestError(cause);
+  const detail = (error?.detail ?? Cause.pretty(cause)).toLowerCase();
+  return (
+    detail.includes("no active provider session is bound to this thread") ||
+    detail.includes("no persisted provider binding exists") ||
+    detail.includes("no provider resume state is persisted") ||
+    detail.includes("cannot route thread") ||
+    detail.includes("cannot recover thread") ||
+    detail.includes("provider backing session") ||
+    detail.includes("backing session") ||
+    detail.includes("missing session") ||
+    detail.includes("session not found") ||
+    detail.includes("unknown session") ||
+    detail.includes("session is closed") ||
+    detail.includes("session is stopped")
+  );
 }
 
 function stalePendingRequestDetail(
@@ -1086,7 +1118,7 @@ const make = Effect.gen(function* () {
           threadId: event.payload.threadId,
           kind: "provider.user-input.respond.failed",
           summary: "Provider user input response failed",
-          detail: "No active provider session is bound to this thread.",
+          detail: stalePendingRequestDetail("user-input", event.payload.requestId),
           turnId: null,
           createdAt: event.payload.createdAt,
           requestId: event.payload.requestId,
@@ -1101,16 +1133,33 @@ const make = Effect.gen(function* () {
         })
         .pipe(
           Effect.catchCause((cause) =>
-            appendProviderFailureActivity({
-              threadId: event.payload.threadId,
-              kind: "provider.user-input.respond.failed",
-              summary: "Provider user input response failed",
-              detail: isUnknownPendingUserInputRequestError(cause)
-                ? stalePendingRequestDetail("user-input", event.payload.requestId)
-                : Cause.pretty(cause),
-              turnId: null,
-              createdAt: event.payload.createdAt,
-              requestId: event.payload.requestId,
+            Effect.gen(function* () {
+              yield* appendProviderFailureActivity({
+                threadId: event.payload.threadId,
+                kind: "provider.user-input.respond.failed",
+                summary: "Provider user input response failed",
+                detail: isStalePendingUserInputFailureCause(cause)
+                  ? stalePendingRequestDetail("user-input", event.payload.requestId)
+                  : Cause.pretty(cause),
+                turnId: null,
+                createdAt: event.payload.createdAt,
+                requestId: event.payload.requestId,
+              });
+              if (isMissingProviderRuntimeFailure(cause) && thread.session) {
+                yield* orchestrationEngine.dispatch({
+                  type: "thread.session.set",
+                  commandId: yield* serverCommandId("user-input-response-stale-session-stop"),
+                  threadId: event.payload.threadId,
+                  session: {
+                    ...thread.session,
+                    status: "stopped",
+                    activeTurnId: null,
+                    lastError: thread.session.lastError,
+                    updatedAt: event.payload.createdAt,
+                  },
+                  createdAt: event.payload.createdAt,
+                });
+              }
             }),
           ),
         );

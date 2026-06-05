@@ -106,6 +106,28 @@ function isStalePendingApprovalFailureDetail(detail: string | null): boolean {
   );
 }
 
+function isStalePendingUserInputFailureDetail(detail: string | null): boolean {
+  if (detail === null) {
+    return false;
+  }
+  return (
+    detail.includes("stale pending user-input request") ||
+    detail.includes("unknown pending user-input request") ||
+    detail.includes("no active provider session is bound to this thread") ||
+    detail.includes("no persisted provider binding exists") ||
+    detail.includes("no provider resume state is persisted") ||
+    detail.includes("cannot route thread") ||
+    detail.includes("cannot recover thread") ||
+    detail.includes("provider backing session") ||
+    detail.includes("backing session") ||
+    detail.includes("missing session") ||
+    detail.includes("session not found") ||
+    detail.includes("unknown session") ||
+    detail.includes("session is closed") ||
+    detail.includes("session is stopped")
+  );
+}
+
 function derivePendingUserInputCountFromActivities(
   activities: ReadonlyArray<ProjectionThreadActivity>,
 ): number {
@@ -139,9 +161,7 @@ function derivePendingUserInputCountFromActivities(
 
     if (
       activity.kind === "provider.user-input.respond.failed" &&
-      detail !== null &&
-      (detail.includes("stale pending user-input request") ||
-        detail.includes("unknown pending user-input request"))
+      isStalePendingUserInputFailureDetail(detail)
     ) {
       openRequestIds.delete(requestId);
     }
@@ -1072,9 +1092,13 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           });
           if (Option.isSome(existingTurn)) {
             const nextState =
-              existingTurn.value.state === "completed" || existingTurn.value.state === "error"
+              existingTurn.value.state === "completed" ||
+              existingTurn.value.state === "error" ||
+              existingTurn.value.state === "interrupted"
                 ? existingTurn.value.state
-                : "running";
+                : existingTurn.value.completedAt !== null
+                  ? "completed"
+                  : "running";
             yield* projectionTurnRepository.upsertByTurnId({
               ...existingTurn.value,
               state: nextState,

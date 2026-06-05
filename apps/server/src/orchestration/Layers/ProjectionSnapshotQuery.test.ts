@@ -356,10 +356,10 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           ],
           session: {
             threadId: ThreadId.make("thread-1"),
-            status: "running",
+            status: "ready",
             providerName: "codex",
             runtimeMode: "approval-required",
-            activeTurnId: asTurnId("turn-1"),
+            activeTurnId: null,
             lastError: null,
             updatedAt: "2026-02-24T00:00:07.000Z",
           },
@@ -421,10 +421,10 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           archivedAt: null,
           session: {
             threadId: ThreadId.make("thread-1"),
-            status: "running",
+            status: "ready",
             providerName: "codex",
             runtimeMode: "approval-required",
-            activeTurnId: asTurnId("turn-1"),
+            activeTurnId: null,
             lastError: null,
             updatedAt: "2026-02-24T00:00:07.000Z",
           },
@@ -440,6 +440,131 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       if (threadDetail._tag === "Some") {
         assert.deepEqual(threadDetail.value, snapshot.threads[0]);
       }
+    }),
+  );
+
+  it.effect("repairs impossible running latest-turn and session rows in shell snapshots", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_thread_sessions`;
+      yield* sql`DELETE FROM projection_turns`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_projects`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-stale-running',
+          'Project Stale Running',
+          '/tmp/project-stale-running',
+          NULL,
+          '[]',
+          '2026-02-24T01:00:00.000Z',
+          '2026-02-24T01:00:00.000Z',
+          NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          branch,
+          worktree_path,
+          latest_turn_id,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'thread-stale-running',
+          'project-stale-running',
+          'Thread Stale Running',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          'full-access',
+          'default',
+          NULL,
+          NULL,
+          'turn-stale-running',
+          NULL,
+          0,
+          0,
+          0,
+          '2026-02-24T01:00:01.000Z',
+          '2026-02-24T01:00:02.000Z',
+          NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_turns (
+          thread_id,
+          turn_id,
+          pending_message_id,
+          assistant_message_id,
+          state,
+          requested_at,
+          started_at,
+          completed_at,
+          checkpoint_files_json
+        )
+        VALUES (
+          'thread-stale-running',
+          'turn-stale-running',
+          NULL,
+          NULL,
+          'running',
+          '2026-02-24T01:00:03.000Z',
+          '2026-02-24T01:00:03.000Z',
+          '2026-02-24T01:00:04.000Z',
+          '[]'
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_sessions (
+          thread_id,
+          status,
+          provider_name,
+          runtime_mode,
+          active_turn_id,
+          last_error,
+          updated_at
+        )
+        VALUES (
+          'thread-stale-running',
+          'running',
+          'codex',
+          'full-access',
+          'turn-stale-running',
+          NULL,
+          '2026-02-24T01:00:05.000Z'
+        )
+      `;
+
+      const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
+      const thread = shellSnapshot.threads.find(
+        (entry) => entry.id === ThreadId.make("thread-stale-running"),
+      );
+      assert.equal(thread?.latestTurn?.state, "completed");
+      assert.equal(thread?.session?.status, "ready");
+      assert.equal(thread?.session?.activeTurnId, null);
     }),
   );
 

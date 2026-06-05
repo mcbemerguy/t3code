@@ -185,16 +185,17 @@ function computeSnapshotSequence(
 function mapLatestTurn(
   row: Schema.Schema.Type<typeof ProjectionLatestTurnDbRowSchema>,
 ): OrchestrationLatestTurn {
+  const state =
+    row.state === "error"
+      ? "error"
+      : row.state === "interrupted"
+        ? "interrupted"
+        : row.state === "completed" || row.completedAt !== null
+          ? "completed"
+          : "running";
   return {
     turnId: row.turnId,
-    state:
-      row.state === "error"
-        ? "error"
-        : row.state === "interrupted"
-          ? "interrupted"
-          : row.state === "completed"
-            ? "completed"
-            : "running",
+    state,
     requestedAt: row.requestedAt,
     startedAt: row.startedAt,
     completedAt: row.completedAt,
@@ -212,15 +213,23 @@ function mapLatestTurn(
 
 function mapSessionRow(
   row: Schema.Schema.Type<typeof ProjectionThreadSessionDbRowSchema>,
+  latestTurn: OrchestrationLatestTurn | null = null,
 ): OrchestrationSession {
+  const activeTurnSettled =
+    row.status === "running" &&
+    row.activeTurnId !== null &&
+    latestTurn !== null &&
+    latestTurn.turnId === row.activeTurnId &&
+    latestTurn.completedAt !== null &&
+    latestTurn.state !== "running";
   return {
     threadId: row.threadId,
-    status: row.status,
+    status: activeTurnSettled ? "ready" : row.status,
     providerName: row.providerName,
     ...(row.providerInstanceId !== null ? { providerInstanceId: row.providerInstanceId } : {}),
     runtimeMode: row.runtimeMode,
-    activeTurnId: row.activeTurnId,
-    lastError: row.lastError,
+    activeTurnId: activeTurnSettled ? null : row.activeTurnId,
+    lastError: activeTurnSettled ? null : row.lastError,
     updatedAt: row.updatedAt,
   };
 }
@@ -1121,45 +1130,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 if (latestTurnByThread.has(row.threadId)) {
                   continue;
                 }
-                latestTurnByThread.set(row.threadId, {
-                  turnId: row.turnId,
-                  state:
-                    row.state === "error"
-                      ? "error"
-                      : row.state === "interrupted"
-                        ? "interrupted"
-                        : row.state === "completed"
-                          ? "completed"
-                          : "running",
-                  requestedAt: row.requestedAt,
-                  startedAt: row.startedAt,
-                  completedAt: row.completedAt,
-                  assistantMessageId: row.assistantMessageId,
-                  ...(row.sourceProposedPlanThreadId !== null && row.sourceProposedPlanId !== null
-                    ? {
-                        sourceProposedPlan: {
-                          threadId: row.sourceProposedPlanThreadId,
-                          planId: row.sourceProposedPlanId,
-                        },
-                      }
-                    : {}),
-                });
+                latestTurnByThread.set(row.threadId, mapLatestTurn(row));
               }
 
               for (const row of sessionRows) {
                 updatedAt = maxIso(updatedAt, row.updatedAt);
-                sessionsByThread.set(row.threadId, {
-                  threadId: row.threadId,
-                  status: row.status,
-                  providerName: row.providerName,
-                  ...(row.providerInstanceId !== null
-                    ? { providerInstanceId: row.providerInstanceId }
-                    : {}),
-                  runtimeMode: row.runtimeMode,
-                  activeTurnId: row.activeTurnId,
-                  lastError: row.lastError,
-                  updatedAt: row.updatedAt,
-                });
+                sessionsByThread.set(
+                  row.threadId,
+                  mapSessionRow(row, latestTurnByThread.get(row.threadId) ?? null),
+                );
               }
 
               const repositoryIdentities = yield* resolveRepositoryIdentitiesForProjects(
@@ -1359,7 +1338,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 if (!row) {
                   continue;
                 }
-                sessionByThread.set(row.threadId, mapSessionRow(row));
+                sessionByThread.set(
+                  row.threadId,
+                  mapSessionRow(row, latestTurnByThread.get(row.threadId) ?? null),
+                );
               }
 
               for (let index = 0; index < proposedPlanRows.length; index += 1) {
@@ -1492,7 +1474,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               latestTurnRows.map((row) => [row.threadId, mapLatestTurn(row)] as const),
             );
             const sessionByThread = new Map(
-              sessionRows.map((row) => [row.threadId, mapSessionRow(row)] as const),
+              sessionRows.map(
+                (row) =>
+                  [
+                    row.threadId,
+                    mapSessionRow(row, latestTurnByThread.get(row.threadId) ?? null),
+                  ] as const,
+              ),
             );
 
             const snapshot = {
@@ -1627,7 +1615,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               latestTurnRows.map((row) => [row.threadId, mapLatestTurn(row)] as const),
             );
             const sessionByThread = new Map(
-              sessionRows.map((row) => [row.threadId, mapSessionRow(row)] as const),
+              sessionRows.map(
+                (row) =>
+                  [
+                    row.threadId,
+                    mapSessionRow(row, latestTurnByThread.get(row.threadId) ?? null),
+                  ] as const,
+              ),
             );
 
             const snapshot = {
@@ -1880,6 +1874,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         return Option.none<OrchestrationThreadShell>();
       }
 
+      const latestTurn = Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null;
       return Option.some({
         id: threadRow.value.threadId,
         projectId: threadRow.value.projectId,
@@ -1889,11 +1884,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         interactionMode: threadRow.value.interactionMode,
         branch: threadRow.value.branch,
         worktreePath: threadRow.value.worktreePath,
-        latestTurn: Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
+        latestTurn,
         createdAt: threadRow.value.createdAt,
         updatedAt: threadRow.value.updatedAt,
         archivedAt: threadRow.value.archivedAt,
-        session: Option.isSome(sessionRow) ? mapSessionRow(sessionRow.value) : null,
+        session: Option.isSome(sessionRow) ? mapSessionRow(sessionRow.value, latestTurn) : null,
         latestUserMessageAt: threadRow.value.latestUserMessageAt,
         hasPendingApprovals: threadRow.value.pendingApprovalCount > 0,
         hasPendingUserInput: threadRow.value.pendingUserInputCount > 0,
@@ -1974,6 +1969,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         return Option.none<OrchestrationThread>();
       }
 
+      const latestTurn = Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null;
       const thread = {
         id: threadRow.value.threadId,
         projectId: threadRow.value.projectId,
@@ -1983,7 +1979,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         interactionMode: threadRow.value.interactionMode,
         branch: threadRow.value.branch,
         worktreePath: threadRow.value.worktreePath,
-        latestTurn: Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
+        latestTurn,
         createdAt: threadRow.value.createdAt,
         updatedAt: threadRow.value.updatedAt,
         archivedAt: threadRow.value.archivedAt,
@@ -2031,7 +2027,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           assistantMessageId: row.assistantMessageId,
           completedAt: row.completedAt,
         })),
-        session: Option.isSome(sessionRow) ? mapSessionRow(sessionRow.value) : null,
+        session: Option.isSome(sessionRow) ? mapSessionRow(sessionRow.value, latestTurn) : null,
       };
 
       return Option.some(

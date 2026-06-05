@@ -157,6 +157,14 @@ export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
   return completedAt > lastVisitedAt;
 }
 
+function hasStaleRunningSessionProjection(thread: ThreadStatusInput): boolean {
+  if (thread.session?.status !== "running") return false;
+  if (!thread.latestTurn?.completedAt) return false;
+  if (thread.session.workflowRuns?.some((run) => !run.terminal)) return false;
+  const activeTurnId = thread.session.activeTurnId ?? null;
+  return activeTurnId === null || activeTurnId === thread.latestTurn.turnId;
+}
+
 export function shouldClearThreadSelectionOnMouseDown(target: HTMLElement | null): boolean {
   if (target === null) return true;
   return !target.closest(THREAD_SELECTION_SAFE_SELECTOR);
@@ -404,7 +412,7 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (thread.session?.status === "running") {
+  if (thread.session?.status === "running" && !hasStaleRunningSessionProjection(thread)) {
     return {
       label: "Working",
       colorClass: "text-sky-600 dark:text-sky-300/80",

@@ -204,7 +204,19 @@ function isStalePendingRequestFailureDetail(detail: string | undefined): boolean
     normalized.includes("stale pending user-input request") ||
     normalized.includes("unknown pending approval request") ||
     normalized.includes("unknown pending permission request") ||
-    normalized.includes("unknown pending user-input request")
+    normalized.includes("unknown pending user-input request") ||
+    normalized.includes("no active provider session is bound to this thread") ||
+    normalized.includes("no persisted provider binding exists") ||
+    normalized.includes("no provider resume state is persisted") ||
+    normalized.includes("cannot route thread") ||
+    normalized.includes("cannot recover thread") ||
+    normalized.includes("provider backing session") ||
+    normalized.includes("backing session") ||
+    normalized.includes("missing session") ||
+    normalized.includes("session not found") ||
+    normalized.includes("unknown session") ||
+    normalized.includes("session is closed") ||
+    normalized.includes("session is stopped")
   );
 }
 

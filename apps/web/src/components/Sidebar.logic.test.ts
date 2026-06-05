@@ -536,6 +536,21 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({ label: "Working", pulse: true });
   });
 
+  it("does not show working for a stale running session whose active turn is settled", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          latestTurn: makeLatestTurn({ state: "interrupted" }),
+          session: {
+            ...baseThread.session,
+            activeTurnId: makeLatestTurn().turnId,
+          },
+        },
+      }),
+    ).toBeNull();
+  });
+
   it("shows plan ready when a settled plan turn has a proposed plan ready for follow-up", () => {
     expect(
       resolveThreadStatusPill({
