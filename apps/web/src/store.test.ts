@@ -6,6 +6,7 @@ import {
   EventId,
   MessageId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
   TurnId,
@@ -770,6 +771,50 @@ describe("incremental orchestration updates", () => {
       EventId.make("activity-live"),
     ]);
     expect(activities?.[1]?.sequence).toBe(11);
+  });
+
+  it("keeps recoverable workflow metadata when Stop closes the session", () => {
+    const workflowRuns = [
+      {
+        runId: "run-recoverable-1",
+        status: "interrupted" as const,
+        terminal: false,
+        lastSequence: 7,
+        runDir: "/tmp/pi/workflow-runs/run-recoverable-1",
+        auditPath: "/tmp/pi/workflow-runs/run-recoverable-1/audit.md",
+        actions: ["resume", "abort"] as const,
+        updatedAt: "2026-02-27T00:00:01.000Z",
+      },
+    ];
+    const thread = makeThread({
+      session: {
+        provider: ProviderDriverKind.make("customAcp"),
+        providerInstanceId: ProviderInstanceId.make("custom-acp"),
+        status: "running",
+        orchestrationStatus: "running",
+        activeTurnId: TurnId.make("turn-1"),
+        workflowRuns,
+        createdAt: "2026-02-27T00:00:00.000Z",
+        updatedAt: "2026-02-27T00:00:01.000Z",
+      },
+    });
+    const state = makeState(thread);
+
+    const next = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.session-stop-requested", {
+        threadId: thread.id,
+        createdAt: "2026-02-27T00:00:02.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.session).toMatchObject({
+      status: "closed",
+      orchestrationStatus: "stopped",
+      activeTurnId: undefined,
+      workflowRuns,
+    });
   });
 
   it("applies replay batches in sequence and updates session state", () => {
