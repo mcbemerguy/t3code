@@ -1298,7 +1298,7 @@ describe("Custom ACP provider", () => {
       yield* Fiber.interrupt(eventFiber);
       assert.equal(updated.payload.run.status, "interrupted");
       assert.equal(updated.payload.run.lastSequence, 7);
-      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 2_800)));
       assert.isFalse(yield* adapter.hasSession(threadId));
 
       const methods = jsonRpcMethods(yield* Effect.promise(() => readJsonLines(requestLog)));

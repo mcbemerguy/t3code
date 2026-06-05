@@ -140,6 +140,8 @@ interface GenericAcpSessionContext {
     TurnId,
     Deferred.Deferred<Exit.Exit<EffectAcpSchema.PromptResponse, ProviderAdapterError>>
   >;
+  readonly settledPromptRequestTurnIds: Set<TurnId>;
+  readonly successfulCancelTurnIds: Set<TurnId>;
   stopped: boolean;
 }
 
@@ -1005,26 +1007,6 @@ export function makeGenericAcpAdapter(
 
     const stopSessionInternal = (ctx: GenericAcpSessionContext) => runSessionLifecycleStop(ctx);
 
-    const stopSessionWithoutWaitingForPrompt = (ctx: GenericAcpSessionContext) =>
-      Effect.gen(function* () {
-        if (ctx.stopped) return;
-        ctx.stopped = true;
-        yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
-        yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
-        if (ctx.notificationFiber) {
-          yield* Fiber.interrupt(ctx.notificationFiber).pipe(Effect.forkDetach, Effect.ignore);
-        }
-        yield* Scope.close(ctx.scope, Exit.void).pipe(Effect.forkDetach, Effect.ignore);
-        sessions.delete(ctx.threadId);
-        yield* offerRuntimeEvent({
-          type: "session.exited",
-          ...(yield* makeEventStamp()),
-          provider,
-          threadId: ctx.threadId,
-          payload: { exitKind: "graceful" },
-        });
-      });
-
     const startSession: ProviderAdapterShape<ProviderAdapterError>["startSession"] = (input) =>
       withThreadLock(
         input.threadId,
@@ -1296,6 +1278,8 @@ export function makeGenericAcpAdapter(
             turnIdle,
             turnCancelSignals: new Map(),
             turnPromptCompletions: new Map(),
+            settledPromptRequestTurnIds: new Set(),
+            successfulCancelTurnIds: new Set(),
             stopped: false,
           };
 
@@ -1552,6 +1536,7 @@ export function makeGenericAcpAdapter(
             Effect.runFork(
               promptRequest.pipe(
                 Effect.exit,
+                Effect.tap(() => Effect.sync(() => ctx.settledPromptRequestTurnIds.add(turnId))),
                 Effect.flatMap((exit) => Deferred.succeed(promptSettled, exit)),
               ),
             );
@@ -1761,7 +1746,32 @@ export function makeGenericAcpAdapter(
                         ctx,
                         postCancelWorkflowSnapshots,
                       );
-                      yield* stopSessionWithoutWaitingForPrompt(ctx);
+                    }),
+                  ),
+                ),
+              );
+              // @effect-diagnostics-next-line runEffectInsideEffect:off
+              Effect.runFork(
+                Effect.sleep(Duration.millis(ACP_CANCEL_WATCHDOG_GRACE_MS)).pipe(
+                  Effect.andThen(
+                    Effect.gen(function* () {
+                      if (ctx.stopped) return;
+                      if (
+                        ctx.successfulCancelTurnIds.has(interruptedTurnId) &&
+                        postCancelWorkflowSnapshots.length === 0
+                      ) {
+                        return;
+                      }
+                      if (ctx.settledPromptRequestTurnIds.has(interruptedTurnId)) return;
+                      yield* completeTurnLocally(ctx, interruptedTurnId, {
+                        state: "cancelled",
+                        stopReason: "session/cancel requested",
+                      });
+                      yield* markRunningWorkflowRunsInterruptedAfterCancel(
+                        ctx,
+                        postCancelWorkflowSnapshots,
+                      );
+                      yield* finalizeSessionStop(ctx, true);
                     }),
                   ),
                 ),
@@ -1778,10 +1788,14 @@ export function makeGenericAcpAdapter(
           Effect.exit,
           Effect.timeoutOption(Duration.millis(ACP_CANCEL_WATCHDOG_GRACE_MS)),
           Effect.flatMap((cancelExit) => {
-            if (!interruptedTurnId || ctx.stopped || ctx.completedTurnIds.has(interruptedTurnId)) {
+            if (!interruptedTurnId || ctx.stopped) {
               return Effect.void;
             }
             if (cancelExit._tag === "Some" && Exit.isSuccess(cancelExit.value)) {
+              ctx.successfulCancelTurnIds.add(interruptedTurnId);
+              return Effect.void;
+            }
+            if (ctx.settledPromptRequestTurnIds.has(interruptedTurnId)) {
               return Effect.void;
             }
             return completeTurnLocally(ctx, interruptedTurnId, {
@@ -1791,7 +1805,7 @@ export function makeGenericAcpAdapter(
               Effect.andThen(
                 markRunningWorkflowRunsInterruptedAfterCancel(ctx, postCancelWorkflowSnapshots),
               ),
-              Effect.andThen(stopSessionInternal(ctx)),
+              Effect.andThen(finalizeSessionStop(ctx, true)),
             );
           }),
         );
