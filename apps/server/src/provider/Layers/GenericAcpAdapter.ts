@@ -405,6 +405,7 @@ export function makeGenericAcpAdapter(
       previous.status !== next.status ||
       previous.terminal !== next.terminal ||
       previous.lastSequence !== next.lastSequence ||
+      previous.workflowId !== next.workflowId ||
       previous.runDir !== next.runDir ||
       previous.auditPath !== next.auditPath ||
       previous.actions.join("\u0000") !== next.actions.join("\u0000");
@@ -1712,6 +1713,7 @@ export function makeGenericAcpAdapter(
           {
             runId: cursor.runId,
             lastSequence: cursor.lastSequence,
+            ...(cursor.workflowId ? { workflowId: cursor.workflowId } : {}),
             ...(cursor.runDir ? { runDir: cursor.runDir } : {}),
             ...(cursor.auditPath ? { auditPath: cursor.auditPath } : {}),
             status: cursor.status,

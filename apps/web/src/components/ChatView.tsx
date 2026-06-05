@@ -15,6 +15,7 @@ import {
   type ThreadId,
   type TurnId,
   type KeybindingCommand,
+  type ProviderWorkflowControlAction,
   OrchestrationThreadActivity,
   ProviderInteractionMode,
   ProviderDriverKind,
@@ -1627,6 +1628,7 @@ export default function ChatView(props: ChatViewProps) {
     () => deriveActivePlanState(threadActivities, activeLatestTurn?.turnId ?? undefined),
     [activeLatestTurn?.turnId, threadActivities],
   );
+  const activeWorkflowRuns = activeThread?.session?.workflowRuns ?? [];
   const planSidebarLabel = sidebarProposedPlan || interactionMode === "plan" ? "Plan" : "Tasks";
   const showPlanFollowUpPrompt =
     pendingUserInputs.length === 0 &&
@@ -3248,6 +3250,30 @@ export default function ChatView(props: ChatViewProps) {
     });
   };
 
+  const onControlWorkflowRun = useCallback(
+    async (runId: string, action: ProviderWorkflowControlAction) => {
+      const api = readEnvironmentApi(environmentId);
+      if (!api || !activeThreadId) return;
+      setThreadError(activeThreadId, null);
+      await api.orchestration
+        .dispatchCommand({
+          type: "thread.workflow.control",
+          commandId: newCommandId(),
+          threadId: activeThreadId,
+          runId,
+          action,
+          createdAt: new Date().toISOString(),
+        })
+        .catch((err: unknown) => {
+          setThreadError(
+            activeThreadId,
+            err instanceof Error ? err.message : `Failed to ${action} workflow run.`,
+          );
+        });
+    },
+    [activeThreadId, environmentId, setThreadError],
+  );
+
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
       const api = readEnvironmentApi(environmentId);
@@ -4065,7 +4091,11 @@ export default function ChatView(props: ChatViewProps) {
             markdownCwd={gitCwd ?? undefined}
             workspaceRoot={activeWorkspaceRoot}
             timestampFormat={timestampFormat}
+            workflowRuns={activeWorkflowRuns}
+            isWorking={isWorking}
             mode="sidebar"
+            onStopRunningWorkflow={onInterrupt}
+            onControlWorkflowRun={onControlWorkflowRun}
             onClose={closePlanSidebar}
           />
         ) : null}
@@ -4099,7 +4129,11 @@ export default function ChatView(props: ChatViewProps) {
             markdownCwd={gitCwd ?? undefined}
             workspaceRoot={activeWorkspaceRoot}
             timestampFormat={timestampFormat}
+            workflowRuns={activeWorkflowRuns}
+            isWorking={isWorking}
             mode="sheet"
+            onStopRunningWorkflow={onInterrupt}
+            onControlWorkflowRun={onControlWorkflowRun}
             onClose={closePlanSidebar}
           />
         </RightPanelSheet>

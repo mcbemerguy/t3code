@@ -306,6 +306,7 @@ export const ProviderWorkflowRunCursor = Schema.Struct({
   status: ProviderWorkflowRunStatus,
   terminal: Schema.Boolean,
   lastSequence: NonNegativeInt,
+  workflowId: Schema.optional(TrimmedNonEmptyString),
   runDir: Schema.optional(TrimmedNonEmptyString),
   auditPath: Schema.optional(TrimmedNonEmptyString),
   actions: Schema.Array(ProviderWorkflowControlAction),

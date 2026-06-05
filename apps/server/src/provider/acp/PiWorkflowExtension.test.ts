@@ -34,13 +34,17 @@ describe("Pi workflow ACP extension helpers", () => {
       provider,
       sessionId: "pi-session",
       requireSessionLoad: true,
-      activeWorkflowRuns: [{ runId: "run-1", lastSequence: 5, runDir: "/tmp/run-1" }],
+      activeWorkflowRuns: [
+        { runId: "run-1", workflowId: "code-review", lastSequence: 5, runDir: "/tmp/run-1" },
+      ],
     });
 
     expect(parseCustomAcpResume(provider, cursor)).toEqual({
       sessionId: "pi-session",
       requireResumeSession: true,
-      activeWorkflowRuns: [{ runId: "run-1", lastSequence: 5, runDir: "/tmp/run-1" }],
+      activeWorkflowRuns: [
+        { runId: "run-1", workflowId: "code-review", lastSequence: 5, runDir: "/tmp/run-1" },
+      ],
     });
   });
 
@@ -87,6 +91,7 @@ describe("Pi workflow ACP extension helpers", () => {
     const previous = {
       runId: "run-1",
       lastSequence: 3,
+      workflowId: "code-review",
       runDir: "/tmp/run-1",
       auditPath: "/tmp/run-1/audit.md",
       status: "running",
@@ -112,6 +117,7 @@ describe("Pi workflow ACP extension helpers", () => {
       status: "running",
       terminal: false,
       lastSequence: 4,
+      workflowId: "code-review",
       runDir: "/tmp/run-1",
       auditPath: "/tmp/run-1/audit.md",
       actions: ["interrupt", "abort"],

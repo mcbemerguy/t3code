@@ -29,6 +29,7 @@ const DEFAULT_WORKFLOW_METHODS = [
 export interface PiWorkflowResumeRun {
   readonly runId: string;
   readonly lastSequence: number;
+  readonly workflowId?: string;
   readonly runDir?: string;
   readonly auditPath?: string;
   readonly status?: string;
@@ -83,6 +84,7 @@ function collectWorkflowRuns(raw: unknown): ReadonlyArray<PiWorkflowResumeRun> {
       {
         runId,
         lastSequence: numberField(entry.lastSequence) ?? 0,
+        ...(stringField(entry.workflowId) ? { workflowId: stringField(entry.workflowId)! } : {}),
         ...(stringField(entry.runDir) ? { runDir: stringField(entry.runDir)! } : {}),
         ...(stringField(entry.auditPath) ? { auditPath: stringField(entry.auditPath)! } : {}),
         ...(stringField(entry.status) ? { status: stringField(entry.status)! } : {}),
@@ -126,6 +128,7 @@ export function makeCustomAcpResumeCursor(input: {
         runId: run.runId,
         lastSequence: run.lastSequence,
       };
+      if (run.workflowId) activeRun.workflowId = run.workflowId;
       if (run.runDir) activeRun.runDir = run.runDir;
       if (run.auditPath) activeRun.auditPath = run.auditPath;
       if (run.status) activeRun.status = run.status;
@@ -281,6 +284,7 @@ export function workflowCursorFromResumeRun(input: {
     runId: input.run.runId,
     status,
     lastSequence: input.run.lastSequence,
+    ...(input.run.workflowId ? { workflowId: input.run.workflowId } : {}),
     ...(input.run.runDir ? { runDir: input.run.runDir } : {}),
     ...(input.run.auditPath ? { auditPath: input.run.auditPath } : {}),
     capabilities: input.capabilities,
@@ -313,12 +317,14 @@ export function workflowRunFromRefreshResponse(input: {
   const rawRun = isRecord(input.raw.run) ? input.raw.run : input.raw;
   const runId = stringField(rawRun.runId) ?? stringField(rawRun.id) ?? input.runId;
   if (!runId) return undefined;
+  const workflowId = stringField(rawRun.workflowId);
   const runDir = stringField(rawRun.runDir);
   const auditPath = stringField(rawRun.auditPath);
   const status = stringField(rawRun.status);
   return {
     runId,
     lastSequence: numberField(rawRun.lastSequence) ?? input.lastSequence,
+    ...(workflowId ? { workflowId } : {}),
     ...(runDir ? { runDir } : {}),
     ...(auditPath ? { auditPath } : {}),
     ...(status ? { status } : {}),
@@ -359,6 +365,7 @@ function workflowCursorFromFields(input: {
   readonly runId: string;
   readonly status: string;
   readonly lastSequence: number;
+  readonly workflowId?: string;
   readonly runDir?: string;
   readonly auditPath?: string;
   readonly capabilities: PiWorkflowCapabilities | undefined;
@@ -372,6 +379,7 @@ function workflowCursorFromFields(input: {
     status,
     terminal: isTerminalWorkflowStatus(status),
     lastSequence: input.lastSequence,
+    ...(input.workflowId ? { workflowId: input.workflowId } : {}),
     ...(input.runDir ? { runDir: input.runDir } : {}),
     ...(input.auditPath ? { auditPath: input.auditPath } : {}),
     actions: workflowActionsForStatus(status, input.capabilities),
@@ -401,11 +409,13 @@ export function workflowRunFromRecord(
   previous?: PiWorkflowResumeRun,
 ): PiWorkflowResumeRun {
   const status = workflowStatusFromRecord(record, previous?.status);
+  const workflowId = stringField(record.workflowId) ?? previous?.workflowId;
   const runDir = stringField(record.runDir) ?? previous?.runDir;
   const auditPath = stringField(record.auditPath) ?? previous?.auditPath;
   return {
     runId,
     lastSequence: sequence,
+    ...(workflowId ? { workflowId } : {}),
     ...(runDir ? { runDir } : {}),
     ...(auditPath ? { auditPath } : {}),
     ...(status ? { status } : {}),
