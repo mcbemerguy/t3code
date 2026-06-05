@@ -2950,10 +2950,6 @@ export default function ChatView(props: ChatViewProps) {
       sendInFlightRef.current
     )
       return;
-    if (activePendingProgress) {
-      onAdvanceActivePendingUserInput();
-      return;
-    }
     const sendCtx = composerRef.current?.getSendContext();
     if (!sendCtx) return;
     const {
@@ -2977,6 +2973,38 @@ export default function ChatView(props: ChatViewProps) {
       terminalContexts: composerTerminalContexts,
       blockedReason: undeliveredMessageBlockReason,
     });
+    const standaloneSlashCommand =
+      composerImages.length === 0 && sendableComposerTerminalContexts.length === 0
+        ? parseStandaloneComposerSlashCommand(trimmed)
+        : null;
+    if (standaloneSlashCommand?.kind === "workflow-abort") {
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerRef.current?.resetCursorState();
+      const abortResolution = resolveWorkflowAbortSlashCommand({
+        command: standaloneSlashCommand,
+        workflowRuns: activeWorkflowRuns,
+      });
+      if (abortResolution.status === "error") {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: abortResolution.title,
+            description: abortResolution.description,
+          }),
+        );
+        if (activeThreadId) {
+          setThreadError(activeThreadId, abortResolution.description);
+        }
+        return;
+      }
+      await onControlWorkflowRun(abortResolution.runId, "abort");
+      return;
+    }
+    if (activePendingProgress) {
+      onAdvanceActivePendingUserInput();
+      return;
+    }
     if (undeliveredMessageBlockReason) {
       toastManager.add(
         stackedThreadToast({
@@ -3001,37 +3029,11 @@ export default function ChatView(props: ChatViewProps) {
       });
       return;
     }
-    const standaloneSlashCommand =
-      composerImages.length === 0 && sendableComposerTerminalContexts.length === 0
-        ? parseStandaloneComposerSlashCommand(trimmed)
-        : null;
-    if (standaloneSlashCommand) {
+    if (standaloneSlashCommand?.kind === "interaction-mode") {
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
-      if (standaloneSlashCommand.kind === "interaction-mode") {
-        handleInteractionModeChange(standaloneSlashCommand.mode);
-        return;
-      }
-
-      const abortResolution = resolveWorkflowAbortSlashCommand({
-        command: standaloneSlashCommand,
-        workflowRuns: activeWorkflowRuns,
-      });
-      if (abortResolution.status === "error") {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: abortResolution.title,
-            description: abortResolution.description,
-          }),
-        );
-        if (activeThreadId) {
-          setThreadError(activeThreadId, abortResolution.description);
-        }
-        return;
-      }
-      await onControlWorkflowRun(abortResolution.runId, "abort");
+      handleInteractionModeChange(standaloneSlashCommand.mode);
       return;
     }
     if (!hasSendableContent) {
