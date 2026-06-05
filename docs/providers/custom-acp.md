@@ -23,7 +23,7 @@ This is compatible with Pi through `pi-acp`: Pi `ask_user_questions` can run thr
 2. Local Pi TUI renders the questionnaire in the terminal.
 3. Pi ACP/RPC sessions emit standard RPC dialogs; `pi-acp` translates them to `cursor/ask_question`, which T3Code handles here.
 
-For a Pi smoke test, configure a Custom ACP provider to launch the local `pi-acp` build and explicitly expose the hidden Pi tool with `PI_DELEGATED_TOOL_CAP=ask_user_questions`. Keep the method as `cursor/ask_question` unless the ACP server requires another extension method.
+For a Pi smoke test, configure a Custom ACP provider to launch the local `pi-acp` build, then run a Pi workflow step that explicitly includes `ask_user_questions` in its step tools. Keep the method as `cursor/ask_question` unless the ACP server requires another extension method. Do not expose `ask_user_questions` through `PI_DELEGATED_TOOL_CAP` for the parent Pi session; `pi-acp` strips that parent-only cap so the default agent does not see the hidden tool.
 
 ## Provider lifecycle: Stop/Close vs Delete
 
