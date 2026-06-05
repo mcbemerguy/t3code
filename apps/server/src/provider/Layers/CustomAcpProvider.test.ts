@@ -1094,6 +1094,7 @@ describe("Custom ACP provider", () => {
           env: envText({
             T3_ACP_ENABLE_PI_WORKFLOWS: "1",
             T3_ACP_EMIT_TOOL_CALLS: "1",
+            T3_ACP_FAIL_PROMPT_AFTER_CANCEL: "1",
             T3_ACP_WORKFLOW_REFRESH_STATUS_AFTER_CANCEL: "interrupted",
             T3_ACP_REQUEST_LOG_PATH: requestLog,
           }),
@@ -1174,6 +1175,7 @@ describe("Custom ACP provider", () => {
             env: envText({
               T3_ACP_ENABLE_PI_WORKFLOWS: "1",
               T3_ACP_EMIT_TOOL_CALLS: "1",
+              T3_ACP_FAIL_PROMPT_AFTER_CANCEL: "1",
               T3_ACP_WORKFLOW_REFRESH_STATUS_AFTER_CANCEL: "interrupted",
               T3_ACP_WORKFLOW_REFRESH_EVENTS_AFTER_CANCEL: "0",
               T3_ACP_REQUEST_LOG_PATH: requestLog,

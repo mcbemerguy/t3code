@@ -193,6 +193,30 @@ function activeWorkflowCursors(
   return Array.from(ctx.workflowCursors.values()).filter((run) => !run.terminal);
 }
 
+function snapshotWorkflowRunsForCancel(
+  ctx: GenericAcpSessionContext,
+): ReadonlyArray<PostCancelWorkflowRunSnapshot> {
+  return Array.from(ctx.workflowRuns.values()).flatMap((run) => {
+    const cursor = ctx.workflowCursors.get(run.runId);
+    const status = run.status ?? cursor?.status ?? "running";
+    if (cursor?.terminal || status !== "running") return [];
+    return [{ runId: run.runId, lastSequence: run.lastSequence }];
+  });
+}
+
+function currentCancelTargetRun(
+  ctx: GenericAcpSessionContext,
+  snapshot: PostCancelWorkflowRunSnapshot,
+): PiWorkflowResumeRun | undefined {
+  const current = ctx.workflowRuns.get(snapshot.runId);
+  if (!current) return undefined;
+  const cursor = ctx.workflowCursors.get(snapshot.runId);
+  const status = current.status ?? cursor?.status ?? "running";
+  if (cursor?.terminal || status !== "running") return undefined;
+  if (current.lastSequence > snapshot.lastSequence) return undefined;
+  return current;
+}
+
 function workflowControlMethod(
   capabilities: PiWorkflowCapabilities | undefined,
   action: ProviderWorkflowControlAction,
@@ -797,29 +821,6 @@ export function makeGenericAcpAdapter(
           ).pipe(Effect.as(false)),
         ),
       );
-
-    const snapshotWorkflowRunsForCancel = (
-      ctx: GenericAcpSessionContext,
-    ): ReadonlyArray<PostCancelWorkflowRunSnapshot> =>
-      Array.from(ctx.workflowRuns.values()).flatMap((run) => {
-        const cursor = ctx.workflowCursors.get(run.runId);
-        const status = run.status ?? cursor?.status ?? "running";
-        if (cursor?.terminal || status !== "running") return [];
-        return [{ runId: run.runId, lastSequence: run.lastSequence }];
-      });
-
-    const currentCancelTargetRun = (
-      ctx: GenericAcpSessionContext,
-      snapshot: PostCancelWorkflowRunSnapshot,
-    ): PiWorkflowResumeRun | undefined => {
-      const current = ctx.workflowRuns.get(snapshot.runId);
-      if (!current) return undefined;
-      const cursor = ctx.workflowCursors.get(snapshot.runId);
-      const status = current.status ?? cursor?.status ?? "running";
-      if (cursor?.terminal || status !== "running") return undefined;
-      if (current.lastSequence > snapshot.lastSequence) return undefined;
-      return current;
-    };
 
     const markRunningWorkflowRunsInterruptedAfterCancel = (
       ctx: GenericAcpSessionContext,
@@ -1768,7 +1769,7 @@ export function makeGenericAcpAdapter(
         }
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
-        yield* ctx.acp.cancel.pipe(
+        const cancelAfterStop = ctx.acp.cancel.pipe(
           Effect.mapError((error) =>
             mapAcpToAdapterError(provider, threadId, "session/cancel", error),
           ),
@@ -1791,11 +1792,15 @@ export function makeGenericAcpAdapter(
               Effect.andThen(stopSessionInternal(ctx)),
             );
           }),
-          Effect.forkDetach,
         );
-        yield* refreshKnownWorkflowRunsAfterCancel(ctx, postCancelWorkflowSnapshots).pipe(
-          Effect.forkDetach({ startImmediately: true }),
-        );
+        yield* Effect.sync(() => {
+          // @effect-diagnostics-next-line runEffectInsideEffect:off
+          Effect.runFork(cancelAfterStop);
+        });
+        yield* Effect.sync(() => {
+          // @effect-diagnostics-next-line runEffectInsideEffect:off
+          Effect.runFork(refreshKnownWorkflowRunsAfterCancel(ctx, postCancelWorkflowSnapshots));
+        });
       });
 
     const respondToRequest: ProviderAdapterShape<ProviderAdapterError>["respondToRequest"] = (
