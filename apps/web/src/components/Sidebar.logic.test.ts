@@ -871,6 +871,76 @@ describe("deleteSelectedSidebarThreads", () => {
     expect(result.deletedThreadKeys).toEqual(["key-1", "key-3"]);
     expect(result.failures).toEqual([{ threadKey: "key-2", error: failure }]);
   });
+
+  it("does not let archived stopped stuck rows block selected-thread multi-delete", async () => {
+    const now = "2026-03-09T10:00:00.000Z";
+    const threads = new Map([
+      [
+        "key-stuck-archived",
+        makeThread({
+          id: ThreadId.make("thread-workflow-emails-monitor-archived"),
+          title: "workflow-emails-monitor",
+          archivedAt: now,
+          session: {
+            provider: ProviderDriverKind.make("customAcp"),
+            providerInstanceId: ProviderInstanceId.make("custom-acp"),
+            status: "closed",
+            orchestrationStatus: "stopped",
+            activeTurnId: makeLatestTurn().turnId,
+            workflowRuns: [
+              {
+                runId: "workflow-emails-monitor",
+                status: "aborted",
+                terminal: true,
+                lastSequence: 12,
+                actions: [],
+                updatedAt: now,
+              },
+            ],
+            createdAt: now,
+            updatedAt: now,
+          },
+          latestTurn: makeLatestTurn({ state: "interrupted" }),
+          activities: [
+            {
+              id: "activity-stale-user-input" as never,
+              tone: "info",
+              kind: "user-input.requested",
+              summary: "User input requested",
+              payload: { requestId: "workflow-emails-monitor-stale-input" },
+              turnId: makeLatestTurn().turnId,
+              createdAt: now,
+            },
+          ],
+        }),
+      ],
+      [
+        "key-normal-stopped",
+        makeThread({
+          id: ThreadId.make("thread-normal-stopped"),
+          session: {
+            provider: ProviderDriverKind.make("codex"),
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            status: "closed",
+            orchestrationStatus: "stopped",
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      ],
+    ]);
+    const deleteThread = vi.fn(async () => undefined);
+
+    const result = await deleteSelectedSidebarThreads({
+      threadKeys: ["key-stuck-archived", "key-normal-stopped"],
+      getThread: (threadKey) => threads.get(threadKey),
+      deleteThread,
+    });
+
+    expect(deleteThread).toHaveBeenCalledTimes(2);
+    expect(result.deletedThreadKeys).toEqual(["key-stuck-archived", "key-normal-stopped"]);
+    expect(result.failures).toEqual([]);
+  });
 });
 
 describe("getFallbackThreadIdAfterDelete", () => {

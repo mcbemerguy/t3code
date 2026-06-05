@@ -160,6 +160,34 @@ describe("thread delete action logic", () => {
     );
   });
 
+  it("returns tombstone success when backing session cleanup diagnostics are warning-only", async () => {
+    const toast = createToastRecorder();
+    const target = threadRef();
+    const warnings = [
+      {
+        code: "provider_backing_session_delete_failed",
+        message: "Thread deleted, but the provider backing session may still exist.",
+        detail:
+          "Missing Pi backing session for workflow-emails-monitor; workflow run is already aborted.",
+      },
+    ];
+    const api = createApi({
+      dispatchCommand: vi.fn().mockResolvedValue({ sequence: 17, warnings }),
+    });
+
+    await expect(
+      dispatchThreadDeleteFirst({ api, target, commandId: commandId(), toast }),
+    ).resolves.toEqual({ sequence: 17, warnings });
+    expect(toast.add).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "warning",
+        title: "Thread deleted, but backing session cleanup failed",
+        description:
+          "Missing Pi backing session for workflow-emails-monitor; workflow run is already aborted.",
+      }),
+    );
+  });
+
   it("shows an aggregate selected-thread failure toast even when the first error already had a toast", async () => {
     const toast = createToastRecorder();
     const logger = createLogger();

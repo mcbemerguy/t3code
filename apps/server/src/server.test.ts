@@ -10,6 +10,7 @@ import {
   GitCommandError,
   KeybindingRule,
   MessageId,
+  TurnId,
   ExternalLauncherError,
   type OrchestrationThreadShell,
   TerminalNotRunningError,
@@ -3729,6 +3730,128 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         `provider.stop:${threadId}:true`,
       ]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "deletes workflow-emails-monitor stuck state with warning-only backing cleanup diagnostics",
+    () =>
+      Effect.gen(function* () {
+        const threadId = ThreadId.make("thread-workflow-emails-monitor-stuck");
+        const turnId = TurnId.make("turn-workflow-emails-monitor-stale");
+        const effects: string[] = [];
+        const readModel = makeDefaultOrchestrationReadModel();
+        const now = "2026-01-01T00:00:00.000Z";
+        const completedAt = "2026-01-01T00:03:00.000Z";
+        const thread = {
+          ...readModel.threads[0]!,
+          id: threadId,
+          title: "workflow-emails-monitor",
+          updatedAt: completedAt,
+          latestTurn: {
+            turnId,
+            state: "running" as const,
+            requestedAt: now,
+            startedAt: now,
+            completedAt,
+            assistantMessageId: MessageId.make("assistant-workflow-emails-monitor-stale"),
+          },
+          session: {
+            threadId,
+            status: "running" as const,
+            providerName: "customAcp",
+            providerInstanceId: ProviderInstanceId.make("custom-acp"),
+            runtimeMode: "full-access" as const,
+            activeTurnId: turnId,
+            lastError: null,
+            workflowRuns: [
+              {
+                runId: "workflow-emails-monitor",
+                status: "aborted" as const,
+                terminal: true,
+                lastSequence: 42,
+                runDir: "/tmp/pi/workflow-runs/workflow-emails-monitor",
+                actions: [],
+                updatedAt: completedAt,
+              },
+            ],
+            updatedAt: completedAt,
+          },
+          activities: [
+            {
+              id: EventId.make("activity-workflow-emails-monitor-stale-input"),
+              tone: "info" as const,
+              kind: "user-input.requested",
+              summary: "User input requested",
+              payload: {
+                requestId: "workflow-emails-monitor-stale-input",
+                questions: [
+                  {
+                    id: "scope",
+                    header: "Scope",
+                    question: "Which mailbox should be monitored?",
+                    options: [{ label: "Inbox", description: "Monitor inbox messages." }],
+                  },
+                ],
+              },
+              turnId,
+              createdAt: now,
+            },
+          ],
+        };
+
+        yield* buildAppUnderTest({
+          layers: {
+            providerService: {
+              stopSession: (input) =>
+                Effect.sync(() => {
+                  effects.push(`provider.stop:${input.threadId}:${input.deleteBackingSession}`);
+                }).pipe(
+                  Effect.andThen(
+                    Effect.die(
+                      new Error(
+                        "Missing Pi backing session for workflow-emails-monitor; workflow run is already aborted.",
+                      ),
+                    ),
+                  ),
+                ),
+            },
+            orchestrationEngine: {
+              dispatch: (command) =>
+                Effect.sync(() => {
+                  effects.push(`dispatch:${command.type}`);
+                  return { sequence: 1 };
+                }),
+            },
+            projectionSnapshotQuery: {
+              getCommandReadModel: () =>
+                Effect.sync(() => {
+                  effects.push("query:command-read-model");
+                  return { ...readModel, threads: [thread] };
+                }),
+            },
+          },
+        });
+
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const dispatchResult = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+              type: "thread.delete",
+              commandId: CommandId.make("cmd-delete-workflow-emails-monitor-stuck"),
+              threadId,
+            }),
+          ),
+        );
+
+        assert.equal(dispatchResult.sequence, 1);
+        assert.equal(dispatchResult.warnings?.[0]?.code, "provider_backing_session_delete_failed");
+        assert.include(dispatchResult.warnings?.[0]?.detail ?? "", "Missing Pi backing session");
+        assert.deepEqual(effects, [
+          "query:command-read-model",
+          "dispatch:thread.delete",
+          `provider.stop:${threadId}:true`,
+        ]);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect(
