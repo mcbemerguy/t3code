@@ -124,7 +124,30 @@ function isStalePendingUserInputFailureDetail(detail: string | null): boolean {
     detail.includes("session not found") ||
     detail.includes("unknown session") ||
     detail.includes("session is closed") ||
-    detail.includes("session is stopped")
+    detail.includes("session is stopped") ||
+    detail.includes("unknown provider thread") ||
+    detail.includes("adapter thread is closed") ||
+    (detail.includes("unknown ") && detail.includes(" adapter thread"))
+  );
+}
+
+function compareProjectionActivitiesByOrder(
+  left: ProjectionThreadActivity,
+  right: ProjectionThreadActivity,
+): number {
+  const leftSequence = left.sequence ?? null;
+  const rightSequence = right.sequence ?? null;
+  if (leftSequence !== null && rightSequence !== null && leftSequence !== rightSequence) {
+    return leftSequence - rightSequence;
+  }
+  if (leftSequence !== null && rightSequence === null) {
+    return -1;
+  }
+  if (leftSequence === null && rightSequence !== null) {
+    return 1;
+  }
+  return (
+    left.createdAt.localeCompare(right.createdAt) || left.activityId.localeCompare(right.activityId)
   );
 }
 
@@ -132,11 +155,7 @@ function derivePendingUserInputCountFromActivities(
   activities: ReadonlyArray<ProjectionThreadActivity>,
 ): number {
   const openRequestIds = new Set<string>();
-  const ordered = [...activities].toSorted(
-    (left, right) =>
-      left.createdAt.localeCompare(right.createdAt) ||
-      left.activityId.localeCompare(right.activityId),
-  );
+  const ordered = [...activities].toSorted(compareProjectionActivitiesByOrder);
 
   for (const activity of ordered) {
     const requestId = extractActivityRequestId(activity.payload);

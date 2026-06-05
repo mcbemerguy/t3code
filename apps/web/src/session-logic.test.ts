@@ -267,6 +267,7 @@ describe("derivePendingUserInputs", () => {
   it.each([
     "Stale pending user-input request: req-user-input-stale-1. Provider callback state does not survive app restarts or recovered sessions. Restart the turn to continue.",
     "No active provider session is bound to this thread.",
+    "claudeAgent adapter thread is closed: thread-1",
   ])("clears stale pending user-input prompts when provider response fails: %s", (detail) => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

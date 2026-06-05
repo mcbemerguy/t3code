@@ -31,6 +31,9 @@ import { increment, orchestrationEventsProcessedTotal } from "../../observabilit
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
+  ProviderAdapterSessionClosedError,
+  ProviderAdapterSessionNotFoundError,
+  ProviderSessionNotFoundError,
   ProviderValidationError,
 } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
@@ -47,6 +50,9 @@ import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 const isProviderAdapterProcessError = Schema.is(ProviderAdapterProcessError);
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
+const isProviderAdapterSessionClosedError = Schema.is(ProviderAdapterSessionClosedError);
+const isProviderAdapterSessionNotFoundError = Schema.is(ProviderAdapterSessionNotFoundError);
+const isProviderSessionNotFoundError = Schema.is(ProviderSessionNotFoundError);
 const isProviderValidationError = Schema.is(ProviderValidationError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 
@@ -190,7 +196,21 @@ function isUnknownPendingApprovalRequestError(cause: Cause.Cause<ProviderService
   );
 }
 
+function isProviderSessionMissingOrClosedFailure(
+  cause: Cause.Cause<ProviderServiceError>,
+): boolean {
+  const error = findFailError(cause);
+  return (
+    isProviderAdapterSessionNotFoundError(error) ||
+    isProviderAdapterSessionClosedError(error) ||
+    isProviderSessionNotFoundError(error)
+  );
+}
+
 function isStalePendingUserInputFailureCause(cause: Cause.Cause<ProviderServiceError>): boolean {
+  if (isProviderSessionMissingOrClosedFailure(cause)) {
+    return true;
+  }
   const error = findProviderAdapterRequestError(cause);
   const detail = (error?.detail ?? Cause.pretty(cause)).toLowerCase();
   return (
@@ -207,11 +227,17 @@ function isStalePendingUserInputFailureCause(cause: Cause.Cause<ProviderServiceE
     detail.includes("session not found") ||
     detail.includes("unknown session") ||
     detail.includes("session is closed") ||
-    detail.includes("session is stopped")
+    detail.includes("session is stopped") ||
+    detail.includes("unknown provider thread") ||
+    detail.includes("adapter thread is closed") ||
+    (detail.includes("unknown ") && detail.includes(" adapter thread"))
   );
 }
 
 function isMissingProviderRuntimeFailure(cause: Cause.Cause<ProviderServiceError>): boolean {
+  if (isProviderSessionMissingOrClosedFailure(cause)) {
+    return true;
+  }
   const error = findProviderAdapterRequestError(cause);
   const detail = (error?.detail ?? Cause.pretty(cause)).toLowerCase();
   return (
@@ -226,7 +252,10 @@ function isMissingProviderRuntimeFailure(cause: Cause.Cause<ProviderServiceError
     detail.includes("session not found") ||
     detail.includes("unknown session") ||
     detail.includes("session is closed") ||
-    detail.includes("session is stopped")
+    detail.includes("session is stopped") ||
+    detail.includes("unknown provider thread") ||
+    detail.includes("adapter thread is closed") ||
+    (detail.includes("unknown ") && detail.includes(" adapter thread"))
   );
 }
 

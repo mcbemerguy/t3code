@@ -2046,6 +2046,73 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         WHERE thread_id = 'thread-stale-user-input'
       `;
       assert.deepEqual(resolvedRows, [{ pendingUserInputCount: 0 }]);
+
+      yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-stale-user-input-7"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-stale-user-input"),
+        occurredAt: "2026-02-26T13:30:06.000Z",
+        commandId: CommandId.make("cmd-stale-user-input-7"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stale-user-input-7"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-stale-user-input"),
+          activity: {
+            id: EventId.make("activity-adapter-user-input-requested"),
+            tone: "info",
+            kind: "user-input.requested",
+            summary: "User input requested",
+            payload: {
+              requestId: "user-input-request-adapter-closed",
+              questions: [
+                {
+                  id: "scope",
+                  header: "Scope",
+                  question: "What should I inspect?",
+                  options: [{ label: "Server", description: "Inspect server code." }],
+                },
+              ],
+            },
+            turnId: null,
+            createdAt: "2026-02-26T13:30:06.000Z",
+          },
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-stale-user-input-8"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-stale-user-input"),
+        occurredAt: "2026-02-26T13:30:07.000Z",
+        commandId: CommandId.make("cmd-stale-user-input-8"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stale-user-input-8"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-stale-user-input"),
+          activity: {
+            id: EventId.make("activity-adapter-user-input-failed"),
+            tone: "error",
+            kind: "provider.user-input.respond.failed",
+            summary: "Provider user input response failed",
+            payload: {
+              requestId: "user-input-request-adapter-closed",
+              detail: "claudeAgent adapter thread is closed: thread-stale-user-input",
+            },
+            turnId: null,
+            createdAt: "2026-02-26T13:30:07.000Z",
+          },
+        },
+      });
+
+      const adapterClosedRows = yield* sql<{ readonly pendingUserInputCount: number }>`
+        SELECT pending_user_input_count AS "pendingUserInputCount"
+        FROM projection_threads
+        WHERE thread_id = 'thread-stale-user-input'
+      `;
+      assert.deepEqual(adapterClosedRows, [{ pendingUserInputCount: 0 }]);
     }),
   );
 

@@ -216,7 +216,10 @@ function isStalePendingRequestFailureDetail(detail: string | undefined): boolean
     normalized.includes("session not found") ||
     normalized.includes("unknown session") ||
     normalized.includes("session is closed") ||
-    normalized.includes("session is stopped")
+    normalized.includes("session is stopped") ||
+    normalized.includes("unknown provider thread") ||
+    normalized.includes("adapter thread is closed") ||
+    (normalized.includes("unknown ") && normalized.includes(" adapter thread"))
   );
 }
 

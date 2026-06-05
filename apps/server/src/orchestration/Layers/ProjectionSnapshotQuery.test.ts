@@ -511,6 +511,24 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           '2026-02-24T01:00:01.000Z',
           '2026-02-24T01:00:02.000Z',
           NULL
+        ),
+        (
+          'thread-stale-idle-running',
+          'project-stale-running',
+          'Thread Stale Idle Running',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          'full-access',
+          'default',
+          NULL,
+          NULL,
+          'turn-stale-idle-running',
+          NULL,
+          0,
+          0,
+          0,
+          '2026-02-24T01:00:01.000Z',
+          '2026-02-24T01:00:02.000Z',
+          NULL
         )
       `;
       yield* sql`
@@ -535,6 +553,17 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           '2026-02-24T01:00:03.000Z',
           '2026-02-24T01:00:04.000Z',
           '[]'
+        ),
+        (
+          'thread-stale-idle-running',
+          'turn-stale-idle-running',
+          NULL,
+          NULL,
+          'completed',
+          '2026-02-24T01:00:03.000Z',
+          '2026-02-24T01:00:03.000Z',
+          '2026-02-24T01:00:04.000Z',
+          '[]'
         )
       `;
       yield* sql`
@@ -555,6 +584,15 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           'turn-stale-running',
           NULL,
           '2026-02-24T01:00:05.000Z'
+        ),
+        (
+          'thread-stale-idle-running',
+          'running',
+          'codex',
+          'full-access',
+          NULL,
+          NULL,
+          '2026-02-24T01:00:05.000Z'
         )
       `;
 
@@ -565,6 +603,13 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.equal(thread?.latestTurn?.state, "completed");
       assert.equal(thread?.session?.status, "ready");
       assert.equal(thread?.session?.activeTurnId, null);
+
+      const idleThread = shellSnapshot.threads.find(
+        (entry) => entry.id === ThreadId.make("thread-stale-idle-running"),
+      );
+      assert.equal(idleThread?.latestTurn?.state, "completed");
+      assert.equal(idleThread?.session?.status, "ready");
+      assert.equal(idleThread?.session?.activeTurnId, null);
     }),
   );
 

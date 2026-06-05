@@ -215,21 +215,24 @@ function mapSessionRow(
   row: Schema.Schema.Type<typeof ProjectionThreadSessionDbRowSchema>,
   latestTurn: OrchestrationLatestTurn | null = null,
 ): OrchestrationSession {
+  const latestTurnSettled = latestTurn !== null && latestTurn.completedAt !== null;
+  const latestTurnNonRunning = latestTurnSettled && latestTurn?.state !== "running";
   const activeTurnSettled =
     row.status === "running" &&
     row.activeTurnId !== null &&
-    latestTurn !== null &&
-    latestTurn.turnId === row.activeTurnId &&
-    latestTurn.completedAt !== null &&
-    latestTurn.state !== "running";
+    latestTurnNonRunning &&
+    latestTurn?.turnId === row.activeTurnId;
+  const idleRunningSessionSettled =
+    row.status === "running" && row.activeTurnId === null && latestTurnNonRunning;
+  const repairSettledRunningSession = activeTurnSettled || idleRunningSessionSettled;
   return {
     threadId: row.threadId,
-    status: activeTurnSettled ? "ready" : row.status,
+    status: repairSettledRunningSession ? "ready" : row.status,
     providerName: row.providerName,
     ...(row.providerInstanceId !== null ? { providerInstanceId: row.providerInstanceId } : {}),
     runtimeMode: row.runtimeMode,
-    activeTurnId: activeTurnSettled ? null : row.activeTurnId,
-    lastError: activeTurnSettled ? null : row.lastError,
+    activeTurnId: repairSettledRunningSession ? null : row.activeTurnId,
+    lastError: repairSettledRunningSession ? null : row.lastError,
     updatedAt: row.updatedAt,
   };
 }
