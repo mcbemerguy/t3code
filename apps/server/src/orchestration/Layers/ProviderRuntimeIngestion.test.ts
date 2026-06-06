@@ -930,6 +930,41 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("preserves full buffered reasoning detail while summarizing the latest tail", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const reasoningText = `${"early ".repeat(35)}latest reasoning conclusion`;
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-long-reasoning-delta"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-long-reasoning"),
+      itemId: asItemId("reasoning-item-long"),
+      payload: {
+        streamKind: "reasoning_text",
+        delta: reasoningText,
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "reasoning:thread-1:turn-long-reasoning:reasoning-item-long",
+      ),
+    );
+
+    const activity = thread.activities.find(
+      (entry: ProviderRuntimeTestActivity) =>
+        entry.id === "reasoning:thread-1:turn-long-reasoning:reasoning-item-long",
+    );
+    const payload = activity?.payload as Record<string, unknown> | undefined;
+    expect(payload?.detail).toBe(reasoningText);
+    expect(payload?.summary).toBe(`...${reasoningText.slice(-(180 - 3))}`);
+  });
+
   it("uses assistant item completion detail when no assistant deltas were streamed", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
