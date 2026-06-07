@@ -24,12 +24,19 @@ export interface AskQuestionResponse {
   readonly answers: ProviderUserInputAnswers;
 }
 
+export interface ExtractAskQuestionsOptions {
+  readonly emptyOptionsFallback?: ReadonlyArray<UserInputQuestion["options"][number]>;
+}
+
 function nonEmptyOrFallback(value: string | null | undefined, fallback: string): string {
   const trimmed = value?.trim();
   return trimmed ? trimmed : fallback;
 }
 
-export function extractAskQuestions(params: AskQuestionRequest): ReadonlyArray<UserInputQuestion> {
+export function extractAskQuestions(
+  params: AskQuestionRequest,
+  extractOptions: ExtractAskQuestionsOptions = {},
+): ReadonlyArray<UserInputQuestion> {
   return params.questions.map((question, index) => {
     const options = question.options ?? [];
     return {
@@ -37,13 +44,19 @@ export function extractAskQuestions(params: AskQuestionRequest): ReadonlyArray<U
       header: "Question",
       question: nonEmptyOrFallback(question.prompt, "Continue?"),
       multiSelect: question.allowMultiple === true,
-      options: options.map((option) => {
-        const label = nonEmptyOrFallback(option.label, nonEmptyOrFallback(option.id, "Option"));
-        return {
-          label,
-          description: label,
-        };
-      }),
+      options:
+        options.length > 0
+          ? options.map((option) => {
+              const label = nonEmptyOrFallback(
+                option.label,
+                nonEmptyOrFallback(option.id, "Option"),
+              );
+              return {
+                label,
+                description: label,
+              };
+            })
+          : (extractOptions.emptyOptionsFallback ?? []),
     };
   });
 }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import type * as EffectAcpSchema from "effect-acp/schema";
 
@@ -90,6 +90,7 @@ describe("AcpRuntimeModel", () => {
         toolCall: {
           toolCallId: "tool-1",
           kind: "execute",
+          itemType: "command_execution",
           title: "Ran command",
           status: "pending",
           command: "bun run typecheck",

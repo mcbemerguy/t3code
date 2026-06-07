@@ -501,7 +501,7 @@ export class ServerSettingsError extends Schema.TaggedErrorClass<ServerSettingsE
   {
     settingsPath: Schema.String,
     detail: Schema.String,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {

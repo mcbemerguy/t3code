@@ -1,5 +1,5 @@
 import { TurnId } from "@t3tools/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
@@ -492,6 +492,159 @@ describe("deriveMessagesTimelineRows", () => {
         provider: "pi",
         detail: "startup failed",
       },
+    });
+  });
+
+  it("keeps upstream changed-file work rows and review user rows in timeline order", () => {
+    const assistantTurnDiffSummary = {
+      turnId: "turn-review" as never,
+      completedAt: "2026-01-01T00:00:30Z",
+      assistantMessageId: "assistant-review" as never,
+      checkpointTurnCount: 1,
+      files: [{ path: "apps/web/src/reviewCommentContext.ts", additions: 8, deletions: 2 }],
+    };
+
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "changed-file-entry",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "changed-file-work",
+            createdAt: "2026-01-01T00:00:01Z",
+            turnId: TurnId.make("turn-review"),
+            label: "Updated files",
+            tone: "tool",
+            changedFiles: ["apps/web/src/reviewCommentContext.ts"],
+            requestKind: "file-change",
+          },
+        },
+        {
+          id: "review-user-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:02Z",
+          message: {
+            id: "review-user" as never,
+            role: "user",
+            text: '<review_comment filePath="apps/web/src/reviewCommentContext.ts">Looks good</review_comment>',
+            turnId: null,
+            createdAt: "2026-01-01T00:00:02Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "assistant-review-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:20Z",
+          message: {
+            id: "assistant-review" as never,
+            role: "assistant",
+            text: "Applied review feedback.",
+            turnId: "turn-review" as never,
+            createdAt: "2026-01-01T00:00:20Z",
+            completedAt: "2026-01-01T00:00:30Z",
+            streaming: false,
+          },
+        },
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map([
+        ["assistant-review" as never, assistantTurnDiffSummary],
+      ]),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.map((row) => row.id)).toEqual([
+      "changed-file-entry",
+      "review-user-entry",
+      "assistant-review-entry",
+    ]);
+    expect(rows[0]).toMatchObject({
+      kind: "work",
+      groupedEntries: [
+        {
+          changedFiles: ["apps/web/src/reviewCommentContext.ts"],
+          requestKind: "file-change",
+        },
+      ],
+    });
+    expect(rows[1]).toMatchObject({
+      kind: "message",
+      userDeliveryState: { status: "none" },
+    });
+    expect(rows[2]).toMatchObject({
+      kind: "message",
+      assistantTurnDiffSummary,
+    });
+  });
+
+  it("preserves custom ACP/Pi thought and compact tool metadata when grouping rows", () => {
+    const piTurnId = TurnId.make("turn-pi");
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "pi-thought-entry",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "pi-thought-work",
+            createdAt: "2026-01-01T00:00:01Z",
+            turnId: piTurnId,
+            label: "Scout subagent",
+            detail: "Inspecting repository state",
+            tone: "thinking",
+          },
+        },
+        {
+          id: "pi-tool-entry",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:02Z",
+          entry: {
+            id: "pi-tool-work",
+            createdAt: "2026-01-01T00:00:02Z",
+            turnId: piTurnId,
+            label: "Read file completed",
+            detail: "apps/web/src/components/chat/MessagesTimeline.tsx",
+            tone: "tool",
+            toolTitle: "Read file completed",
+            toolKind: "read",
+            acpTitle: "Pi read_file",
+            itemType: "dynamic_tool_call",
+            requestKind: "file-read",
+          },
+        },
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: "work",
+      groupedEntries: [
+        {
+          id: "pi-thought-work",
+          label: "Scout subagent",
+          tone: "thinking",
+          detail: "Inspecting repository state",
+        },
+        {
+          id: "pi-tool-work",
+          label: "Read file completed",
+          detail: "apps/web/src/components/chat/MessagesTimeline.tsx",
+          toolTitle: "Read file completed",
+          toolKind: "read",
+          acpTitle: "Pi read_file",
+          itemType: "dynamic_tool_call",
+          requestKind: "file-read",
+        },
+      ],
     });
   });
 });

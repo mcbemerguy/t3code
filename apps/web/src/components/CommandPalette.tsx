@@ -79,7 +79,7 @@ import {
   selectSidebarThreadsAcrossEnvironments,
   useStore,
 } from "../store";
-import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
+import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { buildThreadRouteParams, resolveThreadRouteTarget } from "../threadRoutes";
 import {
   ADDON_ICON_CLASS,
@@ -337,9 +337,9 @@ export function CommandPalette({ children }: { children: ReactNode }) {
     select: (params) => resolveThreadRouteTarget(params),
   });
   const routeThreadRef = routeTarget?.kind === "server" ? routeTarget.threadRef : null;
-  const terminalOpen = useTerminalStateStore((state) =>
+  const terminalOpen = useTerminalUiStateStore((state) =>
     routeThreadRef
-      ? selectThreadTerminalState(state.terminalStateByThreadKey, routeThreadRef).terminalOpen
+      ? selectThreadTerminalUiState(state.terminalUiStateByThreadKey, routeThreadRef).terminalOpen
       : false,
   );
 
@@ -562,11 +562,7 @@ function OpenCommandPaletteDialog() {
       !relativePathNeedsActiveProject,
   });
   const browseEntries = browseResult?.entries ?? EMPTY_BROWSE_ENTRIES;
-  const {
-    filteredEntries: filteredBrowseEntries,
-    highlightedEntry: highlightedBrowseEntry,
-    exactEntry: exactBrowseEntry,
-  } = useMemo(
+  const { filteredEntries: filteredBrowseEntries, exactEntry: exactBrowseEntry } = useMemo(
     () => filterBrowseEntries({ browseEntries, browseFilterQuery, highlightedItemValue }),
     [browseEntries, browseFilterQuery, highlightedItemValue],
   );
@@ -587,27 +583,17 @@ function OpenCommandPaletteDialog() {
     [browseEnvironmentId, currentProjectCwdForBrowse, fetchBrowseResult, queryClient],
   );
 
-  // Prefetch the parent and the most likely next child so browse navigation
-  // stays warm without scanning every child directory in large trees.
+  // Prefetch only the parent (for back-navigation). Prefetching the
+  // highlighted child on every arrow-key press triggers a macOS TCC prompt
+  // whenever the highlighted entry is a permission-gated home dir (Music,
+  // Documents, Downloads, Desktop, etc.), so we wait for explicit navigation.
   useEffect(() => {
     if (!isBrowsing || filteredBrowseEntries.length === 0) return;
 
     if (canNavigateUp(query)) {
       prefetchBrowsePath(getBrowseParentPath(query)!);
     }
-
-    const nextChild = highlightedBrowseEntry ?? exactBrowseEntry;
-    if (nextChild) {
-      prefetchBrowsePath(appendBrowsePathSegment(query, nextChild.name));
-    }
-  }, [
-    exactBrowseEntry,
-    filteredBrowseEntries.length,
-    highlightedBrowseEntry,
-    isBrowsing,
-    prefetchBrowsePath,
-    query,
-  ]);
+  }, [filteredBrowseEntries.length, isBrowsing, prefetchBrowsePath, query]);
 
   const openProjectFromSearch = useMemo(
     () => async (project: (typeof projects)[number]) => {

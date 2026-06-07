@@ -5,12 +5,8 @@ import type {
   CustomAcpSessionListResult,
 } from "./customAcpSessions.ts";
 import type {
-  VcsSwitchRefInput,
-  VcsSwitchRefResult,
   VcsCreateRefInput,
-  GitPreparePullRequestThreadInput,
-  GitPreparePullRequestThreadResult,
-  GitPullRequestRefInput,
+  VcsCreateRefResult,
   VcsCreateWorktreeInput,
   VcsCreateWorktreeResult,
   VcsInitInput,
@@ -19,11 +15,16 @@ import type {
   VcsPullInput,
   VcsPullResult,
   VcsRemoveWorktreeInput,
+  VcsSwitchRefInput,
+  VcsSwitchRefResult,
+  GitPreparePullRequestThreadInput,
+  GitPreparePullRequestThreadResult,
+  GitPullRequestRefInput,
   GitResolvePullRequestResult,
   VcsStatusInput,
   VcsStatusResult,
-  VcsCreateRefResult,
 } from "./git.ts";
+import type { ReviewDiffPreviewInput, ReviewDiffPreviewResult } from "./review.ts";
 import type { FilesystemBrowseInput, FilesystemBrowseResult } from "./filesystem.ts";
 import type {
   ProjectSearchEntriesInput,
@@ -46,9 +47,11 @@ import type {
   ServerUpsertKeybindingResult,
 } from "./server.ts";
 import type {
+  TerminalAttachInput,
+  TerminalAttachStreamEvent,
   TerminalClearInput,
   TerminalCloseInput,
-  TerminalEvent,
+  TerminalMetadataStreamEvent,
   TerminalOpenInput,
   TerminalResizeInput,
   TerminalRestartInput,
@@ -69,7 +72,7 @@ import type {
   OrchestrationThreadStreamItem,
 } from "./orchestration.ts";
 import { EnvironmentId } from "./baseSchemas.ts";
-import { AuthBearerBootstrapResult, AuthSessionState, AuthWebSocketTokenResult } from "./auth.ts";
+import { AuthAccessTokenResult, AuthSessionState, AuthWebSocketTicketResult } from "./auth.ts";
 import { AdvertisedEndpoint } from "./remoteAccess.ts";
 import { EditorId } from "./editor.ts";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
@@ -341,6 +344,11 @@ export const PersistedSavedEnvironmentRecordSchema = Schema.Struct({
   createdAt: Schema.String,
   lastConnectedAt: Schema.NullOr(Schema.String),
   desktopSsh: Schema.optionalKey(DesktopSshEnvironmentTargetSchema),
+  relayManaged: Schema.optionalKey(
+    Schema.Struct({
+      relayUrl: Schema.String,
+    }),
+  ),
 });
 export type PersistedSavedEnvironmentRecord = typeof PersistedSavedEnvironmentRecordSchema.Type;
 
@@ -375,6 +383,23 @@ export const PickFolderOptionsSchema = Schema.Struct({
   initialPath: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
 
+export const DesktopCloudAuthFetchInputSchema = Schema.Struct({
+  url: Schema.String,
+  method: Schema.optionalKey(Schema.String),
+  headers: Schema.Record(Schema.String, Schema.String),
+  body: Schema.optionalKey(Schema.String),
+});
+export type DesktopCloudAuthFetchInput = typeof DesktopCloudAuthFetchInputSchema.Type;
+
+export const DesktopCloudAuthFetchResultSchema = Schema.Struct({
+  ok: Schema.Boolean,
+  status: Schema.Number,
+  statusText: Schema.String,
+  headers: Schema.Record(Schema.String, Schema.String),
+  body: Schema.String,
+});
+export type DesktopCloudAuthFetchResult = typeof DesktopCloudAuthFetchResultSchema.Type;
+
 export interface DesktopBridge {
   getAppBranding: () => DesktopAppBranding | null;
   getLocalEnvironmentBootstrap: () => DesktopEnvironmentBootstrap | null;
@@ -397,12 +422,12 @@ export interface DesktopBridge {
   bootstrapSshBearerSession: (
     httpBaseUrl: string,
     credential: string,
-  ) => Promise<AuthBearerBootstrapResult>;
+  ) => Promise<AuthAccessTokenResult>;
   fetchSshSessionState: (httpBaseUrl: string, bearerToken: string) => Promise<AuthSessionState>;
-  issueSshWebSocketToken: (
+  issueSshWebSocketTicket: (
     httpBaseUrl: string,
     bearerToken: string,
-  ) => Promise<AuthWebSocketTokenResult>;
+  ) => Promise<AuthWebSocketTicketResult>;
   onSshPasswordPrompt: (listener: (request: DesktopSshPasswordPromptRequest) => void) => () => void;
   resolveSshPasswordPrompt: (requestId: string, password: string | null) => Promise<void>;
   getServerExposureState: () => Promise<DesktopServerExposureState>;
@@ -420,6 +445,12 @@ export interface DesktopBridge {
     position?: { x: number; y: number },
   ) => Promise<T | null>;
   openExternal: (url: string) => Promise<boolean>;
+  createCloudAuthRequest: () => Promise<string>;
+  getCloudAuthToken: () => Promise<string | null>;
+  setCloudAuthToken: (token: string) => Promise<boolean>;
+  clearCloudAuthToken: () => Promise<void>;
+  fetchCloudAuth: (input: DesktopCloudAuthFetchInput) => Promise<DesktopCloudAuthFetchResult>;
+  onCloudAuthCallback: (listener: (rawUrl: string) => void) => () => void;
   onMenuAction: (listener: (action: string) => void) => () => void;
   getUpdateState: () => Promise<DesktopUpdateState>;
   setUpdateChannel: (channel: DesktopUpdateChannel) => Promise<DesktopUpdateState>;
@@ -502,12 +533,24 @@ export interface LocalApi {
 export interface EnvironmentApi {
   terminal: {
     open: (input: typeof TerminalOpenInput.Encoded) => Promise<TerminalSessionSnapshot>;
+    attach: (
+      input: typeof TerminalAttachInput.Encoded,
+      callback: (event: TerminalAttachStreamEvent) => void,
+      options?: {
+        onResubscribe?: () => void;
+      },
+    ) => () => void;
     write: (input: typeof TerminalWriteInput.Encoded) => Promise<void>;
     resize: (input: typeof TerminalResizeInput.Encoded) => Promise<void>;
     clear: (input: typeof TerminalClearInput.Encoded) => Promise<void>;
     restart: (input: typeof TerminalRestartInput.Encoded) => Promise<TerminalSessionSnapshot>;
     close: (input: typeof TerminalCloseInput.Encoded) => Promise<void>;
-    onEvent: (callback: (event: TerminalEvent) => void) => () => void;
+    onMetadata: (
+      callback: (event: TerminalMetadataStreamEvent) => void,
+      options?: {
+        onResubscribe?: () => void;
+      },
+    ) => () => void;
   };
   projects: {
     searchEntries: (input: ProjectSearchEntriesInput) => Promise<ProjectSearchEntriesResult>;
@@ -553,6 +596,9 @@ export interface EnvironmentApi {
   customAcp: {
     listSessions: (input: CustomAcpSessionListInput) => Promise<CustomAcpSessionListResult>;
     importSession: (input: CustomAcpSessionImportInput) => Promise<CustomAcpSessionImportResult>;
+  };
+  review: {
+    getDiffPreview: (input: ReviewDiffPreviewInput) => Promise<ReviewDiffPreviewResult>;
   };
   orchestration: {
     dispatchCommand: (command: ClientOrchestrationCommand) => Promise<{ sequence: number }>;

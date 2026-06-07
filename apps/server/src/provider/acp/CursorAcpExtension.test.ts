@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
+  CursorListAvailableModelsResponse,
   extractAskQuestions,
   extractPlanMarkdown,
   extractTodosAsPlan,
@@ -67,6 +68,23 @@ describe("CursorAcpExtension", () => {
     ]);
   });
 
+  it("uses Cursor's OK fallback for ask-question prompts without options", () => {
+    expect(
+      extractAskQuestions({
+        toolCallId: "ask-3",
+        questions: [{ id: "continue", prompt: "Continue?", options: [] }],
+      }),
+    ).toEqual([
+      {
+        id: "continue",
+        header: "Question",
+        question: "Continue?",
+        multiSelect: false,
+        options: [{ label: "OK", description: "Continue" }],
+      },
+    ]);
+  });
+
   it("extracts plan markdown from the real Cursor create-plan payload shape", () => {
     const planMarkdown = extractPlanMarkdown({
       toolCallId: "plan-1",
@@ -104,5 +122,31 @@ describe("CursorAcpExtension", () => {
         { step: "Unknown status", status: "pending" },
       ],
     });
+  });
+
+  it("decodes Cursor list_available_models responses with per-model config options", () => {
+    const decoded = CursorListAvailableModelsResponse.make({
+      models: [
+        {
+          value: "gpt-5.4",
+          name: "GPT-5.4",
+          configOptions: [
+            {
+              id: "reasoning",
+              name: "Reasoning",
+              category: "thought_level",
+              type: "select",
+              currentValue: "medium",
+              options: [
+                { value: "low", name: "Low" },
+                { value: "medium", name: "Medium" },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(decoded.models[0]?.configOptions?.[0]?.id).toBe("reasoning");
   });
 });

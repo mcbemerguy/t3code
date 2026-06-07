@@ -5,6 +5,7 @@ node_modules
 *.log
 *.tsbuildinfo
 apps/*/dist
+infra/*/dist
 .astro
 packages/*/dist
 .env
@@ -28,3 +29,8 @@ dist-electron/
 .electron-runtime/
 /.pi-launch-build.stamp
 /.pi-launch-install.stamp
+node_modules/
+.alchemy/
+*.log
+.env*
+!.env.example

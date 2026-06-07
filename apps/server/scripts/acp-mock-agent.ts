@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off
 // @effect-diagnostics globalTimers:off
 // @effect-diagnostics runEffectInsideEffect:off
@@ -270,6 +270,35 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
         ]
       : []),
   ]);
+}
+
+function modelConfigOptionsFor(modelId: string): ReadonlyArray<AcpSchema.SessionConfigOption> {
+  const previousModelId = currentModelId;
+  try {
+    currentModelId = modelId;
+    return configOptions().filter(
+      (option) => option.category !== "mode" && option.category !== "model",
+    );
+  } finally {
+    currentModelId = previousModelId;
+  }
+}
+
+function availableModels(): ReadonlyArray<{
+  readonly value: string;
+  readonly name: string;
+  readonly configOptions: ReadonlyArray<AcpSchema.SessionConfigOption>;
+}> {
+  return [
+    { value: "default", name: "Auto" },
+    { value: "composer-2", name: "Composer 2" },
+    { value: "gpt-5.4", name: "GPT-5.4" },
+    { value: "claude-opus-4-6", name: "Opus 4.6" },
+  ].map((model) => ({
+    value: model.value,
+    name: model.name,
+    configOptions: modelConfigOptionsFor(model.value),
+  }));
 }
 
 const availableModes: ReadonlyArray<AcpSchema.SessionMode> = [
@@ -821,6 +850,12 @@ const program = Effect.gen(function* () {
   );
 
   yield* agent.handleUnknownExtRequest((method, params) => {
+    if (method === "cursor/list_available_models") {
+      return Effect.succeed({
+        models: availableModels(),
+      });
+    }
+
     if (method.startsWith("_pi/workflows/")) {
       const payload =
         typeof params === "object" && params !== null ? (params as Record<string, unknown>) : {};

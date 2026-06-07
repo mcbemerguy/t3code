@@ -32,7 +32,7 @@ import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { deriveServerPaths, ServerConfig } from "../../config.ts";
 import { TextGenerationError } from "@t3tools/contracts";
@@ -73,7 +73,7 @@ const customAcpDriver = ProviderDriverKind.make("customAcp");
 const customAcpPiLocalInstanceId = ProviderInstanceId.make("customAcp_piLocal");
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const mockAgentPath = path.join(__dirname, "../../../scripts/acp-mock-agent.ts");
-const bunExe = "bun";
+const mockAgentCommand = "node";
 const customAcpStartupFailure = (detail = "Pi RPC process exited during startup") =>
   new ProviderAdapterProcessError({
     provider: "customAcp",
@@ -501,7 +501,7 @@ describe("ProviderCommandReactor", () => {
       "stderr tail: startup failed sentinel",
     ].join(" | ");
     const settings = decodeCustomAcpSettings({
-      command: bunExe,
+      command: mockAgentCommand,
       args: mockAgentPath,
       env: envText({
         T3_ACP_REQUEST_LOG_PATH: requestLog,

@@ -40,7 +40,7 @@ const customAcpDriver = ProviderDriverKind.make("customAcp");
 const customAcpInstanceId = ProviderInstanceId.make("customAcp");
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const mockAgentPath = path.join(__dirname, "../../../scripts/acp-mock-agent.ts");
-const bunExe = "bun";
+const mockAgentCommand = "node";
 
 const testLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "custom-acp-provider-test-",
@@ -57,7 +57,7 @@ function envText(env: Record<string, string>): string {
 
 function makeCustomAcpSettings(overrides: Partial<CustomAcpSettings> = {}): CustomAcpSettings {
   return decodeCustomAcpSettings({
-    command: bunExe,
+    command: mockAgentCommand,
     args: mockAgentPath,
     ...overrides,
   });
