@@ -71,6 +71,7 @@ const decodeSessionUpdate = Schema.decodeUnknownEffect(AcpSchema.SessionNotifica
 const decodeElicitationComplete = Schema.decodeUnknownEffect(
   AcpSchema.ElicitationCompleteNotification,
 );
+const encodeUnknownJsonString = Schema.encodeEffect(Schema.UnknownFromJsonString);
 const parserFactory = RpcSerialization.ndJsonRpc();
 
 export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(function* (
@@ -128,6 +129,42 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
 
       yield* Queue.offer(outgoing, encoded).pipe(Effect.asVoid);
     }
+  });
+
+  const offerOutgoingNotification = Effect.fn("offerOutgoingNotification")(function* (
+    method: string,
+    payload: unknown,
+  ) {
+    const message = {
+      jsonrpc: "2.0",
+      method,
+      params: payload,
+    } as const;
+
+    yield* logProtocol({
+      direction: "outgoing",
+      stage: "decoded",
+      payload: message,
+    });
+
+    const encoded = yield* encodeUnknownJsonString(message).pipe(
+      Effect.map((value) => `${value}\n`),
+      Effect.mapError(
+        (cause) =>
+          new AcpError.AcpProtocolParseError({
+            detail: "Failed to encode ACP message",
+            cause,
+          }),
+      ),
+    );
+
+    yield* logProtocol({
+      direction: "outgoing",
+      stage: "raw",
+      payload: encoded,
+    });
+
+    yield* Queue.offer(outgoing, encoded).pipe(Effect.asVoid);
   });
 
   const resolveExtPending = (
@@ -466,13 +503,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     method: string,
     payload: unknown,
   ) {
-    yield* offerOutgoing({
-      _tag: "Request",
-      id: "",
-      tag: method,
-      payload,
-      headers: [],
-    });
+    yield* offerOutgoingNotification(method, payload);
   });
 
   const sendRequest = Effect.fn("sendRequest")(function* (method: string, payload: unknown) {
