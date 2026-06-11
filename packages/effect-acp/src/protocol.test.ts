@@ -86,7 +86,8 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
 
         yield* transport.notify("session/cancel", { sessionId: "session-1" });
         const outbound = yield* Queue.take(output);
-        const outboundText = typeof outbound === "string" ? outbound : new TextDecoder().decode(outbound);
+        const outboundText =
+          typeof outbound === "string" ? outbound : new TextDecoder().decode(outbound);
         assert.equal(outboundText.includes('"id"'), false);
         assert.equal(outboundText.includes('"headers"'), false);
         assert.deepEqual(yield* decodeSessionCancelNotification(outbound), {
