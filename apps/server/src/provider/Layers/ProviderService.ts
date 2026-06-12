@@ -25,8 +25,10 @@ import {
   type ProviderDriverKind,
   type ProviderRuntimeEvent,
   type ProviderSession,
+  type ProviderWorkflowRunCursor,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -64,7 +66,14 @@ import {
 import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
+import {
+  makeCustomAcpResumeCursor,
+  parseCustomAcpResume,
+  type PiWorkflowResumeRun,
+} from "../acp/PiWorkflowExtension.ts";
 const isModelSelection = Schema.is(ModelSelection);
+
+const WORKFLOW_ACTIVITY_TOUCH_INTERVAL_MS = 15_000;
 
 /**
  * Hook for tests that want to override the canonical event logger pulled
@@ -180,6 +189,35 @@ function readDeletedBackingSession(
   );
 }
 
+function workflowResumeRunFromCursor(run: ProviderWorkflowRunCursor): PiWorkflowResumeRun {
+  return {
+    runId: run.runId,
+    lastSequence: run.lastSequence,
+    ...(run.workflowId !== undefined ? { workflowId: run.workflowId } : {}),
+    ...(run.runDir !== undefined ? { runDir: run.runDir } : {}),
+    ...(run.auditPath !== undefined ? { auditPath: run.auditPath } : {}),
+    status: run.status,
+  };
+}
+
+function mergeWorkflowRunIntoResumeCursor(
+  provider: ProviderDriverKind,
+  resumeCursor: unknown,
+  run: ProviderWorkflowRunCursor,
+): unknown | undefined {
+  const parsed = parseCustomAcpResume(provider, resumeCursor);
+  if (!parsed) return undefined;
+  const activeRuns = new Map(parsed.activeWorkflowRuns.map((entry) => [entry.runId, entry]));
+  if (run.terminal) activeRuns.delete(run.runId);
+  else activeRuns.set(run.runId, workflowResumeRunFromCursor(run));
+  return makeCustomAcpResumeCursor({
+    provider,
+    sessionId: parsed.sessionId,
+    ...(parsed.requireResumeSession ? { requireSessionLoad: true } : {}),
+    activeWorkflowRuns: Array.from(activeRuns.values()),
+  });
+}
+
 const dieOnMissingBindingInstanceId = (
   operation: string,
   payload: {
@@ -233,6 +271,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   const destructiveStopWaiters = new Map<ThreadId, Deferred.Deferred<void, ProviderServiceError>>();
+  const runtimeActivityTouches = new Map<ThreadId, number>();
 
   const runDestructiveStopOnce = (
     threadId: ThreadId,
@@ -330,6 +369,56 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       });
     });
 
+  const touchBindingForRuntimeActivity = (
+    source: {
+      readonly instanceId: ProviderInstanceId;
+      readonly provider: ProviderDriverKind;
+    },
+    event: ProviderRuntimeEvent,
+  ): Effect.Effect<void> => {
+    if (event.type !== "workflow.run.updated") return Effect.void;
+    return Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      const lastTouchedAt = runtimeActivityTouches.get(event.threadId);
+      if (
+        lastTouchedAt !== undefined &&
+        !event.payload.run.terminal &&
+        now - lastTouchedAt < WORKFLOW_ACTIVITY_TOUCH_INTERVAL_MS
+      ) {
+        return;
+      }
+      runtimeActivityTouches.set(event.threadId, now);
+      const binding = Option.getOrUndefined(yield* directory.getBinding(event.threadId));
+      if (!binding) return;
+      const resumeCursor = mergeWorkflowRunIntoResumeCursor(
+        source.provider,
+        binding.resumeCursor,
+        event.payload.run,
+      );
+      yield* directory.upsert({
+        threadId: event.threadId,
+        provider: source.provider,
+        providerInstanceId: source.instanceId,
+        status: binding.status ?? "running",
+        ...(binding.runtimeMode !== undefined ? { runtimeMode: binding.runtimeMode } : {}),
+        ...(resumeCursor !== undefined ? { resumeCursor } : {}),
+        runtimePayload: {
+          lastRuntimeEvent: event.type,
+          lastRuntimeEventAt: event.createdAt,
+        },
+      });
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("provider runtime activity touch failed", {
+          threadId: event.threadId,
+          provider: source.provider,
+          eventType: event.type,
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
+  };
+
   const processRuntimeEvent = (
     source: {
       readonly instanceId: ProviderInstanceId;
@@ -342,7 +431,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         increment(providerRuntimeEventsTotal, {
           provider: canonicalEvent.provider,
           eventType: canonicalEvent.type,
-        }).pipe(Effect.andThen(publishRuntimeEvent(canonicalEvent))),
+        }).pipe(
+          Effect.andThen(touchBindingForRuntimeActivity(source, canonicalEvent)),
+          Effect.andThen(publishRuntimeEvent(canonicalEvent)),
+        ),
       ),
     );
 

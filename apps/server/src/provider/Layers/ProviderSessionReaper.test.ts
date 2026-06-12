@@ -67,6 +67,21 @@ function makeReadModel(
       readonly runtimeMode: "approval-required" | "full-access" | "auto-accept-edits";
       readonly activeTurnId: TurnId | null;
       readonly lastError: string | null;
+      readonly workflowRuns?: ReadonlyArray<{
+        readonly runId: string;
+        readonly status:
+          | "running"
+          | "paused"
+          | "interrupted"
+          | "recovering"
+          | "completed"
+          | "failed"
+          | "aborted";
+        readonly terminal: boolean;
+        readonly lastSequence: number;
+        readonly actions: ReadonlyArray<"continue" | "resume" | "interrupt" | "pause" | "abort">;
+        readonly updatedAt: string;
+      }>;
       readonly updatedAt: string;
     } | null;
   }>,
@@ -300,6 +315,63 @@ describe("ProviderSessionReaper", () => {
         lastSeenAt: "2026-04-14T00:00:00.000Z",
         resumeCursor: {
           opaque: "resume-active-turn",
+        },
+        runtimePayload: null,
+      }),
+    );
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await Effect.runPromise(Scope.make("sequential"));
+    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
+    await Effect.runPromise(drainFibers);
+
+    expect(harness.stopSession).not.toHaveBeenCalled();
+    const remaining = await runtime!.runPromise(repository.getByThreadId({ threadId }));
+    expect(Option.isSome(remaining)).toBe(true);
+  });
+
+  it("skips stale sessions while a detached workflow is still running", async () => {
+    const threadId = ThreadId.make("thread-reaper-active-workflow");
+    const now = "2026-01-01T00:00:00.000Z";
+    const harness = await createHarness({
+      readModel: makeReadModel([
+        {
+          id: threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "claudeAgent",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            workflowRuns: [
+              {
+                runId: "workflow-run-1",
+                status: "running",
+                terminal: false,
+                lastSequence: 7,
+                actions: ["interrupt", "abort"],
+                updatedAt: now,
+              },
+            ],
+            updatedAt: now,
+          },
+        },
+      ]),
+    });
+    const repository = await runtime!.runPromise(Effect.service(ProviderSessionRuntimeRepository));
+
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId,
+        providerName: "claudeAgent",
+        providerInstanceId: null,
+        adapterKey: "claudeAgent",
+        runtimeMode: "full-access",
+        status: "running",
+        lastSeenAt: "2026-04-14T00:00:00.000Z",
+        resumeCursor: {
+          opaque: "resume-active-workflow",
         },
         runtimePayload: null,
       }),

@@ -16,6 +16,14 @@ import { ProviderService } from "../Services/ProviderService.ts";
 const DEFAULT_INACTIVITY_THRESHOLD_MS = 30 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 
+function hasWorkingWorkflowRun(
+  workflowRuns: ReadonlyArray<{ readonly status: string; readonly terminal: boolean }> | undefined,
+): boolean {
+  return (workflowRuns ?? []).some(
+    (run) => !run.terminal && (run.status === "running" || run.status === "recovering"),
+  );
+}
+
 export interface ProviderSessionReaperLiveOptions {
   readonly inactivityThresholdMs?: number;
   readonly sweepIntervalMs?: number;
@@ -65,6 +73,15 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           yield* Effect.logDebug("provider.session.reaper.skipped-active-turn", {
             threadId: binding.threadId,
             activeTurnId: thread.session.activeTurnId,
+            idleDurationMs,
+          });
+          continue;
+        }
+
+        if (hasWorkingWorkflowRun(thread?.session?.workflowRuns)) {
+          yield* Effect.logDebug("provider.session.reaper.skipped-active-workflow", {
+            threadId: binding.threadId,
+            workflowRuns: thread?.session?.workflowRuns,
             idleDurationMs,
           });
           continue;

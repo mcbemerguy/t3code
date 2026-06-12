@@ -98,7 +98,7 @@ const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJ
 const CUSTOM_ACP_PROVIDER = ProviderDriverKind.make("customAcp");
 const ACP_CANCEL_WATCHDOG_GRACE_MS = 2_500;
 const ACP_CANCEL_PROMPT_DRAIN_MS = 500;
-const ACP_SESSION_LIFECYCLE_GRACE_MS = 2_500;
+const ACP_SESSION_LIFECYCLE_GRACE_MS = 12_000;
 const POST_CANCEL_WORKFLOW_REFRESH_DELAYS_MS = [100, 500, 1_000, 1_500] as const;
 const POST_CANCEL_WORKFLOW_REFRESH_REQUEST_TIMEOUT_MS = 750;
 
