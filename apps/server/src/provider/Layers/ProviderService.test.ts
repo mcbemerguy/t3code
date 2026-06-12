@@ -63,6 +63,7 @@ import {
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
+import { parseCustomAcpResume } from "../acp/PiWorkflowExtension.ts";
 
 const defaultServerSettingsLayer = ServerSettingsService.layerTest();
 
@@ -1668,6 +1669,105 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
         ),
         true,
       );
+    }),
+  );
+
+  it.effect("persists workflow resume cursor changes inside the activity touch throttle", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const runtimeRepository = yield* ProviderSessionRuntimeRepository;
+      const threadId = asThreadId("thread-workflow-throttle-cursor");
+      const session = yield* provider.startSession(threadId, {
+        provider: CUSTOM_ACP_DRIVER,
+        providerInstanceId: customAcpInstanceId,
+        threadId,
+        resumeCursor: {
+          ...strictCustomAcpResumeCursor,
+          provider: CUSTOM_ACP_DRIVER,
+          sessionId: "pi-session-workflow-throttle",
+        },
+        runtimeMode: "full-access",
+      });
+      yield* advanceTestClock(50);
+
+      const emitWorkflowRun = (input: {
+        readonly eventId: string;
+        readonly runId: string;
+        readonly status: "running" | "completed";
+        readonly terminal: boolean;
+        readonly lastSequence: number;
+      }) => {
+        fanout.customAcp.emit({
+          type: "workflow.run.updated",
+          eventId: asEventId(input.eventId),
+          provider: CUSTOM_ACP_DRIVER,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          threadId: session.threadId,
+          payload: {
+            run: {
+              runId: input.runId,
+              status: input.status,
+              terminal: input.terminal,
+              lastSequence: input.lastSequence,
+              workflowId: "smoke",
+              runDir: `/tmp/${input.runId}`,
+              actions: [],
+              updatedAt: "2026-01-01T00:00:00.000Z",
+            },
+          },
+        } satisfies LegacyProviderRuntimeEvent);
+      };
+
+      emitWorkflowRun({
+        eventId: "evt-workflow-throttle-run-1",
+        runId: "run-1",
+        status: "running",
+        terminal: false,
+        lastSequence: 1,
+      });
+      yield* advanceTestClock(50);
+      emitWorkflowRun({
+        eventId: "evt-workflow-throttle-run-2",
+        runId: "run-2",
+        status: "running",
+        terminal: false,
+        lastSequence: 1,
+      });
+      yield* advanceTestClock(50);
+      emitWorkflowRun({
+        eventId: "evt-workflow-throttle-run-1-seq-2",
+        runId: "run-1",
+        status: "running",
+        terminal: false,
+        lastSequence: 2,
+      });
+      yield* advanceTestClock(50);
+      emitWorkflowRun({
+        eventId: "evt-workflow-throttle-run-2-terminal",
+        runId: "run-2",
+        status: "completed",
+        terminal: true,
+        lastSequence: 2,
+      });
+      yield* advanceTestClock(50);
+
+      const persisted = yield* runtimeRepository.getByThreadId({ threadId });
+      assert.equal(Option.isSome(persisted), true);
+      if (Option.isSome(persisted)) {
+        const activeRuns = parseCustomAcpResume(
+          CUSTOM_ACP_DRIVER,
+          persisted.value.resumeCursor,
+        )?.activeWorkflowRuns;
+        assert.deepEqual(activeRuns, [
+          {
+            runId: "run-1",
+            lastSequence: 2,
+            workflowId: "smoke",
+            runDir: "/tmp/run-1",
+            status: "running",
+          },
+        ]);
+      }
     }),
   );
 

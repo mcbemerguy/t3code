@@ -200,6 +200,33 @@ function workflowResumeRunFromCursor(run: ProviderWorkflowRunCursor): PiWorkflow
   };
 }
 
+function workflowResumeRunsEqual(
+  left: PiWorkflowResumeRun | undefined,
+  right: PiWorkflowResumeRun,
+): boolean {
+  return (
+    left !== undefined &&
+    left.runId === right.runId &&
+    left.lastSequence === right.lastSequence &&
+    left.workflowId === right.workflowId &&
+    left.runDir === right.runDir &&
+    left.auditPath === right.auditPath &&
+    left.status === right.status
+  );
+}
+
+function workflowRunChangesResumeCursor(
+  provider: ProviderDriverKind,
+  resumeCursor: unknown,
+  run: ProviderWorkflowRunCursor,
+): boolean {
+  const parsed = parseCustomAcpResume(provider, resumeCursor);
+  if (!parsed) return false;
+  const existing = parsed.activeWorkflowRuns.find((entry) => entry.runId === run.runId);
+  if (run.terminal) return existing !== undefined;
+  return !workflowResumeRunsEqual(existing, workflowResumeRunFromCursor(run));
+}
+
 function mergeWorkflowRunIntoResumeCursor(
   provider: ProviderDriverKind,
   resumeCursor: unknown,
@@ -379,17 +406,23 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     if (event.type !== "workflow.run.updated") return Effect.void;
     return Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
+      const binding = Option.getOrUndefined(yield* directory.getBinding(event.threadId));
+      if (!binding) return;
+      const resumeCursorChanged = workflowRunChangesResumeCursor(
+        source.provider,
+        binding.resumeCursor,
+        event.payload.run,
+      );
       const lastTouchedAt = runtimeActivityTouches.get(event.threadId);
       if (
         lastTouchedAt !== undefined &&
         !event.payload.run.terminal &&
+        !resumeCursorChanged &&
         now - lastTouchedAt < WORKFLOW_ACTIVITY_TOUCH_INTERVAL_MS
       ) {
         return;
       }
       runtimeActivityTouches.set(event.threadId, now);
-      const binding = Option.getOrUndefined(yield* directory.getBinding(event.threadId));
-      if (!binding) return;
       const resumeCursor = mergeWorkflowRunIntoResumeCursor(
         source.provider,
         binding.resumeCursor,
