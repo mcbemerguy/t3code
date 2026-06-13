@@ -7,6 +7,7 @@ import {
   type OrchestrationEvent,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import { runPromise as runEffectPromise } from "effect/Effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import { createEmptyReadModel, projectEvent } from "./projector.ts";
@@ -522,37 +523,76 @@ describe("orchestration projector", () => {
       ),
     );
 
-    const afterRunning = await Effect.runPromise(
-      projectEvent(
-        afterCreate,
-        makeEvent({
-          sequence: 2,
-          type: "thread.session-set",
-          aggregateKind: "thread",
-          aggregateId: "thread-1",
-          occurredAt: startedAt,
-          commandId: "cmd-running",
-          payload: {
-            threadId: "thread-1",
-            session: {
+    const settledAt = "2026-02-23T08:01:00.000Z";
+    const [afterRunning, afterReady] = await Effect.runPromise(
+      Effect.flatMap(
+        projectEvent(
+          afterCreate,
+          makeEvent({
+            sequence: 2,
+            type: "thread.session-set",
+            aggregateKind: "thread",
+            aggregateId: "thread-1",
+            occurredAt: startedAt,
+            commandId: "cmd-running",
+            payload: {
               threadId: "thread-1",
-              status: "running",
-              providerName: "codex",
-              providerSessionId: "session-1",
-              providerThreadId: "provider-thread-1",
-              runtimeMode: "approval-required",
-              activeTurnId: "turn-1",
-              lastError: null,
-              updatedAt: startedAt,
+              session: {
+                threadId: "thread-1",
+                status: "running",
+                providerName: "codex",
+                providerSessionId: "session-1",
+                providerThreadId: "provider-thread-1",
+                runtimeMode: "approval-required",
+                activeTurnId: "turn-1",
+                lastError: null,
+                updatedAt: startedAt,
+              },
             },
-          },
-        }),
+          }),
+        ),
+        (running) =>
+          Effect.map(
+            projectEvent(
+              running,
+              makeEvent({
+                sequence: 3,
+                type: "thread.session-set",
+                aggregateKind: "thread",
+                aggregateId: "thread-1",
+                occurredAt: settledAt,
+                commandId: "cmd-ready",
+                payload: {
+                  threadId: "thread-1",
+                  session: {
+                    threadId: "thread-1",
+                    status: "ready",
+                    providerName: "codex",
+                    providerSessionId: "session-1",
+                    providerThreadId: "provider-thread-1",
+                    runtimeMode: "approval-required",
+                    activeTurnId: null,
+                    lastError: null,
+                    updatedAt: settledAt,
+                  },
+                },
+              }),
+            ),
+            (ready) => [running, ready] as const,
+          ),
       ),
     );
 
     const thread = afterRunning.threads[0];
     expect(thread?.latestTurn?.turnId).toBe("turn-1");
     expect(thread?.session?.status).toBe("running");
+
+    // Leaving the "running" session status settles the running turn with the
+    // session timestamp as the turn end.
+    const settledThread = afterReady.threads[0];
+    expect(settledThread?.latestTurn?.turnId).toBe("turn-1");
+    expect(settledThread?.latestTurn?.state).toBe("completed");
+    expect(settledThread?.latestTurn?.completedAt).toBe(settledAt);
   });
 
   it("updates canonical thread runtime mode from thread.runtime-mode-set", async () => {
@@ -669,7 +709,7 @@ describe("orchestration projector", () => {
       ),
     );
 
-    const afterComplete = await Effect.runPromise(
+    const afterComplete = await runEffectPromise(
       projectEvent(
         afterDelta,
         makeEvent({
@@ -704,7 +744,7 @@ describe("orchestration projector", () => {
     const createdAt = "2026-02-23T10:00:00.000Z";
     const model = createEmptyReadModel(createdAt);
 
-    const afterCreate = await Effect.runPromise(
+    const afterCreate = await runEffectPromise(
       projectEvent(
         model,
         makeEvent({
@@ -897,7 +937,7 @@ describe("orchestration projector", () => {
 
     const afterRevert = await events.reduce<Promise<ReturnType<typeof createEmptyReadModel>>>(
       (statePromise, event) =>
-        statePromise.then((state) => Effect.runPromise(projectEvent(state, event))),
+        statePromise.then((state) => runEffectPromise(projectEvent(state, event))),
       Promise.resolve(afterCreate),
     );
 
@@ -919,7 +959,7 @@ describe("orchestration projector", () => {
     const createdAt = "2026-02-26T12:00:00.000Z";
     const model = createEmptyReadModel(createdAt);
 
-    const afterCreate = await Effect.runPromise(
+    const afterCreate = await runEffectPromise(
       projectEvent(
         model,
         makeEvent({
@@ -1054,7 +1094,7 @@ describe("orchestration projector", () => {
 
     const afterRevert = await events.reduce<Promise<ReturnType<typeof createEmptyReadModel>>>(
       (statePromise, event) =>
-        statePromise.then((state) => Effect.runPromise(projectEvent(state, event))),
+        statePromise.then((state) => runEffectPromise(projectEvent(state, event))),
       Promise.resolve(afterCreate),
     );
 
@@ -1072,7 +1112,7 @@ describe("orchestration projector", () => {
     const createdAt = "2026-03-01T10:00:00.000Z";
     const model = createEmptyReadModel(createdAt);
 
-    const afterCreate = await Effect.runPromise(
+    const afterCreate = await runEffectPromise(
       projectEvent(
         model,
         makeEvent({
@@ -1126,7 +1166,7 @@ describe("orchestration projector", () => {
       Promise<ReturnType<typeof createEmptyReadModel>>
     >(
       (statePromise, event) =>
-        statePromise.then((state) => Effect.runPromise(projectEvent(state, event))),
+        statePromise.then((state) => runEffectPromise(projectEvent(state, event))),
       Promise.resolve(afterCreate),
     );
 
@@ -1156,7 +1196,7 @@ describe("orchestration projector", () => {
       Promise<ReturnType<typeof createEmptyReadModel>>
     >(
       (statePromise, event) =>
-        statePromise.then((state) => Effect.runPromise(projectEvent(state, event))),
+        statePromise.then((state) => runEffectPromise(projectEvent(state, event))),
       Promise.resolve(afterMessages),
     );
 

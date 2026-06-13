@@ -135,6 +135,9 @@ export interface AcpSessionRuntimeShape {
     value: string | boolean,
   ) => Effect.Effect<EffectAcpSchema.SetSessionConfigOptionResponse, EffectAcpErrors.AcpError>;
   readonly setModel: (model: string) => Effect.Effect<void, EffectAcpErrors.AcpError>;
+  readonly setSessionModel: (
+    modelId: string,
+  ) => Effect.Effect<EffectAcpSchema.SetSessionModelResponse, EffectAcpErrors.AcpError>;
   readonly request: (
     method: string,
     payload: unknown,
@@ -611,6 +614,20 @@ const makeAcpSessionRuntime = (
             started.modelConfigId ? setConfigOption(started.modelConfigId, model) : Effect.void,
           ),
           Effect.asVoid,
+        ),
+      setSessionModel: (modelId) =>
+        getStartedState.pipe(
+          Effect.flatMap((started) => {
+            const requestPayload = {
+              sessionId: started.sessionId,
+              modelId,
+            } satisfies EffectAcpSchema.SetSessionModelRequest;
+            return runLoggedRequest(
+              "session/set_model",
+              requestPayload,
+              acp.agent.setSessionModel(requestPayload),
+            );
+          }),
         ),
       request: (method, payload) =>
         runLoggedRequest(method, payload, acp.raw.request(method, payload)),

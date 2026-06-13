@@ -36,10 +36,16 @@ describe("ProviderSettingsForm helpers", () => {
     });
   });
 
-  it("exposes Custom ACP as an active primitive provider definition", () => {
+  it("exposes Custom ACP and Grok as active provider definitions", () => {
     const activeValues = PROVIDER_CLIENT_DEFINITIONS.map((definition) => definition.value);
     expect(activeValues).toContain(ProviderDriverKind.make("customAcp"));
+    expect(activeValues).toContain(ProviderDriverKind.make("grok"));
     expect(activeValues).not.toContain(ProviderDriverKind.make("acpRegistry"));
+
+    const grok = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("grok")];
+    expect(grok).toBeDefined();
+    expect(grok!.label).toBe("Grok");
+    expect(grok!.badgeLabel).toBe("Early Access");
 
     const customAcp = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("customAcp")];
     expect(customAcp).toBeDefined();

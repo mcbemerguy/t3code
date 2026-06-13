@@ -94,11 +94,9 @@ function buildProps() {
   return {
     isWorking: false,
     activeTurnInProgress: false,
-    activeTurnId: null,
     activeTurnStartedAt: null,
     listRef: createRef<LegendListRef | null>(),
-    completionDividerBeforeEntryId: null,
-    completionSummary: null,
+    latestTurn: null,
     turnDiffSummaryByAssistantMessageId: new Map(),
     routeThreadKey: "environment-local:thread-1",
     onOpenTurnDiff: () => {},
@@ -190,7 +188,8 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Terminal 1 lines 1-5");
     expect(markup).toContain("lucide-terminal");
-    expect(markup).toContain("yoo what&#x27;s ");
+    expect(markup).toContain("yoo what&#x27;s</p>");
+    expect(markup).toContain('<span aria-hidden="true"> </span>');
     expect(markup).toContain("Show full message");
   }, 20_000);
 
@@ -260,7 +259,7 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("Context compacted");
-    expect(markup).toContain("Work log");
+    expect(markup).toContain("work log");
   });
 
   it("renders Pi thought rows and compact ACP tool rows without duplicate labels", async () => {
@@ -307,6 +306,83 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Inspecting repository state");
     expect(markup).toContain("apps/web/src/session-logic.ts");
     expect(markup).not.toContain("Read file - apps/web/src/session-logic.ts");
+  });
+
+  it("compacts tool overflow while keeping same-turn Pi thought rows visible", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const turnId = TurnId.make("turn-pi");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-thought",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-thought",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              turnId,
+              label: "Scout subagent",
+              detail: "Inspecting repository state",
+              tone: "thinking",
+            },
+          },
+          {
+            id: "entry-tool-hidden-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:29.000Z",
+            entry: {
+              id: "work-tool-hidden-1",
+              createdAt: "2026-03-17T19:12:29.000Z",
+              turnId,
+              label: "Read file completed",
+              detail: "hidden/first.ts",
+              tone: "tool",
+              toolTitle: "Read file completed",
+              toolKind: "read",
+            },
+          },
+          {
+            id: "entry-tool-hidden-2",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:30.000Z",
+            entry: {
+              id: "work-tool-hidden-2",
+              createdAt: "2026-03-17T19:12:30.000Z",
+              turnId,
+              label: "Bash completed",
+              detail: "hidden second command",
+              tone: "tool",
+              toolTitle: "Bash completed",
+              toolKind: "bash",
+            },
+          },
+          {
+            id: "entry-tool-visible",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:31.000Z",
+            entry: {
+              id: "work-tool-visible",
+              createdAt: "2026-03-17T19:12:31.000Z",
+              turnId,
+              label: "Edit completed",
+              detail: "visible/latest.ts",
+              tone: "tool",
+              toolTitle: "Edit completed",
+              toolKind: "edit",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Scout subagent");
+    expect(markup).toContain("Inspecting repository state");
+    expect(markup).toContain("visible/latest.ts");
+    expect(markup).toContain("+2 previous tool calls");
+    expect(markup).not.toContain("hidden/first.ts");
+    expect(markup).not.toContain("hidden second command");
   });
 
   it("formats changed file paths from the workspace root", async () => {
@@ -376,5 +452,32 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain(">Review comment<");
     expect(markup).not.toContain("&lt;review_comment");
     expect(markup).not.toContain("&lt;/review_comment&gt;");
+  });
+
+  it("renders a failure marker for failed tool lifecycle entries", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Glob",
+              tone: "tool",
+              toolLifecycleStatus: "failed",
+              detail: "No files found",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("lucide-x");
+    expect(markup).toContain('aria-label="Tool call failed"');
   });
 });

@@ -63,8 +63,11 @@ function TokenRows(props: { rows: ReadonlyArray<DetailRow> }) {
   ));
 }
 
-export function ContextWindowMeter(props: { usage: ContextWindowSnapshot }) {
-  const { usage } = props;
+export function ContextWindowMeter(props: {
+  usage: ContextWindowSnapshot;
+  providerDisplayName?: string | null;
+}) {
+  const { usage, providerDisplayName } = props;
   const usedPercentage = formatContextWindowPercentage(usage.usedPercentage);
   const normalizedPercentage = Math.max(0, Math.min(100, usage.usedPercentage ?? 0));
   const radius = 9.75;
@@ -78,6 +81,8 @@ export function ContextWindowMeter(props: { usage: ContextWindowSnapshot }) {
   const cost = formatContextWindowCost(usage.costAmount, usage.costCurrency);
   const hasTotalProcessed =
     usage.totalProcessedTokens !== null && usage.totalProcessedTokens > usage.usedTokens;
+  const usageColor = tone === "danger" ? "var(--color-red-500)" : "var(--color-blue-500)";
+  const compactActor = providerDisplayName ?? "This agent";
 
   return (
     <Popover>
@@ -89,7 +94,8 @@ export function ContextWindowMeter(props: { usage: ContextWindowSnapshot }) {
           <button
             type="button"
             className={cn(
-              "group inline-flex items-center gap-1.5 rounded-full border border-transparent px-1.5 py-0.5 text-xs transition-colors hover:bg-muted/60",
+              "group inline-flex items-center gap-1.5 rounded-full border border-transparent px-1.5 py-0.5 text-xs outline-none transition-colors hover:bg-muted/60 data-[pressed]:bg-accent",
+              "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
               tone === "warning" && "text-amber-600 dark:text-amber-400",
               tone === "danger" && "text-destructive",
               tone === "default" && "text-muted-foreground",
@@ -103,7 +109,7 @@ export function ContextWindowMeter(props: { usage: ContextWindowSnapshot }) {
             <span className="relative flex h-5 w-5 items-center justify-center">
               <svg
                 viewBox="0 0 24 24"
-                className="-rotate-90 absolute inset-0 h-full w-full transform-gpu"
+                className="-rotate-90 absolute inset-0 size-full transform-gpu"
                 aria-hidden="true"
               >
                 <circle
@@ -111,7 +117,7 @@ export function ContextWindowMeter(props: { usage: ContextWindowSnapshot }) {
                   cy="12"
                   r={radius}
                   fill="none"
-                  stroke="color-mix(in oklab, var(--color-muted) 70%, transparent)"
+                  stroke="color-mix(in oklab, var(--color-muted-foreground) 35%, transparent)"
                   strokeWidth="3"
                 />
                 <circle
@@ -119,7 +125,7 @@ export function ContextWindowMeter(props: { usage: ContextWindowSnapshot }) {
                   cy="12"
                   r={radius}
                   fill="none"
-                  stroke="currentColor"
+                  stroke={usageColor}
                   strokeWidth="3"
                   strokeLinecap="round"
                   strokeDasharray={circumference}
@@ -146,6 +152,19 @@ export function ContextWindowMeter(props: { usage: ContextWindowSnapshot }) {
                 />
                 {usedPercentage ? <DetailLine label="Percent used" value={usedPercentage} /> : null}
                 <DetailLine label="Remaining" value={tokenLabel(usage.remainingTokens)} />
+                <div
+                  className="h-1.5 w-full overflow-hidden rounded-full bg-muted/60"
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(normalizedPercentage)}
+                  aria-label="Context window usage"
+                >
+                  <div
+                    className="h-full rounded-full transition-[width,background-color] duration-500 ease-out motion-reduce:transition-none"
+                    style={{ width: `${normalizedPercentage}%`, backgroundColor: usageColor }}
+                  />
+                </div>
               </>
             ) : (
               <DetailLine label="Used" value={tokenLabel(usage.usedTokens)} />
@@ -155,6 +174,11 @@ export function ContextWindowMeter(props: { usage: ContextWindowSnapshot }) {
                 label="Auto-compact"
                 value={usage.compactsAutomatically ? "Available" : "Not automatic"}
               />
+            ) : null}
+            {usage.compactsAutomatically ? (
+              <div className="pt-0.5 text-pretty text-[11px] text-muted-foreground">
+                {compactActor} automatically compacts its context when needed.
+              </div>
             ) : null}
           </DetailSection>
 
@@ -201,6 +225,17 @@ export function ContextWindowMeter(props: { usage: ContextWindowSnapshot }) {
           {cost !== null ? (
             <DetailSection title="Cost">
               <DetailLine label="Total" value={cost} />
+            </DetailSection>
+          ) : null}
+
+          {usage.contextSourceId !== null || usage.contextSourceLabel !== null ? (
+            <DetailSection title="Source">
+              {usage.contextSourceLabel !== null ? (
+                <DetailLine label="Label" value={usage.contextSourceLabel} />
+              ) : null}
+              {usage.contextSourceId !== null ? (
+                <DetailLine label="ID" value={usage.contextSourceId} />
+              ) : null}
             </DetailSection>
           ) : null}
         </div>

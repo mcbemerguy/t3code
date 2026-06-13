@@ -69,7 +69,7 @@ import { ServerEnvironmentLive } from "./environment/Layers/ServerEnvironment.ts
 import { authHttpApiLayer, environmentAuthenticatedAuthLayer } from "./auth/http.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
-import { cloudHttpApiLayer, reconcileDesiredCloudLink } from "./cloud/http.ts";
+import { connectHttpApiLayer, reconcileDesiredCloudLink } from "./cloud/http.ts";
 import * as CloudManagedEndpointRuntime from "./cloud/ManagedEndpointRuntime.ts";
 import * as CloudCliTokenManager from "./cloud/CliTokenManager.ts";
 import * as CloudCliState from "./cloud/CliState.ts";
@@ -86,6 +86,12 @@ import { orchestrationHttpApiLayer } from "./orchestration/http.ts";
 import * as NetService from "@t3tools/shared/Net";
 import * as RelayClient from "@t3tools/shared/relayClient";
 import { disableTailscaleServe, ensureTailscaleServe } from "@t3tools/tailscale";
+
+// Effect's default preemptive shutdown waits 20s before finalizing request scopes.
+// T3's primary transport is long-lived WebSocket RPC, whose Effect scope finalizer
+// already closes the websocket gracefully. Do not add an artificial drain before
+// those finalizers get a chance to run.
+const HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS = 0;
 
 const PtyAdapterLive = Layer.unwrap(
   Effect.gen(function* () {
@@ -116,6 +122,7 @@ const HttpServerLive = Layer.unwrap(
       return BunHttpServer.layer({
         port: config.port,
         ...(config.host ? { hostname: config.host } : {}),
+        gracefulShutdownTimeout: HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS,
       });
     } else {
       const [NodeHttpServer, NodeHttp] = yield* Effect.all([
@@ -125,6 +132,7 @@ const HttpServerLive = Layer.unwrap(
       return NodeHttpServer.layer(NodeHttp.createServer, {
         host: config.host,
         port: config.port,
+        gracefulShutdownTimeout: HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS,
       });
     }
   }),
@@ -321,7 +329,7 @@ const RuntimeServicesLive = ServerRuntimeStartupLive.pipe(
 export const makeRoutesLayer = Layer.mergeAll(
   HttpApiBuilder.layer(EnvironmentHttpApi).pipe(
     Layer.provide(authHttpApiLayer),
-    Layer.provide(cloudHttpApiLayer),
+    Layer.provide(connectHttpApiLayer),
     Layer.provide(orchestrationHttpApiLayer),
     Layer.provide(serverEnvironmentHttpApiLayer),
     Layer.provide(environmentAuthenticatedAuthLayer),
@@ -429,9 +437,9 @@ export const makeServerLayer = Layer.unwrap(
           Effect.sleep("250 millis").pipe(
             Effect.andThen(reconcileDesiredCloudLink(`http://127.0.0.1:${address.port}`)),
             Effect.retry({ times: 4 }),
-            Effect.tap(() => Effect.logInfo("T3 Cloud desired link reconciled on startup")),
+            Effect.tap(() => Effect.logInfo("T3 Connect desired link reconciled on startup")),
             Effect.catch((cause) =>
-              Effect.logWarning("Failed to reconcile T3 Cloud desired link on startup", {
+              Effect.logWarning("Failed to reconcile T3 Connect desired link on startup", {
                 cause,
               }),
             ),

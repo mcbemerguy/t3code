@@ -6,6 +6,7 @@ import {
   formatContextWindowCost,
   formatContextWindowPercentage,
   formatContextWindowTokens,
+  formatProviderDisplayName,
 } from "./contextWindow";
 
 function makeActivity(id: string, kind: string, payload: unknown): OrchestrationThreadActivity {
@@ -73,12 +74,14 @@ describe("contextWindow", () => {
     expect(formatContextWindowTokens(258_000)).toBe("258k");
   });
 
-  it("formats percentages and cost", () => {
+  it("formats percentages, cost, and provider display names", () => {
     expect(formatContextWindowPercentage(8.25)).toBe("8.3%");
     expect(formatContextWindowPercentage(81.6)).toBe("82%");
     expect(formatContextWindowPercentage(null)).toBeNull();
     expect(formatContextWindowCost(0.01234, "USD")).toBe("$0.0123");
     expect(formatContextWindowCost(12.3, "USD")).toBe("$12.30");
+    expect(formatProviderDisplayName("customAcp")).toBe("Custom ACP");
+    expect(formatProviderDisplayName("grok")).toBe("Grok");
   });
 
   it("includes total processed tokens when available", () => {

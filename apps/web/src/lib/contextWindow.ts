@@ -48,6 +48,30 @@ function deriveCost(payload: Record<string, unknown>): {
   };
 }
 
+export function formatProviderDisplayName(provider: string | null | undefined): string {
+  if (!provider) return "This agent";
+  switch (provider) {
+    case "claudeAgent":
+    case "claude":
+      return "Claude";
+    case "codex":
+      return "Codex";
+    case "cursor":
+      return "Cursor";
+    case "customAcp":
+      return "Custom ACP";
+    case "grok":
+      return "Grok";
+    case "opencode":
+      return "OpenCode";
+    default: {
+      const trimmed = provider.replace(/Agent$/i, "").trim();
+      if (trimmed.length === 0) return provider;
+      return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+    }
+  }
+}
+
 export function deriveLatestContextWindowSnapshot(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): ContextWindowSnapshot | null {

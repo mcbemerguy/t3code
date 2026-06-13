@@ -6,6 +6,7 @@ import type {
   ServerLifecycleWelcomePayload,
   TerminalEvent,
 } from "@t3tools/contracts";
+import { Effect } from "effect";
 
 import type { KnownEnvironment } from "./knownEnvironment.ts";
 import type { WsRpcClient } from "./wsRpcClient.ts";
@@ -221,10 +222,12 @@ export function createEnvironmentConnection(
       .catch(() => undefined)
       .then(() => Promise.resolve(input.onRecovered?.(environmentId)))
       .catch((error) => {
-        console.warn("Environment post-reconnect recovery failed", {
-          environmentId,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        Effect.runSync(
+          Effect.logWarning("Environment post-reconnect recovery failed", {
+            environmentId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
       });
   };
 

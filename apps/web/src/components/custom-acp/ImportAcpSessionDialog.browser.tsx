@@ -7,8 +7,8 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { page } from "vitest/browser";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { page } from "vite-plus/test/browser";
 import { render } from "vitest-browser-react";
 
 import { ImportAcpSessionDialog } from "./ImportAcpSessionDialog";
