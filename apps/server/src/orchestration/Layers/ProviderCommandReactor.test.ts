@@ -205,6 +205,7 @@ describe("ProviderCommandReactor", () => {
     readonly threadModelSelection?: ModelSelection;
     readonly sessionModelSwitch?: "unsupported" | "in-session";
     readonly sendActiveTurnInput?: ProviderServiceShape["sendActiveTurnInput"];
+    readonly controlWorkflowRun?: ProviderServiceShape["controlWorkflowRun"];
     readonly requiresNewThreadForModelChange?: boolean;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
@@ -364,6 +365,7 @@ describe("ProviderCommandReactor", () => {
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
       stopSession: stopSession as ProviderServiceShape["stopSession"],
+      ...(input?.controlWorkflowRun ? { controlWorkflowRun: input.controlWorkflowRun } : {}),
       listSessions: () => Effect.succeed(runtimeSessions),
       getCapabilities: (_provider) =>
         Effect.succeed({
@@ -481,6 +483,7 @@ describe("ProviderCommandReactor", () => {
       respondToRequest,
       respondToUserInput,
       stopSession,
+      controlWorkflowRun: service.controlWorkflowRun,
       renameBranch,
       refreshStatus,
       generateBranchName,
@@ -2640,6 +2643,63 @@ describe("ProviderCommandReactor", () => {
     expect(harness.interruptTurn.mock.calls[0]?.[0]).toEqual({
       threadId: "thread-1",
       turnId: "turn-1",
+    });
+  });
+
+  it("reacts to thread.workflow.control by calling provider workflow control", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const controlWorkflowRun = vi.fn<NonNullable<ProviderServiceShape["controlWorkflowRun"]>>(
+      (input) =>
+        Effect.succeed({
+          run: {
+            runId: input.runId,
+            status: "running",
+            terminal: false,
+            lastSequence: 2,
+            workflowId: "mock-workflow",
+            actions: ["interrupt", "abort"],
+            updatedAt: now,
+          },
+        }),
+    );
+    const harness = await createHarness({ controlWorkflowRun });
+
+    await runEffectPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-workflow-control"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await runEffectPromise(
+      harness.engine.dispatch({
+        type: "thread.workflow.control",
+        commandId: CommandId.make("cmd-workflow-control"),
+        threadId: ThreadId.make("thread-1"),
+        runId: "workflow-run-1",
+        action: "continue",
+        continuationMessage: "continue please",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => controlWorkflowRun.mock.calls.length === 1);
+    expect(controlWorkflowRun.mock.calls[0]?.[0]).toEqual({
+      threadId: "thread-1",
+      runId: "workflow-run-1",
+      action: "continue",
+      continuationMessage: "continue please",
     });
   });
 

@@ -58,6 +58,7 @@ type ProviderIntentEvent = Extract<
       | "thread.runtime-mode-set"
       | "thread.turn-start-requested"
       | "thread.turn-interrupt-requested"
+      | "thread.workflow-control-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
       | "thread.session-stop-requested";
@@ -271,6 +272,7 @@ const make = Effect.gen(function* () {
     readonly kind:
       | "provider.turn.start.failed"
       | "provider.turn.interrupt.failed"
+      | "provider.workflow.control.failed"
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
       | "provider.session.stop.failed";
@@ -576,6 +578,7 @@ const make = Effect.gen(function* () {
             // Provider turn ids are not orchestration turn ids.
             activeTurnId: null,
             lastError: session.lastError ?? null,
+            workflowRuns: session.workflowRuns ?? [],
             updatedAt: session.updatedAt,
           },
           createdAt,
@@ -1035,6 +1038,55 @@ const make = Effect.gen(function* () {
     });
   });
 
+  const processWorkflowControlRequested = Effect.fn("processWorkflowControlRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.workflow-control-requested" }>,
+  ) {
+    const thread = yield* resolveThread(event.payload.threadId);
+    if (!thread?.session || thread.session.status === "stopped") {
+      return yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.workflow.control.failed",
+        summary: "Workflow action failed",
+        detail: "No active provider session is bound to this thread.",
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+    }
+
+    if (!providerService.controlWorkflowRun) {
+      return yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.workflow.control.failed",
+        summary: "Workflow action failed",
+        detail: "The active provider service does not support workflow controls.",
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+    }
+
+    yield* providerService
+      .controlWorkflowRun({
+        threadId: event.payload.threadId,
+        runId: event.payload.runId,
+        action: event.payload.action,
+        ...(event.payload.continuationMessage !== undefined
+          ? { continuationMessage: event.payload.continuationMessage }
+          : {}),
+      })
+      .pipe(
+        Effect.catchCause((cause) =>
+          appendProviderFailureActivity({
+            threadId: event.payload.threadId,
+            kind: "provider.workflow.control.failed",
+            summary: "Workflow action failed",
+            detail: Cause.pretty(cause),
+            turnId: null,
+            createdAt: event.payload.createdAt,
+          }),
+        ),
+      );
+  });
+
   const processApprovalResponseRequested = Effect.fn("processApprovalResponseRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.approval-response-requested" }>,
   ) {
@@ -1148,6 +1200,7 @@ const make = Effect.gen(function* () {
         runtimeMode: thread.session?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
         activeTurnId: null,
         lastError: thread.session?.lastError ?? null,
+        workflowRuns: thread.session?.workflowRuns ?? [],
         updatedAt: now,
       },
       createdAt: now,
@@ -1185,6 +1238,9 @@ const make = Effect.gen(function* () {
       case "thread.turn-interrupt-requested":
         yield* processTurnInterruptRequested(event);
         return;
+      case "thread.workflow-control-requested":
+        yield* processWorkflowControlRequested(event);
+        return;
       case "thread.approval-response-requested":
         yield* processApprovalResponseRequested(event);
         return;
@@ -1218,6 +1274,7 @@ const make = Effect.gen(function* () {
         event.type === "thread.runtime-mode-set" ||
         event.type === "thread.turn-start-requested" ||
         event.type === "thread.turn-interrupt-requested" ||
+        event.type === "thread.workflow-control-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
         event.type === "thread.session-stop-requested"
