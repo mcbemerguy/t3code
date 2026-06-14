@@ -1042,15 +1042,8 @@ const make = Effect.gen(function* () {
     event: Extract<ProviderIntentEvent, { type: "thread.workflow-control-requested" }>,
   ) {
     const thread = yield* resolveThread(event.payload.threadId);
-    if (!thread?.session || thread.session.status === "stopped") {
-      return yield* appendProviderFailureActivity({
-        threadId: event.payload.threadId,
-        kind: "provider.workflow.control.failed",
-        summary: "Workflow action failed",
-        detail: "No active provider session is bound to this thread.",
-        turnId: null,
-        createdAt: event.payload.createdAt,
-      });
+    if (!thread) {
+      return;
     }
 
     if (!providerService.controlWorkflowRun) {

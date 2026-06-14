@@ -2703,6 +2703,72 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("allows workflow control recovery from a stopped projected session", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const controlWorkflowRun = vi.fn<NonNullable<ProviderServiceShape["controlWorkflowRun"]>>(
+      (input) =>
+        Effect.succeed({
+          run: {
+            runId: input.runId,
+            status: "running",
+            terminal: false,
+            lastSequence: 5,
+            workflowId: "mock-workflow",
+            actions: ["interrupt", "abort"],
+            updatedAt: now,
+          },
+        }),
+    );
+    const harness = await createHarness({ controlWorkflowRun });
+
+    await runEffectPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-stopped-workflow-control"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "stopped",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          workflowRuns: [
+            {
+              runId: "workflow-run-1",
+              status: "paused",
+              terminal: false,
+              lastSequence: 4,
+              workflowId: "mock-workflow",
+              actions: ["continue", "resume", "abort"],
+              updatedAt: now,
+            },
+          ],
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await runEffectPromise(
+      harness.engine.dispatch({
+        type: "thread.workflow.control",
+        commandId: CommandId.make("cmd-stopped-workflow-control"),
+        threadId: ThreadId.make("thread-1"),
+        runId: "workflow-run-1",
+        action: "resume",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => controlWorkflowRun.mock.calls.length === 1);
+    expect(controlWorkflowRun.mock.calls[0]?.[0]).toEqual({
+      threadId: "thread-1",
+      runId: "workflow-run-1",
+      action: "resume",
+    });
+  });
+
   it("starts a fresh session when only projected session state exists", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
