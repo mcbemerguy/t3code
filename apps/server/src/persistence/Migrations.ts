@@ -49,6 +49,7 @@ import Migration0033 from "./Migrations/033_BackfillProjectionThreadUpdatedAtFro
 import Migration0034 from "./Migrations/034_ProjectionCustomAcpCompatibility.ts";
 import Migration0035 from "./Migrations/035_AuthAuthorizationScopes.ts";
 import Migration0036 from "./Migrations/036_AuthPairingProofKeyThumbprint.ts";
+import Migration0037 from "./Migrations/037_ProjectionThreadSessionWorkflowRuns.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -97,6 +98,7 @@ export const migrationEntries = [
   [34, "ProjectionCustomAcpCompatibility", Migration0034],
   [35, "AuthAuthorizationScopes", Migration0035],
   [36, "AuthPairingProofKeyThumbprint", Migration0036],
+  [37, "ProjectionThreadSessionWorkflowRuns", Migration0037],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

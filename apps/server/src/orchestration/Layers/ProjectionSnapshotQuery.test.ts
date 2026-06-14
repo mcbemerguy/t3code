@@ -356,11 +356,12 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           ],
           session: {
             threadId: ThreadId.make("thread-1"),
-            status: "running",
+            status: "ready",
             providerName: "codex",
             runtimeMode: "approval-required",
-            activeTurnId: asTurnId("turn-1"),
+            activeTurnId: null,
             lastError: null,
+            workflowRuns: [],
             updatedAt: "2026-02-24T00:00:07.000Z",
           },
         },
@@ -421,11 +422,12 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           archivedAt: null,
           session: {
             threadId: ThreadId.make("thread-1"),
-            status: "running",
+            status: "ready",
             providerName: "codex",
             runtimeMode: "approval-required",
-            activeTurnId: asTurnId("turn-1"),
+            activeTurnId: null,
             lastError: null,
+            workflowRuns: [],
             updatedAt: "2026-02-24T00:00:07.000Z",
           },
           latestUserMessageAt: "2026-02-24T00:00:04.000Z",
@@ -439,6 +441,154 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.equal(threadDetail._tag, "Some");
       if (threadDetail._tag === "Some") {
         assert.deepEqual(threadDetail.value, snapshot.threads[0]);
+      }
+    }),
+  );
+
+  it.effect("hydrates workflow runs from projected thread sessions", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_thread_sessions`;
+      yield* sql`DELETE FROM projection_turns`;
+      yield* sql`DELETE FROM projection_state`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-workflow',
+          'Workflow Project',
+          '/tmp/workflow-project',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          '[]',
+          '2026-06-05T00:00:00.000Z',
+          '2026-06-05T00:00:01.000Z',
+          NULL
+        )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          branch,
+          worktree_path,
+          latest_turn_id,
+          created_at,
+          updated_at,
+          archived_at,
+          deleted_at
+        )
+        VALUES (
+          'thread-workflow',
+          'project-workflow',
+          'Workflow Thread',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          'full-access',
+          'default',
+          NULL,
+          NULL,
+          'turn-workflow',
+          '2026-06-05T00:00:02.000Z',
+          '2026-06-05T00:00:03.000Z',
+          NULL,
+          NULL
+        )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_turns (
+          thread_id,
+          turn_id,
+          pending_message_id,
+          assistant_message_id,
+          state,
+          requested_at,
+          started_at,
+          completed_at,
+          checkpoint_turn_count,
+          checkpoint_ref,
+          checkpoint_status,
+          checkpoint_files_json
+        )
+        VALUES (
+          'thread-workflow',
+          'turn-workflow',
+          NULL,
+          NULL,
+          'completed',
+          '2026-06-05T00:00:04.000Z',
+          '2026-06-05T00:00:04.000Z',
+          '2026-06-05T00:00:05.000Z',
+          NULL,
+          NULL,
+          NULL,
+          '[]'
+        )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_thread_sessions (
+          thread_id,
+          status,
+          provider_name,
+          provider_instance_id,
+          runtime_mode,
+          active_turn_id,
+          last_error,
+          workflow_runs_json,
+          updated_at
+        )
+        VALUES (
+          'thread-workflow',
+          'running',
+          'pi',
+          'pi-local',
+          'full-access',
+          'turn-workflow',
+          NULL,
+          '[{"runId":"workflow-run-1","status":"running","terminal":false,"lastSequence":7,"actions":["interrupt","abort"],"updatedAt":"2026-06-05T00:00:06.000Z"}]',
+          '2026-06-05T00:00:06.000Z'
+        )
+      `;
+
+      const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
+      const shellThread = shellSnapshot.threads.find(
+        (thread) => thread.id === ThreadId.make("thread-workflow"),
+      );
+      assert.equal(shellThread?.session?.status, "running");
+      assert.equal(shellThread?.session?.activeTurnId, null);
+      assert.deepEqual(shellThread?.session?.workflowRuns, [
+        {
+          runId: "workflow-run-1",
+          status: "running",
+          terminal: false,
+          lastSequence: 7,
+          actions: ["interrupt", "abort"],
+          updatedAt: "2026-06-05T00:00:06.000Z",
+        },
+      ]);
+
+      const detail = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-workflow"));
+      assert.equal(detail._tag, "Some");
+      if (detail._tag === "Some") {
+        assert.deepEqual(detail.value.session?.workflowRuns, shellThread?.session?.workflowRuns);
       }
     }),
   );

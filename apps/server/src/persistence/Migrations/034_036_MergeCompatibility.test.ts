@@ -61,14 +61,16 @@ const expectedFreshMigrations = [
   [34, "ProjectionCustomAcpCompatibility"],
   [35, "AuthAuthorizationScopes"],
   [36, "AuthPairingProofKeyThumbprint"],
+  [37, "ProjectionThreadSessionWorkflowRuns"],
 ];
 
-makeLayer()("034_036_MergeCompatibility fresh database", (it) => {
+makeLayer()("034_037_MergeCompatibility fresh database", (it) => {
   it.effect("migrates through custom ACP and upstream auth migrations", () =>
     Effect.gen(function* () {
       const executed = yield* runMigrations();
 
       const projectionThreadMessageColumns = yield* columnNames("projection_thread_messages");
+      const projectionThreadSessionColumns = yield* columnNames("projection_thread_sessions");
       const pairingColumns = yield* columnNames("auth_pairing_links");
       const sessionColumns = yield* columnNames("auth_sessions");
       const rows = yield* migrationRows;
@@ -77,8 +79,9 @@ makeLayer()("034_036_MergeCompatibility fresh database", (it) => {
         executed.map(([id, name]) => [id, name]),
         expectedFreshMigrations,
       );
-      assert.strictEqual(rows.at(-1)?.id, 36);
+      assert.strictEqual(rows.at(-1)?.id, 37);
       assert.isTrue(projectionThreadMessageColumns.has("provider_delivery_json"));
+      assert.isTrue(projectionThreadSessionColumns.has("workflow_runs_json"));
       assert.isTrue(pairingColumns.has("scopes"));
       assert.isTrue(pairingColumns.has("proof_key_thumbprint"));
       assert.isFalse(pairingColumns.has("role"));
@@ -88,13 +91,14 @@ makeLayer()("034_036_MergeCompatibility fresh database", (it) => {
   );
 });
 
-makeLayer()("034_036_MergeCompatibility current custom ACP database", (it) => {
+makeLayer()("034_037_MergeCompatibility current custom ACP database", (it) => {
   it.effect("upgrades a database already migrated through current custom ACP migration 33", () =>
     Effect.gen(function* () {
       yield* runMigrations({ toMigrationInclusive: 33 });
 
       const executed = yield* runMigrations();
       const projectionThreadMessageColumns = yield* columnNames("projection_thread_messages");
+      const projectionThreadSessionColumns = yield* columnNames("projection_thread_sessions");
       const pairingColumns = yield* columnNames("auth_pairing_links");
       const sessionColumns = yield* columnNames("auth_sessions");
       const rows = yield* migrationRows;
@@ -105,10 +109,11 @@ makeLayer()("034_036_MergeCompatibility current custom ACP database", (it) => {
           [34, "ProjectionCustomAcpCompatibility"],
           [35, "AuthAuthorizationScopes"],
           [36, "AuthPairingProofKeyThumbprint"],
+          [37, "ProjectionThreadSessionWorkflowRuns"],
         ],
       );
       assert.deepStrictEqual(
-        rows.slice(-6).map(({ id, name }) => [id, name]),
+        rows.slice(-7).map(({ id, name }) => [id, name]),
         [
           [31, "ProjectionThreadMessageProviderDelivery"],
           [32, "BackfillProjectionThreadActivitySequence"],
@@ -116,9 +121,11 @@ makeLayer()("034_036_MergeCompatibility current custom ACP database", (it) => {
           [34, "ProjectionCustomAcpCompatibility"],
           [35, "AuthAuthorizationScopes"],
           [36, "AuthPairingProofKeyThumbprint"],
+          [37, "ProjectionThreadSessionWorkflowRuns"],
         ],
       );
       assert.isTrue(projectionThreadMessageColumns.has("provider_delivery_json"));
+      assert.isTrue(projectionThreadSessionColumns.has("workflow_runs_json"));
       assert.isTrue(pairingColumns.has("scopes"));
       assert.isTrue(pairingColumns.has("proof_key_thumbprint"));
       assert.isFalse(pairingColumns.has("role"));
