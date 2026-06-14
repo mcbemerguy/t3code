@@ -73,6 +73,20 @@ describe("Pi workflow ACP extension helpers", () => {
     });
   });
 
+  it("does not infer private workflow methods when only the workflows flag is present", () => {
+    expect(
+      extractPiWorkflowCapabilities({
+        agentCapabilities: {
+          _meta: {
+            piAcp: {
+              workflows: true,
+            },
+          },
+        },
+      }),
+    ).toEqual({});
+  });
+
   it("parses workflow list responses for stop fallback discovery", () => {
     expect(
       parsePiWorkflowRuns({

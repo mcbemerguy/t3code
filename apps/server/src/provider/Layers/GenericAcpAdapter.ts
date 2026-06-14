@@ -364,16 +364,26 @@ export function makeGenericAcpAdapter(
       ctx: GenericAcpSessionContext,
       run: PiWorkflowResumeRun,
       cursor: ProviderWorkflowRunCursor,
-    ) => {
+    ): ProviderWorkflowRunCursor => {
+      ctx.duplicateWorkflowEventRuns.delete(run.runId);
       if (cursor.terminal) {
         ctx.workflowRuns.delete(run.runId);
         ctx.workflowCursors.delete(run.runId);
-      } else {
-        const merged = mergeWorkflowRunCursor(ctx.workflowRuns.get(run.runId), run);
-        ctx.workflowRuns.set(run.runId, merged);
-        ctx.workflowCursors.set(run.runId, cursor);
+        refreshResumeCursor(ctx);
+        return cursor;
       }
+      const merged = mergeWorkflowRunCursor(ctx.workflowRuns.get(run.runId), run);
+      const mergedCursor: ProviderWorkflowRunCursor = {
+        ...cursor,
+        lastSequence: merged.lastSequence,
+        ...(merged.workflowId ? { workflowId: merged.workflowId } : {}),
+        ...(merged.runDir ? { runDir: merged.runDir } : {}),
+        ...(merged.auditPath ? { auditPath: merged.auditPath } : {}),
+      };
+      ctx.workflowRuns.set(run.runId, merged);
+      ctx.workflowCursors.set(run.runId, mergedCursor);
       refreshResumeCursor(ctx);
+      return mergedCursor;
     };
 
     const applyWorkflowEventRecord = (
@@ -400,8 +410,8 @@ export function makeGenericAcpAdapter(
           updatedAt: yield* nowIso,
         });
         if (!cursor) return false;
-        upsertWorkflowRunCursor(ctx, run, cursor);
-        yield* emitWorkflowRunUpdated(ctx, cursor, input.rawPayload);
+        const storedCursor = upsertWorkflowRunCursor(ctx, run, cursor);
+        yield* emitWorkflowRunUpdated(ctx, storedCursor, input.rawPayload);
         return true;
       });
 
@@ -431,8 +441,15 @@ export function makeGenericAcpAdapter(
 
     const pauseActiveWorkflows = (ctx: GenericAcpSessionContext) =>
       Effect.gen(function* () {
-        const pauseMethod = ctx.piWorkflowCapabilities?.pauseMethod;
-        if (!pauseMethod) return false;
+        const control = ctx.piWorkflowCapabilities?.interruptMethod
+          ? {
+              method: ctx.piWorkflowCapabilities.interruptMethod,
+              fallbackStatus: "interrupted" as const,
+            }
+          : ctx.piWorkflowCapabilities?.pauseMethod
+            ? { method: ctx.piWorkflowCapabilities.pauseMethod, fallbackStatus: "paused" as const }
+            : undefined;
+        if (!control) return false;
         const runs = yield* discoverActiveWorkflowRuns(ctx);
         if (runs.length === 0) return false;
         for (const run of runs) {
@@ -441,12 +458,12 @@ export function makeGenericAcpAdapter(
             runId: run.runId,
             reason: "User requested workflow interruption from t3code.",
           };
-          yield* logNative(ctx.threadId, pauseMethod, payload, "acp.extension");
-          const pauseExit = yield* ctx.acp
-            .request(pauseMethod, payload)
+          yield* logNative(ctx.threadId, control.method, payload, "acp.extension");
+          const controlExit = yield* ctx.acp
+            .request(control.method, payload)
             .pipe(Effect.exit, Effect.timeoutOption(Duration.millis(ACP_CANCEL_WATCHDOG_GRACE_MS)));
-          if (pauseExit._tag === "None" || Exit.isFailure(pauseExit.value)) return false;
-          const raw = pauseExit.value.value;
+          if (controlExit._tag === "None" || Exit.isFailure(controlExit.value)) return false;
+          const raw = controlExit.value.value;
           const cursor = workflowCursorFromControlResponse({
             runId: run.runId,
             lastSequence: run.lastSequence,
@@ -454,7 +471,7 @@ export function makeGenericAcpAdapter(
             capabilities: ctx.piWorkflowCapabilities,
             updatedAt: yield* nowIso,
           });
-          const fallbackRun = { ...run, status: "paused" };
+          const fallbackRun = { ...run, status: control.fallbackStatus };
           const fallbackCursor = workflowCursorFromResumeRun({
             run: fallbackRun,
             capabilities: ctx.piWorkflowCapabilities,
@@ -462,7 +479,7 @@ export function makeGenericAcpAdapter(
           });
           const nextCursor = cursor ?? fallbackCursor;
           if (!nextCursor) continue;
-          upsertWorkflowRunCursor(
+          const storedCursor = upsertWorkflowRunCursor(
             ctx,
             {
               runId: nextCursor.runId,
@@ -474,7 +491,7 @@ export function makeGenericAcpAdapter(
             },
             nextCursor,
           );
-          yield* emitWorkflowRunUpdated(ctx, nextCursor, raw);
+          yield* emitWorkflowRunUpdated(ctx, storedCursor, raw);
         }
         return true;
       });
@@ -1366,7 +1383,7 @@ export function makeGenericAcpAdapter(
             detail: "Workflow control response did not include a valid run cursor.",
           });
         }
-        upsertWorkflowRunCursor(
+        const storedCursor = upsertWorkflowRunCursor(
           ctx,
           {
             runId: cursor.runId,
@@ -1378,8 +1395,8 @@ export function makeGenericAcpAdapter(
           },
           cursor,
         );
-        yield* emitWorkflowRunUpdated(ctx, cursor, raw);
-        return { run: cursor };
+        yield* emitWorkflowRunUpdated(ctx, storedCursor, raw);
+        return { run: storedCursor };
       });
 
     const interruptTurn: ProviderAdapterShape<ProviderAdapterError>["interruptTurn"] = (

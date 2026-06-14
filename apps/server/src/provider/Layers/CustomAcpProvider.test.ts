@@ -806,109 +806,113 @@ describe("Custom ACP provider", () => {
     });
   });
 
-  it.effect("requests Pi workflow pause instead of ACP cancel on first workflow interrupt", () =>
-    Effect.gen(function* () {
-      const requestLog = yield* Effect.promise(() => tempFile("workflow-pause.jsonl"));
-      const adapter = yield* makeGenericAcpAdapter(
-        makeCustomAcpSettings({
-          env: envText({
-            T3_ACP_ENABLE_PI_WORKFLOWS: "1",
-            T3_ACP_REQUEST_LOG_PATH: requestLog,
+  it.effect(
+    "requests Pi workflow interrupt instead of ACP cancel on first workflow interrupt",
+    () =>
+      Effect.gen(function* () {
+        const requestLog = yield* Effect.promise(() => tempFile("workflow-pause.jsonl"));
+        const adapter = yield* makeGenericAcpAdapter(
+          makeCustomAcpSettings({
+            env: envText({
+              T3_ACP_ENABLE_PI_WORKFLOWS: "1",
+              T3_ACP_REQUEST_LOG_PATH: requestLog,
+            }),
           }),
-        }),
-        { instanceId: customAcpInstanceId },
-      );
-      const threadId = ThreadId.make("custom-acp-workflow-pause-interrupt");
+          { instanceId: customAcpInstanceId },
+        );
+        const threadId = ThreadId.make("custom-acp-workflow-interrupt");
 
-      yield* adapter.startSession({
-        threadId,
-        provider: customAcpDriver,
-        cwd: process.cwd(),
-        runtimeMode: "full-access",
-        resumeCursor: {
-          schemaVersion: 2,
+        yield* adapter.startSession({
+          threadId,
           provider: customAcpDriver,
-          sessionId: "mock-session-1",
-          workflows: {
-            activeRuns: [{ runId: "workflow-run-1", lastSequence: 7 }],
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          resumeCursor: {
+            schemaVersion: 2,
+            provider: customAcpDriver,
+            sessionId: "mock-session-1",
+            workflows: {
+              activeRuns: [{ runId: "workflow-run-1", lastSequence: 7 }],
+            },
           },
-        },
-      });
+        });
 
-      yield* adapter.interruptTurn(threadId);
-      const sessions = yield* adapter.listSessions();
-      const currentSession = sessions.find((session) => session.threadId === threadId);
-      assert.isDefined(currentSession);
-      assert.deepStrictEqual(
-        parseCustomAcpResume(customAcpDriver, currentSession!.resumeCursor)?.activeWorkflowRuns,
-        [
-          {
-            runId: "workflow-run-1",
-            lastSequence: 7,
-            runDir: "/tmp/workflow-run-1",
-            auditPath: "/tmp/workflow-run-1/audit.md",
-            status: "paused",
-          },
-        ],
-      );
-      yield* adapter.stopSession(threadId);
+        yield* adapter.interruptTurn(threadId);
+        const sessions = yield* adapter.listSessions();
+        const currentSession = sessions.find((session) => session.threadId === threadId);
+        assert.isDefined(currentSession);
+        assert.deepStrictEqual(
+          parseCustomAcpResume(customAcpDriver, currentSession!.resumeCursor)?.activeWorkflowRuns,
+          [
+            {
+              runId: "workflow-run-1",
+              lastSequence: 7,
+              runDir: "/tmp/workflow-run-1",
+              auditPath: "/tmp/workflow-run-1/audit.md",
+              status: "interrupted",
+            },
+          ],
+        );
+        yield* adapter.stopSession(threadId);
 
-      const entries = yield* Effect.promise(() => readJsonLines(requestLog));
-      const methods = jsonRpcMethods(entries);
-      assert.include(methods, "_pi/workflows/pause");
-      assert.notInclude(methods, "session/cancel");
-      expect(
-        entries.some(
-          (entry) =>
-            entry.method === "_pi/workflows/pause" &&
-            (entry.params as Record<string, unknown> | undefined)?.runId === "workflow-run-1",
-        ),
-      ).toBe(true);
-    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+        const entries = yield* Effect.promise(() => readJsonLines(requestLog));
+        const methods = jsonRpcMethods(entries);
+        assert.include(methods, "_pi/workflows/interrupt");
+        assert.notInclude(methods, "session/cancel");
+        expect(
+          entries.some(
+            (entry) =>
+              entry.method === "_pi/workflows/interrupt" &&
+              (entry.params as Record<string, unknown> | undefined)?.runId === "workflow-run-1",
+          ),
+        ).toBe(true);
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
-  it.effect("merges fallback-discovered workflows with known workflow cursors before pausing", () =>
-    Effect.gen(function* () {
-      const requestLog = yield* Effect.promise(() => tempFile("workflow-pause-merge.jsonl"));
-      const adapter = yield* makeGenericAcpAdapter(
-        makeCustomAcpSettings({
-          env: envText({
-            T3_ACP_ENABLE_PI_WORKFLOWS: "1",
-            T3_ACP_REQUEST_LOG_PATH: requestLog,
-            T3_ACP_WORKFLOW_LIST_RUN_IDS: "workflow-run-1,workflow-run-2",
+  it.effect(
+    "merges fallback-discovered workflows with known workflow cursors before interrupting",
+    () =>
+      Effect.gen(function* () {
+        const requestLog = yield* Effect.promise(() => tempFile("workflow-pause-merge.jsonl"));
+        const adapter = yield* makeGenericAcpAdapter(
+          makeCustomAcpSettings({
+            env: envText({
+              T3_ACP_ENABLE_PI_WORKFLOWS: "1",
+              T3_ACP_REQUEST_LOG_PATH: requestLog,
+              T3_ACP_WORKFLOW_LIST_RUN_IDS: "workflow-run-1,workflow-run-2",
+            }),
           }),
-        }),
-        { instanceId: customAcpInstanceId },
-      );
-      const threadId = ThreadId.make("custom-acp-workflow-pause-merge");
+          { instanceId: customAcpInstanceId },
+        );
+        const threadId = ThreadId.make("custom-acp-workflow-pause-merge");
 
-      yield* adapter.startSession({
-        threadId,
-        provider: customAcpDriver,
-        cwd: process.cwd(),
-        runtimeMode: "full-access",
-        resumeCursor: {
-          schemaVersion: 2,
+        yield* adapter.startSession({
+          threadId,
           provider: customAcpDriver,
-          sessionId: "mock-session-1",
-          workflows: {
-            activeRuns: [{ runId: "workflow-run-1", lastSequence: 7 }],
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          resumeCursor: {
+            schemaVersion: 2,
+            provider: customAcpDriver,
+            sessionId: "mock-session-1",
+            workflows: {
+              activeRuns: [{ runId: "workflow-run-1", lastSequence: 7 }],
+            },
           },
-        },
-      });
+        });
 
-      yield* adapter.interruptTurn(threadId);
-      const entries = yield* Effect.promise(() => readJsonLines(requestLog));
-      const pauseRunIds = entries.flatMap((entry) =>
-        entry.method === "_pi/workflows/pause" &&
-        typeof (entry.params as Record<string, unknown> | undefined)?.runId === "string"
-          ? [(entry.params as Record<string, string>).runId]
-          : [],
-      );
-      assert.deepStrictEqual(pauseRunIds, ["workflow-run-1", "workflow-run-2"]);
-      assert.notInclude(jsonRpcMethods(entries), "session/cancel");
-      yield* adapter.stopSession(threadId);
-    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+        yield* adapter.interruptTurn(threadId);
+        const entries = yield* Effect.promise(() => readJsonLines(requestLog));
+        const interruptRunIds = entries.flatMap((entry) =>
+          entry.method === "_pi/workflows/interrupt" &&
+          typeof (entry.params as Record<string, unknown> | undefined)?.runId === "string"
+            ? [(entry.params as Record<string, string>).runId]
+            : [],
+        );
+        assert.deepStrictEqual(interruptRunIds, ["workflow-run-1", "workflow-run-2"]);
+        assert.notInclude(jsonRpcMethods(entries), "session/cancel");
+        yield* adapter.stopSession(threadId);
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
   it.effect("routes advertised Pi workflow controls and emits workflow cursors", () =>
@@ -1012,6 +1016,50 @@ describe("Custom ACP provider", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
+  it.effect("does not infer workflow controls from the Pi workflows flag alone", () =>
+    Effect.gen(function* () {
+      const requestLog = yield* Effect.promise(() => tempFile("workflow-methods-omitted.jsonl"));
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({
+            T3_ACP_ENABLE_PI_WORKFLOWS: "1",
+            T3_ACP_WORKFLOW_METHODS: "__omit__",
+            T3_ACP_REQUEST_LOG_PATH: requestLog,
+          }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-workflow-methods-omitted");
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: {
+          schemaVersion: 2,
+          provider: customAcpDriver,
+          sessionId: "mock-session-1",
+          workflows: {
+            activeRuns: [{ runId: "workflow-run-1", lastSequence: 7, status: "running" }],
+          },
+        },
+      });
+      const failed = yield* adapter.controlWorkflowRun!({
+        threadId,
+        runId: "workflow-run-1",
+        action: "interrupt",
+      }).pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(failed));
+      yield* adapter.stopSession(threadId);
+
+      const methods = jsonRpcMethods(yield* Effect.promise(() => readJsonLines(requestLog)));
+      assert.notInclude(methods, "_pi/workflows/interrupt");
+      assert.notInclude(methods, "_pi/workflows/pause");
+      assert.notInclude(methods, "_pi/workflows/abort");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("ignores duplicate workflow event replay without regressing the resume cursor", () =>
     Effect.gen(function* () {
       const adapter = yield* makeGenericAcpAdapter(
@@ -1051,6 +1099,60 @@ describe("Custom ACP provider", () => {
       );
       yield* adapter.stopSession(threadId);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "allows live workflow-tagged ACP updates after a control clears duplicate replay state",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* makeGenericAcpAdapter(
+          makeCustomAcpSettings({
+            env: envText({
+              T3_ACP_ENABLE_PI_WORKFLOWS: "1",
+              T3_ACP_EMIT_WORKFLOW_REPLAY_ON_LOAD: "1",
+              T3_ACP_WORKFLOW_REPLAY_SEQUENCE: "3",
+              T3_ACP_EMIT_WORKFLOW_UPDATE_ON_PROMPT: "1",
+            }),
+          }),
+          { instanceId: customAcpInstanceId },
+        );
+        const threadId = ThreadId.make("custom-acp-workflow-duplicate-replay-control-clear");
+        const liveWorkflowUpdate = yield* Deferred.make<ProviderRuntimeEvent>();
+
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          event.threadId === threadId &&
+          event.type === "item.updated" &&
+          event.itemId === "workflow:workflow-run-1:on-prompt"
+            ? Deferred.succeed(liveWorkflowUpdate, event).pipe(Effect.ignore)
+            : Effect.void,
+        ).pipe(Effect.forkChild);
+
+        yield* adapter.startSession({
+          threadId,
+          provider: customAcpDriver,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          resumeCursor: {
+            schemaVersion: 2,
+            provider: customAcpDriver,
+            sessionId: "mock-session-1",
+            workflows: {
+              activeRuns: [{ runId: "workflow-run-1", lastSequence: 7, status: "interrupted" }],
+            },
+          },
+        });
+
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
+        yield* adapter.controlWorkflowRun!({
+          threadId,
+          runId: "workflow-run-1",
+          action: "continue",
+        });
+        yield* adapter.sendTurn({ threadId, input: "continue workflow", attachments: [] });
+        const event = yield* Deferred.await(liveWorkflowUpdate);
+        assert.equal(event.type, "item.updated");
+        yield* adapter.stopSession(threadId);
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
   it.effect("fails strict custom ACP resume visibly instead of falling back to session/new", () =>

@@ -42,9 +42,11 @@ const enableSessionList = process.env.T3_ACP_ENABLE_SESSION_LIST === "1";
 const enablePiSteering = process.env.T3_ACP_ENABLE_PI_STEERING === "1";
 const enablePiWorkflows = process.env.T3_ACP_ENABLE_PI_WORKFLOWS === "1";
 const emitWorkflowReplayOnLoad = process.env.T3_ACP_EMIT_WORKFLOW_REPLAY_ON_LOAD === "1";
+const emitWorkflowUpdateOnPrompt = process.env.T3_ACP_EMIT_WORKFLOW_UPDATE_ON_PROMPT === "1";
 const workflowReplaySequence =
   parseNonNegativeIntOrZero(process.env.T3_ACP_WORKFLOW_REPLAY_SEQUENCE) || 1;
 const workflowListRunIds = parseCommaSeparatedList(process.env.T3_ACP_WORKFLOW_LIST_RUN_IDS);
+const workflowMethodsOverride = process.env.T3_ACP_WORKFLOW_METHODS;
 const failLoadSession = process.env.T3_ACP_FAIL_LOAD_SESSION === "1";
 const failCreateSessionCount = parseNonNegativeIntOrZero(
   process.env.T3_ACP_FAIL_CREATE_SESSION_COUNT,
@@ -80,6 +82,21 @@ function parseCommaSeparatedList(value: string | undefined): string[] {
     .split(",")
     .map((part) => part.trim())
     .filter((part) => part.length > 0);
+}
+
+function advertisedWorkflowMethods(): ReadonlyArray<string> | undefined {
+  if (workflowMethodsOverride === "__omit__") return undefined;
+  if (workflowMethodsOverride !== undefined)
+    return parseCommaSeparatedList(workflowMethodsOverride);
+  return [
+    "_pi/workflows/list",
+    "_pi/workflows/get",
+    "_pi/workflows/events",
+    "_pi/workflows/resume",
+    "_pi/workflows/interrupt",
+    "_pi/workflows/pause",
+    "_pi/workflows/abort",
+  ];
 }
 
 function readCreateSessionFailureAttempts(): number {
@@ -369,6 +386,7 @@ const program = Effect.gen(function* () {
     Effect.sync(() => {
       parameterizedModelPicker =
         request.clientCapabilities?._meta?.parameterizedModelPicker === true;
+      const workflowMethods = advertisedWorkflowMethods();
       return {
         protocolVersion: 1,
         agentCapabilities: {
@@ -382,15 +400,7 @@ const program = Effect.gen(function* () {
                     ...(enablePiWorkflows
                       ? {
                           workflows: true,
-                          workflowMethods: [
-                            "_pi/workflows/list",
-                            "_pi/workflows/get",
-                            "_pi/workflows/events",
-                            "_pi/workflows/resume",
-                            "_pi/workflows/interrupt",
-                            "_pi/workflows/pause",
-                            "_pi/workflows/abort",
-                          ],
+                          ...(workflowMethods ? { workflowMethods } : {}),
                           workflowEventsMethod: "_pi/workflows/events",
                         }
                       : {}),
@@ -615,6 +625,21 @@ const program = Effect.gen(function* () {
 
       if (Number.isFinite(promptDelayMs) && promptDelayMs > 0) {
         yield* Effect.sleep(`${promptDelayMs} millis`);
+      }
+
+      if (emitWorkflowUpdateOnPrompt) {
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "workflow:workflow-run-1:on-prompt",
+            title: "Workflow on prompt",
+            kind: "other",
+            status: "in_progress",
+            rawInput: { runId: "workflow-run-1" },
+            _meta: { piWorkflow: { runId: "workflow-run-1" } },
+          },
+        } as AcpSchema.SessionNotification);
       }
 
       if (emitAvailableCommandsOnPrompt) {

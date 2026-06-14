@@ -16,16 +16,6 @@ export const PI_WORKFLOWS_INTERRUPT_METHOD = "_pi/workflows/interrupt";
 export const PI_WORKFLOWS_PAUSE_METHOD = "_pi/workflows/pause";
 export const PI_WORKFLOWS_ABORT_METHOD = "_pi/workflows/abort";
 
-const DEFAULT_WORKFLOW_METHODS = [
-  PI_WORKFLOWS_LIST_METHOD,
-  PI_WORKFLOWS_GET_METHOD,
-  PI_WORKFLOWS_EVENTS_METHOD,
-  PI_WORKFLOWS_RESUME_METHOD,
-  PI_WORKFLOWS_INTERRUPT_METHOD,
-  PI_WORKFLOWS_PAUSE_METHOD,
-  PI_WORKFLOWS_ABORT_METHOD,
-] as const;
-
 export interface PiWorkflowResumeRun {
   readonly runId: string;
   readonly lastSequence: number;
@@ -172,7 +162,7 @@ export function extractPiWorkflowCapabilities(
     ? meta.workflowMethods.filter(
         (method): method is string => typeof method === "string" && method.trim().length > 0,
       )
-    : [...DEFAULT_WORKFLOW_METHODS];
+    : [];
   const capabilities: {
     listMethod?: string;
     getMethod?: string;
