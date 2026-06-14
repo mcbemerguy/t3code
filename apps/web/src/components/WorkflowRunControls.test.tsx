@@ -2,7 +2,7 @@ import { EnvironmentId, type ProviderWorkflowRunCursor } from "@t3tools/contract
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 import PlanSidebar from "./PlanSidebar";
-import { WorkflowRunControls } from "./WorkflowRunControls";
+import { WorkflowRunControls, stopActionForRun } from "./WorkflowRunControls";
 
 const noop = async () => {};
 const runningWorkflowRun: ProviderWorkflowRunCursor = {
@@ -22,8 +22,6 @@ describe("WorkflowRunControls", () => {
   it("renders active Pi workflow identities and explicit controls", () => {
     const markup = renderToStaticMarkup(
       <WorkflowRunControls
-        isWorking
-        onStopRunningWorkflow={noop}
         onControlWorkflowRun={noop}
         workflowRuns={[
           runningWorkflowRun,
@@ -61,6 +59,24 @@ describe("WorkflowRunControls", () => {
     expect(markup).not.toContain("terminal-run");
   });
 
+  it("derives Stop from workflow actions instead of generic turn interruption", () => {
+    expect(stopActionForRun({ ...runningWorkflowRun, actions: ["interrupt", "pause"] })).toBe(
+      "interrupt",
+    );
+    expect(stopActionForRun({ ...runningWorkflowRun, actions: ["pause"] })).toBe("pause");
+    expect(stopActionForRun({ ...runningWorkflowRun, actions: ["abort"] })).toBeNull();
+
+    const markup = renderToStaticMarkup(
+      <WorkflowRunControls
+        onControlWorkflowRun={noop}
+        workflowRuns={[{ ...runningWorkflowRun, actions: ["abort"] }]}
+      />,
+    );
+
+    expect(markup).not.toContain("Stop");
+    expect(markup).toContain("Workflow actions for code-review-fix-20260605144500-b4spny");
+  });
+
   it("keeps the Tasks sidebar populated by workflow controls without an empty plan state", () => {
     const markup = renderToStaticMarkup(
       <PlanSidebar
@@ -72,9 +88,7 @@ describe("WorkflowRunControls", () => {
         workspaceRoot={undefined}
         timestampFormat="24-hour"
         workflowRuns={[runningWorkflowRun]}
-        isWorking
         mode="sidebar"
-        onStopRunningWorkflow={noop}
         onControlWorkflowRun={noop}
         onClose={() => {}}
       />,

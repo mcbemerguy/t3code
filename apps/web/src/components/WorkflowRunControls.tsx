@@ -17,8 +17,6 @@ import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 
 interface WorkflowRunControlsProps {
   workflowRuns: ReadonlyArray<ProviderWorkflowRunCursor>;
-  isWorking: boolean;
-  onStopRunningWorkflow: () => Promise<void>;
   onControlWorkflowRun: (runId: string, action: ProviderWorkflowControlAction) => Promise<void>;
 }
 
@@ -64,12 +62,13 @@ function continueActionForRun(
   return null;
 }
 
-function WorkflowRunControls({
-  workflowRuns,
-  isWorking,
-  onStopRunningWorkflow,
-  onControlWorkflowRun,
-}: WorkflowRunControlsProps) {
+function stopActionForRun(run: ProviderWorkflowRunCursor): ProviderWorkflowControlAction | null {
+  if (run.actions.includes("interrupt")) return "interrupt";
+  if (run.actions.includes("pause")) return "pause";
+  return null;
+}
+
+function WorkflowRunControls({ workflowRuns, onControlWorkflowRun }: WorkflowRunControlsProps) {
   const activeRuns = useMemo(() => workflowRuns.filter((run) => !run.terminal), [workflowRuns]);
   const [pendingControl, setPendingControl] = useState<string | null>(null);
   const [abortRun, setAbortRun] = useState<ProviderWorkflowRunCursor | null>(null);
@@ -89,16 +88,6 @@ function WorkflowRunControls({
     }
   };
 
-  const stopRun = async (run: ProviderWorkflowRunCursor) => {
-    const key = `${run.runId}:stop`;
-    setPendingControl(key);
-    try {
-      await onStopRunningWorkflow();
-    } finally {
-      setPendingControl((current) => (current === key ? null : current));
-    }
-  };
-
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
@@ -112,10 +101,10 @@ function WorkflowRunControls({
       <div className="space-y-2">
         {activeRuns.map((run) => {
           const continueAction = continueActionForRun(run);
+          const stopAction = stopActionForRun(run);
           const canAbort = run.actions.includes("abort");
-          const canStop = run.status === "running" && isWorking;
           const runPending = pendingControl?.startsWith(`${run.runId}:`) ?? false;
-          const stopPending = pendingControl === `${run.runId}:stop`;
+          const stopPending = stopAction ? pendingControl === `${run.runId}:${stopAction}` : false;
           const continuePending = continueAction
             ? pendingControl === `${run.runId}:${continueAction}`
             : false;
@@ -186,12 +175,12 @@ function WorkflowRunControls({
                       {continueAction === "resume" ? "Resume" : "Continue"}
                     </Button>
                   ) : null}
-                  {canStop ? (
+                  {stopAction ? (
                     <Button
                       size="xs"
                       variant="outline"
                       disabled={runPending}
-                      onClick={() => void stopRun(run)}
+                      onClick={() => void runControl(run, stopAction)}
                     >
                       {stopPending ? (
                         <LoaderIcon className="size-3 animate-spin" />
@@ -224,7 +213,7 @@ function WorkflowRunControls({
                   ) : null}
                 </div>
               </div>
-              {run.status === "running" ? (
+              {stopAction && run.status === "running" ? (
                 <p className="mt-2 text-[11px] text-muted-foreground/50">
                   Stop interrupts the current turn and leaves this workflow recoverable. Abort is
                   terminal.
@@ -264,5 +253,5 @@ function WorkflowRunControls({
   );
 }
 
-export { WorkflowRunControls };
+export { WorkflowRunControls, stopActionForRun };
 export type { WorkflowRunControlsProps };

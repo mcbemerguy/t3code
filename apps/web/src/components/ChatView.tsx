@@ -4208,9 +4208,7 @@ export default function ChatView(props: ChatViewProps) {
             workspaceRoot={activeWorkspaceRoot}
             timestampFormat={timestampFormat}
             workflowRuns={activeWorkflowRuns}
-            isWorking={isWorking}
             mode="sidebar"
-            onStopRunningWorkflow={onInterrupt}
             onControlWorkflowRun={onControlWorkflowRun}
             onClose={closePlanSidebar}
           />
@@ -4246,9 +4244,7 @@ export default function ChatView(props: ChatViewProps) {
             workspaceRoot={activeWorkspaceRoot}
             timestampFormat={timestampFormat}
             workflowRuns={activeWorkflowRuns}
-            isWorking={isWorking}
             mode="sheet"
-            onStopRunningWorkflow={onInterrupt}
             onControlWorkflowRun={onControlWorkflowRun}
             onClose={closePlanSidebar}
           />

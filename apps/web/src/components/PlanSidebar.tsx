@@ -67,9 +67,7 @@ interface PlanSidebarProps {
   workspaceRoot: string | undefined;
   timestampFormat: TimestampFormat;
   workflowRuns?: ReadonlyArray<ProviderWorkflowRunCursor>;
-  isWorking?: boolean;
   mode?: "sheet" | "sidebar";
-  onStopRunningWorkflow?: () => Promise<void>;
   onControlWorkflowRun?: (runId: string, action: ProviderWorkflowControlAction) => Promise<void>;
   onClose: () => void;
 }
@@ -83,9 +81,7 @@ const PlanSidebar = memo(function PlanSidebar({
   workspaceRoot,
   timestampFormat,
   workflowRuns = EMPTY_WORKFLOW_RUNS,
-  isWorking = false,
   mode = "sidebar",
-  onStopRunningWorkflow,
   onControlWorkflowRun,
   onClose,
 }: PlanSidebarProps) {
@@ -210,11 +206,9 @@ const PlanSidebar = memo(function PlanSidebar({
       {/* Content */}
       <ScrollArea className="min-h-0 flex-1">
         <div className="p-3 space-y-4">
-          {workflowRuns.length > 0 && onStopRunningWorkflow && onControlWorkflowRun ? (
+          {workflowRuns.length > 0 && onControlWorkflowRun ? (
             <WorkflowRunControls
               workflowRuns={workflowRuns}
-              isWorking={isWorking}
-              onStopRunningWorkflow={onStopRunningWorkflow}
               onControlWorkflowRun={onControlWorkflowRun}
             />
           ) : null}
