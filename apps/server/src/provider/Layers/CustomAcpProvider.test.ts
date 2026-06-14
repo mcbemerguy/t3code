@@ -911,6 +911,107 @@ describe("Custom ACP provider", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
+  it.effect("routes advertised Pi workflow controls and emits workflow cursors", () =>
+    Effect.gen(function* () {
+      const requestLog = yield* Effect.promise(() => tempFile("workflow-control-actions.jsonl"));
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({
+            T3_ACP_ENABLE_PI_WORKFLOWS: "1",
+            T3_ACP_REQUEST_LOG_PATH: requestLog,
+          }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-workflow-control-actions");
+      const workflowUpdated =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "workflow.run.updated" }>>();
+
+      yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        event.threadId === threadId &&
+        event.type === "workflow.run.updated" &&
+        event.payload.run.runId === "workflow-run-1"
+          ? Deferred.succeed(workflowUpdated, event).pipe(Effect.ignore)
+          : Effect.void,
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: {
+          schemaVersion: 2,
+          provider: customAcpDriver,
+          sessionId: "mock-session-1",
+          workflows: {
+            activeRuns: [{ runId: "workflow-run-1", lastSequence: 7, status: "interrupted" }],
+          },
+        },
+      });
+
+      const resumed = yield* adapter.controlWorkflowRun!({
+        threadId,
+        runId: "workflow-run-1",
+        action: "continue",
+      });
+      assert.equal(resumed.run.status, "recovering");
+      assert.deepEqual(resumed.run.actions, ["continue", "abort"]);
+      const updated = yield* Deferred.await(workflowUpdated);
+      assert.equal(updated.payload.run.status, "recovering");
+
+      const interrupted = yield* adapter.controlWorkflowRun!({
+        threadId,
+        runId: "workflow-run-1",
+        action: "interrupt",
+      });
+      assert.equal(interrupted.run.status, "interrupted");
+      const aborted = yield* adapter.controlWorkflowRun!({
+        threadId,
+        runId: "workflow-run-1",
+        action: "abort",
+      });
+      assert.equal(aborted.run.status, "aborted");
+      assert.equal(aborted.run.terminal, true);
+      yield* adapter.stopSession(threadId);
+
+      const methods = jsonRpcMethods(yield* Effect.promise(() => readJsonLines(requestLog)));
+      assert.include(methods, "_pi/workflows/resume");
+      assert.include(methods, "_pi/workflows/interrupt");
+      assert.include(methods, "_pi/workflows/abort");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects unadvertised Pi workflow controls without dispatching private methods", () =>
+    Effect.gen(function* () {
+      const requestLog = yield* Effect.promise(() => tempFile("workflow-control-gated.jsonl"));
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({ T3_ACP_REQUEST_LOG_PATH: requestLog }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-workflow-control-gated");
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const failed = yield* adapter.controlWorkflowRun!({
+        threadId,
+        runId: "workflow-run-1",
+        action: "abort",
+      }).pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(failed));
+      yield* adapter.stopSession(threadId);
+
+      const methods = jsonRpcMethods(yield* Effect.promise(() => readJsonLines(requestLog)));
+      assert.notInclude(methods, "_pi/workflows/abort");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("ignores duplicate workflow event replay without regressing the resume cursor", () =>
     Effect.gen(function* () {
       const adapter = yield* makeGenericAcpAdapter(

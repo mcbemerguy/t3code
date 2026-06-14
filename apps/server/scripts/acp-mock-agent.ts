@@ -387,6 +387,7 @@ const program = Effect.gen(function* () {
                             "_pi/workflows/get",
                             "_pi/workflows/events",
                             "_pi/workflows/resume",
+                            "_pi/workflows/interrupt",
                             "_pi/workflows/pause",
                             "_pi/workflows/abort",
                           ],
@@ -577,6 +578,7 @@ const program = Effect.gen(function* () {
 
   for (const method of [
     "_pi/workflows/resume",
+    "_pi/workflows/interrupt",
     "_pi/workflows/pause",
     "_pi/workflows/abort",
   ] as const) {
@@ -588,12 +590,16 @@ const program = Effect.gen(function* () {
         run: {
           id: runId,
           runId,
+          runDir: `/tmp/${runId}`,
+          auditPath: `/tmp/${runId}/audit.md`,
           status:
             method === "_pi/workflows/abort"
               ? "aborted"
               : method === "_pi/workflows/pause"
                 ? "paused"
-                : "recovering",
+                : method === "_pi/workflows/interrupt"
+                  ? "interrupted"
+                  : "recovering",
         },
       });
     });
@@ -965,16 +971,31 @@ const program = Effect.gen(function* () {
           malformedLineCount: 0,
         });
       }
+      if (method === "_pi/workflows/get") {
+        return Effect.succeed({
+          run: {
+            id: runId,
+            runId,
+            status: "running",
+            runDir: `/tmp/${runId}`,
+            auditPath: `/tmp/${runId}/audit.md`,
+          },
+        });
+      }
       return Effect.succeed({
         run: {
           id: runId,
           runId,
+          runDir: `/tmp/${runId}`,
+          auditPath: `/tmp/${runId}/audit.md`,
           status:
             method === "_pi/workflows/abort"
               ? "aborted"
               : method === "_pi/workflows/pause"
                 ? "paused"
-                : "recovering",
+                : method === "_pi/workflows/interrupt"
+                  ? "interrupted"
+                  : "recovering",
         },
       });
     }

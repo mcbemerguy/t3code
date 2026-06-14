@@ -8,6 +8,8 @@ import {
   ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderSession,
+  type ProviderWorkflowControlAction,
+  type ProviderWorkflowRunCursor,
   type ServerProviderSlashCommand,
   type ProviderUserInputAnswers,
   type ThreadTokenUsageSnapshot,
@@ -71,12 +73,13 @@ import { applyGenericAcpSessionConfiguration } from "../acp/GenericAcpAdapterMod
 import { makeCustomAcpRuntime } from "../acp/CustomAcpSupport.ts";
 import {
   extractPiWorkflowCapabilities,
-  isTerminalWorkflowStatus,
   makeCustomAcpResumeCursor,
   parseCustomAcpResume,
   parsePiWorkflowRuns,
   type PiWorkflowCapabilities,
   type PiWorkflowResumeRun,
+  workflowCursorFromControlResponse,
+  workflowCursorFromResumeRun,
   workflowMetaFromRawPayload,
   workflowRunFromRecord,
 } from "../acp/PiWorkflowExtension.ts";
@@ -115,7 +118,7 @@ interface GenericAcpSessionContext {
   piWorkflowCapabilities: PiWorkflowCapabilities | undefined;
   readonly workflowRuns: Map<string, PiWorkflowResumeRun>;
   readonly duplicateWorkflowEventRuns: Set<string>;
-  readonly workflowActionNotices: Set<string>;
+  readonly workflowCursors: Map<string, ProviderWorkflowRunCursor>;
   readonly completedTurnIds: Set<TurnId>;
   readonly cancellingTurnIds: Set<TurnId>;
   readonly turnGate: Semaphore.Semaphore;
@@ -157,12 +160,38 @@ function mergeWorkflowRunCursor(
   return {
     runId: next.runId,
     lastSequence: Math.max(previous.lastSequence, next.lastSequence),
+    ...((next.workflowId ?? previous.workflowId)
+      ? { workflowId: next.workflowId ?? previous.workflowId }
+      : {}),
     ...((next.runDir ?? previous.runDir) ? { runDir: next.runDir ?? previous.runDir } : {}),
     ...((next.auditPath ?? previous.auditPath)
       ? { auditPath: next.auditPath ?? previous.auditPath }
       : {}),
     ...((next.status ?? previous.status) ? { status: next.status ?? previous.status } : {}),
   };
+}
+
+function activeWorkflowCursors(
+  ctx: GenericAcpSessionContext,
+): ReadonlyArray<ProviderWorkflowRunCursor> {
+  return Array.from(ctx.workflowCursors.values()).filter((run) => !run.terminal);
+}
+
+function workflowControlMethod(
+  capabilities: PiWorkflowCapabilities | undefined,
+  action: ProviderWorkflowControlAction,
+): string | undefined {
+  switch (action) {
+    case "continue":
+    case "resume":
+      return capabilities?.resumeMethod;
+    case "interrupt":
+      return capabilities?.interruptMethod;
+    case "pause":
+      return capabilities?.pauseMethod;
+    case "abort":
+      return capabilities?.abortMethod;
+  }
 }
 
 function requiresStrictPiAcpResume(raw: unknown, piSteeringMethod: string | undefined): boolean {
@@ -304,43 +333,76 @@ export function makeGenericAcpAdapter(
           ...(strictResume ? { requireSessionLoad: true } : {}),
           activeWorkflowRuns: Array.from(ctx.workflowRuns.values()),
         }),
+        workflowRuns: activeWorkflowCursors(ctx),
       };
     };
+
+    const emitWorkflowRunUpdated = (
+      ctx: GenericAcpSessionContext,
+      cursor: ProviderWorkflowRunCursor,
+      rawPayload: unknown,
+    ) =>
+      makeEventStamp().pipe(
+        Effect.flatMap((stamp) =>
+          offerRuntimeEvent({
+            type: "workflow.run.updated",
+            ...stamp,
+            provider,
+            threadId: ctx.threadId,
+            turnId: currentRuntimeEventTurnId(ctx),
+            payload: { run: cursor },
+            raw: {
+              source: "acp.pi-workflows.extension",
+              method: "workflow.run.updated",
+              payload: rawPayload,
+            },
+          }),
+        ),
+      );
 
     const upsertWorkflowRunCursor = (
       ctx: GenericAcpSessionContext,
       run: PiWorkflowResumeRun,
-      terminal: boolean,
+      cursor: ProviderWorkflowRunCursor,
     ) => {
-      if (terminal) ctx.workflowRuns.delete(run.runId);
-      else
-        ctx.workflowRuns.set(
-          run.runId,
-          mergeWorkflowRunCursor(ctx.workflowRuns.get(run.runId), run),
-        );
+      if (cursor.terminal) {
+        ctx.workflowRuns.delete(run.runId);
+        ctx.workflowCursors.delete(run.runId);
+      } else {
+        const merged = mergeWorkflowRunCursor(ctx.workflowRuns.get(run.runId), run);
+        ctx.workflowRuns.set(run.runId, merged);
+        ctx.workflowCursors.set(run.runId, cursor);
+      }
       refreshResumeCursor(ctx);
     };
 
-    const emitWorkflowActionNotice = (
+    const applyWorkflowEventRecord = (
       ctx: GenericAcpSessionContext,
-      run: PiWorkflowResumeRun,
-      rawPayload: unknown,
+      input: {
+        readonly runId: string;
+        readonly sequence: number;
+        readonly record: Record<string, unknown>;
+        readonly rawPayload: unknown;
+      },
     ) =>
       Effect.gen(function* () {
-        if (ctx.workflowActionNotices.has(run.runId)) return;
-        ctx.workflowActionNotices.add(run.runId);
-        const auditText = run.auditPath ? ` Open audit: ${run.auditPath}.` : "";
-        yield* offerRuntimeEvent(
-          makeAcpContentDeltaEvent({
-            stamp: yield* makeEventStamp(),
-            provider,
-            threadId: ctx.threadId,
-            turnId: currentRuntimeEventTurnId(ctx),
-            streamKind: "assistant_text",
-            text: `Workflow ${run.runId} is active. Available actions: resume, pause, abort.${auditText}`,
-            rawPayload,
-          }),
-        );
+        const previous = ctx.workflowRuns.get(input.runId);
+        const duplicate = previous !== undefined && input.sequence <= previous.lastSequence;
+        if (duplicate) {
+          ctx.duplicateWorkflowEventRuns.add(input.runId);
+          return false;
+        }
+        ctx.duplicateWorkflowEventRuns.delete(input.runId);
+        const run = workflowRunFromRecord(input.runId, input.sequence, input.record, previous);
+        const cursor = workflowCursorFromResumeRun({
+          run,
+          capabilities: ctx.piWorkflowCapabilities,
+          updatedAt: yield* nowIso,
+        });
+        if (!cursor) return false;
+        upsertWorkflowRunCursor(ctx, run, cursor);
+        yield* emitWorkflowRunUpdated(ctx, cursor, input.rawPayload);
+        return true;
       });
 
     const discoverActiveWorkflowRuns = (ctx: GenericAcpSessionContext) =>
@@ -384,21 +446,36 @@ export function makeGenericAcpAdapter(
             .request(pauseMethod, payload)
             .pipe(Effect.exit, Effect.timeoutOption(Duration.millis(ACP_CANCEL_WATCHDOG_GRACE_MS)));
           if (pauseExit._tag === "None" || Exit.isFailure(pauseExit.value)) return false;
+          const raw = pauseExit.value.value;
+          const cursor = workflowCursorFromControlResponse({
+            runId: run.runId,
+            lastSequence: run.lastSequence,
+            raw,
+            capabilities: ctx.piWorkflowCapabilities,
+            updatedAt: yield* nowIso,
+          });
+          const fallbackRun = { ...run, status: "paused" };
+          const fallbackCursor = workflowCursorFromResumeRun({
+            run: fallbackRun,
+            capabilities: ctx.piWorkflowCapabilities,
+            updatedAt: yield* nowIso,
+          });
+          const nextCursor = cursor ?? fallbackCursor;
+          if (!nextCursor) continue;
+          upsertWorkflowRunCursor(
+            ctx,
+            {
+              runId: nextCursor.runId,
+              lastSequence: nextCursor.lastSequence,
+              ...(nextCursor.workflowId ? { workflowId: nextCursor.workflowId } : {}),
+              ...(nextCursor.runDir ? { runDir: nextCursor.runDir } : {}),
+              ...(nextCursor.auditPath ? { auditPath: nextCursor.auditPath } : {}),
+              status: nextCursor.status,
+            },
+            nextCursor,
+          );
+          yield* emitWorkflowRunUpdated(ctx, nextCursor, raw);
         }
-        for (const run of runs) {
-          upsertWorkflowRunCursor(ctx, { ...run, status: "paused" }, false);
-        }
-        yield* offerRuntimeEvent(
-          makeAcpContentDeltaEvent({
-            stamp: yield* makeEventStamp(),
-            provider,
-            threadId: ctx.threadId,
-            turnId: currentRuntimeEventTurnId(ctx),
-            streamKind: "assistant_text",
-            text: "Workflow pause requested. Use the workflow resume or abort action to continue or terminate it explicitly.",
-            rawPayload: { activeWorkflowRuns: runs.map((run) => run.runId) },
-          }),
-        );
         return true;
       });
 
@@ -811,10 +888,20 @@ export function makeGenericAcpAdapter(
           });
 
           const piWorkflowCapabilities = extractPiWorkflowCapabilities(started.initializeResult);
+          const now = yield* nowIso;
           const resumedWorkflowRuns = new Map(
             (resumeTarget?.activeWorkflowRuns ?? []).map((run) => [run.runId, run] as const),
           );
-          const now = yield* nowIso;
+          const resumedWorkflowCursors = new Map(
+            (resumeTarget?.activeWorkflowRuns ?? []).flatMap((run) => {
+              const cursor = workflowCursorFromResumeRun({
+                run,
+                capabilities: piWorkflowCapabilities,
+                updatedAt: now,
+              });
+              return cursor ? [[run.runId, cursor] as const] : [];
+            }),
+          );
           const session: ProviderSession = {
             provider,
             providerInstanceId: boundInstanceId,
@@ -831,6 +918,9 @@ export function makeGenericAcpAdapter(
                 : {}),
               activeWorkflowRuns: Array.from(resumedWorkflowRuns.values()),
             }),
+            workflowRuns: Array.from(resumedWorkflowCursors.values()).filter(
+              (run) => !run.terminal,
+            ),
             createdAt: now,
             updatedAt: now,
           };
@@ -857,7 +947,7 @@ export function makeGenericAcpAdapter(
             piWorkflowCapabilities,
             workflowRuns: resumedWorkflowRuns,
             duplicateWorkflowEventRuns: new Set(),
-            workflowActionNotices: new Set(),
+            workflowCursors: resumedWorkflowCursors,
             completedTurnIds: new Set(),
             cancellingTurnIds: new Set(),
             turnGate,
@@ -959,27 +1049,20 @@ export function makeGenericAcpAdapter(
                       }),
                     );
                     return;
-                  case "WorkflowEventObserved": {
+                  case "WorkflowEventObserved":
                     yield* logNative(
                       ctx.threadId,
                       ctx.piWorkflowCapabilities?.eventsMethod ?? "_pi/workflows/events",
                       event.rawPayload,
                       "acp.extension",
                     );
-                    const previous = ctx.workflowRuns.get(event.runId);
-                    const duplicate =
-                      previous !== undefined && event.sequence <= previous.lastSequence;
-                    if (duplicate) {
-                      ctx.duplicateWorkflowEventRuns.add(event.runId);
-                      return;
-                    }
-                    ctx.duplicateWorkflowEventRuns.delete(event.runId);
-                    const run = workflowRunFromRecord(event.runId, event.sequence, event.record);
-                    const terminal = isTerminalWorkflowStatus(run.status);
-                    upsertWorkflowRunCursor(ctx, run, terminal);
-                    if (!terminal) yield* emitWorkflowActionNotice(ctx, run, event.rawPayload);
+                    yield* applyWorkflowEventRecord(ctx, {
+                      runId: event.runId,
+                      sequence: event.sequence,
+                      record: event.record,
+                      rawPayload: event.rawPayload,
+                    });
                     return;
-                  }
                   case "TokenUsageUpdated":
                     yield* logNative(
                       ctx.threadId,
@@ -1239,6 +1322,66 @@ export function makeGenericAcpAdapter(
         return true;
       });
 
+    const controlWorkflowRun: NonNullable<
+      ProviderAdapterShape<ProviderAdapterError>["controlWorkflowRun"]
+    > = (input) =>
+      Effect.gen(function* () {
+        const ctx = yield* requireSession(input.threadId);
+        const method = workflowControlMethod(ctx.piWorkflowCapabilities, input.action);
+        if (!method) {
+          return yield* new ProviderAdapterValidationError({
+            provider,
+            operation: "controlWorkflowRun",
+            issue: `Workflow action '${input.action}' is not supported by this ACP provider.`,
+          });
+        }
+        const current = ctx.workflowRuns.get(input.runId);
+        const payload = {
+          sessionId: ctx.acpSessionId,
+          runId: input.runId,
+          reason: `User requested workflow ${input.action} from t3code.`,
+          ...(input.continuationMessage !== undefined
+            ? { continuationMessage: input.continuationMessage }
+            : {}),
+        };
+        yield* logNative(ctx.threadId, method, payload, "acp.extension");
+        const raw = yield* ctx.acp
+          .request(method, payload)
+          .pipe(
+            Effect.mapError((error) =>
+              mapAcpToAdapterError(provider, input.threadId, method, error),
+            ),
+          );
+        const cursor = workflowCursorFromControlResponse({
+          runId: input.runId,
+          lastSequence: current?.lastSequence ?? 0,
+          raw,
+          capabilities: ctx.piWorkflowCapabilities,
+          updatedAt: yield* nowIso,
+        });
+        if (!cursor) {
+          return yield* new ProviderAdapterRequestError({
+            provider,
+            method,
+            detail: "Workflow control response did not include a valid run cursor.",
+          });
+        }
+        upsertWorkflowRunCursor(
+          ctx,
+          {
+            runId: cursor.runId,
+            lastSequence: cursor.lastSequence,
+            ...(cursor.workflowId ? { workflowId: cursor.workflowId } : {}),
+            ...(cursor.runDir ? { runDir: cursor.runDir } : {}),
+            ...(cursor.auditPath ? { auditPath: cursor.auditPath } : {}),
+            status: cursor.status,
+          },
+          cursor,
+        );
+        yield* emitWorkflowRunUpdated(ctx, cursor, raw);
+        return { run: cursor };
+      });
+
     const interruptTurn: ProviderAdapterShape<ProviderAdapterError>["interruptTurn"] = (
       threadId,
       turnId,
@@ -1406,6 +1549,7 @@ export function makeGenericAcpAdapter(
       sendTurn,
       sendActiveTurnInput,
       interruptTurn,
+      controlWorkflowRun,
       readThread,
       rollbackThread,
       respondToRequest,
