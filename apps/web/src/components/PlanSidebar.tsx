@@ -1,5 +1,9 @@
 import { memo, useState, useCallback } from "react";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ProviderWorkflowControlAction,
+  ProviderWorkflowRunCursor,
+} from "@t3tools/contracts";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
@@ -28,6 +32,9 @@ import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 import { readEnvironmentApi } from "~/environmentApi";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
+import { WorkflowRunControls } from "./WorkflowRunControls";
+
+const EMPTY_WORKFLOW_RUNS: ProviderWorkflowRunCursor[] = [];
 
 function stepStatusIcon(status: string): React.ReactNode {
   if (status === "completed") {
@@ -59,7 +66,11 @@ interface PlanSidebarProps {
   markdownCwd: string | undefined;
   workspaceRoot: string | undefined;
   timestampFormat: TimestampFormat;
+  workflowRuns?: ReadonlyArray<ProviderWorkflowRunCursor>;
+  isWorking?: boolean;
   mode?: "sheet" | "sidebar";
+  onStopRunningWorkflow?: () => Promise<void>;
+  onControlWorkflowRun?: (runId: string, action: ProviderWorkflowControlAction) => Promise<void>;
   onClose: () => void;
 }
 
@@ -71,7 +82,11 @@ const PlanSidebar = memo(function PlanSidebar({
   markdownCwd,
   workspaceRoot,
   timestampFormat,
+  workflowRuns = EMPTY_WORKFLOW_RUNS,
+  isWorking = false,
   mode = "sidebar",
+  onStopRunningWorkflow,
+  onControlWorkflowRun,
   onClose,
 }: PlanSidebarProps) {
   const [proposedPlanExpanded, setProposedPlanExpanded] = useState(false);
@@ -195,6 +210,15 @@ const PlanSidebar = memo(function PlanSidebar({
       {/* Content */}
       <ScrollArea className="min-h-0 flex-1">
         <div className="p-3 space-y-4">
+          {workflowRuns.length > 0 && onStopRunningWorkflow && onControlWorkflowRun ? (
+            <WorkflowRunControls
+              workflowRuns={workflowRuns}
+              isWorking={isWorking}
+              onStopRunningWorkflow={onStopRunningWorkflow}
+              onControlWorkflowRun={onControlWorkflowRun}
+            />
+          ) : null}
+
           {/* Explanation */}
           {activePlan?.explanation ? (
             <p className="text-[13px] leading-relaxed text-muted-foreground/80">
@@ -265,7 +289,7 @@ const PlanSidebar = memo(function PlanSidebar({
           ) : null}
 
           {/* Empty state */}
-          {!activePlan && !planMarkdown ? (
+          {!activePlan && !planMarkdown && workflowRuns.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-center">
               <p className="text-[13px] text-muted-foreground/40">No active plan yet.</p>
               <p className="mt-1 text-[11px] text-muted-foreground/30">

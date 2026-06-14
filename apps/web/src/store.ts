@@ -162,6 +162,10 @@ function mapSession(session: OrchestrationSession): ThreadSession {
     activeTurnId: session.activeTurnId ?? undefined,
     createdAt: session.updatedAt,
     updatedAt: session.updatedAt,
+    workflowRuns: (session.workflowRuns ?? []).map((run) => ({
+      ...run,
+      actions: [...run.actions],
+    })),
     ...(session.lastError ? { lastError: session.lastError } : {}),
   };
 }

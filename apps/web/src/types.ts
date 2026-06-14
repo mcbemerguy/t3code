@@ -14,6 +14,7 @@ import type {
   MessageId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderWorkflowRunCursor,
   CheckpointRef,
   ProviderInteractionMode,
   RuntimeMode,
@@ -168,5 +169,6 @@ export interface ThreadSession {
   createdAt: string;
   updatedAt: string;
   lastError?: string;
+  workflowRuns?: ProviderWorkflowRunCursor[];
   orchestrationStatus: OrchestrationSessionStatus;
 }

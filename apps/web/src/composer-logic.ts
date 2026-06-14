@@ -2,7 +2,10 @@ import { splitPromptIntoComposerSegments } from "./composer-editor-mentions";
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
 
 export type ComposerTriggerKind = "path" | "slash-command" | "skill";
-export type ComposerSlashCommand = "model" | "plan" | "default";
+export type ComposerSlashCommand = "model" | "plan" | "default" | "workflow-abort";
+export type StandaloneComposerSlashCommand =
+  | { kind: "interaction-mode"; mode: "plan" | "default" }
+  | { kind: "workflow-abort"; runId?: string };
 
 export interface ComposerTrigger {
   kind: ComposerTriggerKind;
@@ -257,14 +260,21 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
 
 export function parseStandaloneComposerSlashCommand(
   text: string,
-): Exclude<ComposerSlashCommand, "model"> | null {
-  const match = /^\/(plan|default)\s*$/i.exec(text.trim());
-  if (!match) {
-    return null;
+): StandaloneComposerSlashCommand | null {
+  const trimmed = text.trim();
+  const modeMatch = /^\/(plan|default)\s*$/i.exec(trimmed);
+  if (modeMatch) {
+    const command = modeMatch[1]?.toLowerCase();
+    return { kind: "interaction-mode", mode: command === "plan" ? "plan" : "default" };
   }
-  const command = match[1]?.toLowerCase();
-  if (command === "plan") return "plan";
-  return "default";
+
+  const workflowAbortMatch = /^\/workflow-abort(?:\s+(.+))?$/i.exec(trimmed);
+  if (workflowAbortMatch) {
+    const runId = workflowAbortMatch[1]?.trim();
+    return runId ? { kind: "workflow-abort", runId } : { kind: "workflow-abort" };
+  }
+
+  return null;
 }
 
 export function replaceTextRange(

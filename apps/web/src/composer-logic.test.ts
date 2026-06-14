@@ -337,11 +337,24 @@ describe("isCollapsedCursorAdjacentToInlineToken", () => {
 
 describe("parseStandaloneComposerSlashCommand", () => {
   it("parses standalone /plan command", () => {
-    expect(parseStandaloneComposerSlashCommand(" /plan ")).toBe("plan");
+    expect(parseStandaloneComposerSlashCommand(" /plan ")).toEqual({
+      kind: "interaction-mode",
+      mode: "plan",
+    });
   });
 
   it("parses standalone /default command", () => {
-    expect(parseStandaloneComposerSlashCommand("/default")).toBe("default");
+    expect(parseStandaloneComposerSlashCommand("/default")).toEqual({
+      kind: "interaction-mode",
+      mode: "default",
+    });
+  });
+
+  it("parses standalone /workflow-abort command", () => {
+    expect(parseStandaloneComposerSlashCommand("/workflow-abort run-1")).toEqual({
+      kind: "workflow-abort",
+      runId: "run-1",
+    });
   });
 
   it("ignores slash commands with extra message text", () => {

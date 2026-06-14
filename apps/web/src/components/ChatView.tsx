@@ -8,6 +8,8 @@ import {
   type ProjectScript,
   type ProjectId,
   type ProviderApprovalDecision,
+  type ProviderWorkflowControlAction,
+  type ProviderWorkflowRunCursor,
   ProviderInstanceId,
   type ServerProvider,
   type ResolvedKeybindingsConfig,
@@ -49,6 +51,7 @@ import {
   collapseExpandedComposerCursor,
   parseStandaloneComposerSlashCommand,
 } from "../composer-logic";
+import { resolveWorkflowAbortSlashCommand } from "../workflowSlashCommand";
 import {
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -202,6 +205,7 @@ const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_PROPOSED_PLANS: Thread["proposedPlans"] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
+const EMPTY_WORKFLOW_RUNS: ProviderWorkflowRunCursor[] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 const TYPE_TO_FOCUS_EDITABLE_SELECTOR = [
   "input",
@@ -1666,6 +1670,18 @@ export default function ChatView(props: ChatViewProps) {
     () => deriveActivePlanState(threadActivities, activeLatestTurn?.turnId ?? undefined),
     [activeLatestTurn?.turnId, threadActivities],
   );
+  const sessionWorkflowRuns = activeThread?.session?.workflowRuns ?? EMPTY_WORKFLOW_RUNS;
+  const activeWorkflowRuns = useMemo(
+    () => sessionWorkflowRuns.filter((run) => !run.terminal),
+    [sessionWorkflowRuns],
+  );
+  const activeWorkflowRunKey = useMemo(() => {
+    const activeRunIds = activeWorkflowRuns.map((run) => run.runId).sort();
+    return activeRunIds.length > 0 ? `workflow:${activeRunIds.join("|")}` : null;
+  }, [activeWorkflowRuns]);
+  const hasActiveWorkflowRuns = activeWorkflowRunKey !== null;
+  const planSidebarDismissalKey =
+    activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? activeWorkflowRunKey ?? "__dismissed__";
   const planSidebarLabel = sidebarProposedPlan || interactionMode === "plan" ? "Plan" : "Tasks";
   const showPlanFollowUpPrompt =
     pendingUserInputs.length === 0 &&
@@ -2513,19 +2529,17 @@ export default function ChatView(props: ChatViewProps) {
   const togglePlanSidebar = useCallback(() => {
     setPlanSidebarOpen((open) => {
       if (open) {
-        planSidebarDismissedForTurnRef.current =
-          activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
+        planSidebarDismissedForTurnRef.current = planSidebarDismissalKey;
       } else {
         planSidebarDismissedForTurnRef.current = null;
       }
       return !open;
     });
-  }, [activePlan?.turnId, sidebarProposedPlan?.turnId]);
+  }, [planSidebarDismissalKey]);
   const closePlanSidebar = useCallback(() => {
     setPlanSidebarOpen(false);
-    planSidebarDismissedForTurnRef.current =
-      activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
-  }, [activePlan?.turnId, sidebarProposedPlan?.turnId]);
+    planSidebarDismissedForTurnRef.current = planSidebarDismissalKey;
+  }, [planSidebarDismissalKey]);
 
   const persistThreadSettingsForNextTurn = useCallback(
     async (input: {
@@ -2618,23 +2632,29 @@ export default function ChatView(props: ChatViewProps) {
     planSidebarDismissedForTurnRef.current = null;
   }, [activeThread?.id]);
 
-  // Auto-open the plan sidebar when plan/todo steps arrive for the current turn.
+  // Auto-open the plan/tasks sidebar when current-turn tasks or active workflow controls appear.
   // Don't auto-open for plans carried over from a previous turn (the user can open manually).
   useEffect(() => {
-    if (!autoOpenPlanSidebar) return;
-    if (!activePlan) return;
+    if (!autoOpenPlanSidebar && !hasActiveWorkflowRuns) return;
     if (planSidebarOpen) return;
-    const latestTurnId = activeLatestTurn?.turnId ?? null;
-    if (latestTurnId && activePlan.turnId !== latestTurnId) return;
-    const turnKey = activePlan.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
-    if (planSidebarDismissedForTurnRef.current === turnKey) return;
+    let shouldOpen = false;
+    if (autoOpenPlanSidebar && activePlan) {
+      const latestTurnId = activeLatestTurn?.turnId ?? null;
+      shouldOpen = !latestTurnId || activePlan.turnId === latestTurnId;
+    }
+    if (!shouldOpen && hasActiveWorkflowRuns) {
+      shouldOpen = true;
+    }
+    if (!shouldOpen) return;
+    if (planSidebarDismissedForTurnRef.current === planSidebarDismissalKey) return;
     setPlanSidebarOpen(true);
   }, [
     activePlan,
     activeLatestTurn?.turnId,
     autoOpenPlanSidebar,
+    hasActiveWorkflowRuns,
+    planSidebarDismissalKey,
     planSidebarOpen,
-    sidebarProposedPlan?.turnId,
   ]);
 
   useEffect(() => {
@@ -2971,10 +2991,6 @@ export default function ChatView(props: ChatViewProps) {
       sendInFlightRef.current
     )
       return;
-    if (activePendingProgress) {
-      onAdvanceActivePendingUserInput();
-      return;
-    }
     const sendCtx = composerRef.current?.getSendContext();
     if (!sendCtx) return;
     const {
@@ -2998,6 +3014,38 @@ export default function ChatView(props: ChatViewProps) {
       terminalContexts: composerTerminalContexts,
       blockedReason: undeliveredMessageBlockReason,
     });
+    const standaloneSlashCommand =
+      composerImages.length === 0 && sendableComposerTerminalContexts.length === 0
+        ? parseStandaloneComposerSlashCommand(trimmed)
+        : null;
+    if (standaloneSlashCommand?.kind === "workflow-abort") {
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerRef.current?.resetCursorState();
+      const abortResolution = resolveWorkflowAbortSlashCommand({
+        command: standaloneSlashCommand,
+        workflowRuns: sessionWorkflowRuns,
+      });
+      if (abortResolution.status === "error") {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: abortResolution.title,
+            description: abortResolution.description,
+          }),
+        );
+        if (activeThreadId) {
+          setThreadError(activeThreadId, abortResolution.description);
+        }
+        return;
+      }
+      await onControlWorkflowRun(abortResolution.runId, "abort");
+      return;
+    }
+    if (activePendingProgress) {
+      onAdvanceActivePendingUserInput();
+      return;
+    }
     if (undeliveredMessageBlockReason) {
       toastManager.add(
         stackedThreadToast({
@@ -3022,12 +3070,8 @@ export default function ChatView(props: ChatViewProps) {
       });
       return;
     }
-    const standaloneSlashCommand =
-      composerImages.length === 0 && sendableComposerTerminalContexts.length === 0
-        ? parseStandaloneComposerSlashCommand(trimmed)
-        : null;
-    if (standaloneSlashCommand) {
-      handleInteractionModeChange(standaloneSlashCommand);
+    if (standaloneSlashCommand?.kind === "interaction-mode") {
+      handleInteractionModeChange(standaloneSlashCommand.mode);
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
@@ -3287,6 +3331,30 @@ export default function ChatView(props: ChatViewProps) {
       createdAt: new Date().toISOString(),
     });
   };
+
+  const onControlWorkflowRun = useCallback(
+    async (runId: string, action: ProviderWorkflowControlAction) => {
+      const api = readEnvironmentApi(environmentId);
+      if (!api || !activeThreadId) return;
+      setThreadError(activeThreadId, null);
+      await api.orchestration
+        .dispatchCommand({
+          type: "thread.workflow.control",
+          commandId: newCommandId(),
+          threadId: activeThreadId,
+          runId,
+          action,
+          createdAt: new Date().toISOString(),
+        })
+        .catch((err: unknown) => {
+          setThreadError(
+            activeThreadId,
+            err instanceof Error ? err.message : `Failed to ${action} workflow run.`,
+          );
+        });
+    },
+    [activeThreadId, environmentId, setThreadError],
+  );
 
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
@@ -4139,7 +4207,11 @@ export default function ChatView(props: ChatViewProps) {
             markdownCwd={gitCwd ?? undefined}
             workspaceRoot={activeWorkspaceRoot}
             timestampFormat={timestampFormat}
+            workflowRuns={activeWorkflowRuns}
+            isWorking={isWorking}
             mode="sidebar"
+            onStopRunningWorkflow={onInterrupt}
+            onControlWorkflowRun={onControlWorkflowRun}
             onClose={closePlanSidebar}
           />
         ) : null}
@@ -4173,7 +4245,11 @@ export default function ChatView(props: ChatViewProps) {
             markdownCwd={gitCwd ?? undefined}
             workspaceRoot={activeWorkspaceRoot}
             timestampFormat={timestampFormat}
+            workflowRuns={activeWorkflowRuns}
+            isWorking={isWorking}
             mode="sheet"
+            onStopRunningWorkflow={onInterrupt}
+            onControlWorkflowRun={onControlWorkflowRun}
             onClose={closePlanSidebar}
           />
         </RightPanelSheet>
