@@ -35,11 +35,24 @@ Supported Pi extension methods are additive and prefixed:
 - `_pi/workflows/get`
 - `_pi/workflows/events`
 - `_pi/workflows/resume`
+- `_pi/workflows/interrupt`
 - `_pi/workflows/pause`
 - `_pi/workflows/abort`
 
-T3Code uses these methods only when the ACP server advertises them. Standard ACP updates remain the rendering path, so generic ACP behavior is preserved. Active workflow notices include the run id and audit path when available. T3Code currently surfaces textual actions for resume/abort rather than dedicated buttons; users can still validate/control recovery through raw Pi-specific ACP method calls or another Pi-aware control surface.
+T3Code uses these methods only when the ACP server advertises them. Standard ACP updates remain the rendering path, so generic ACP behavior is preserved. Active workflow notices include the run id and audit path when available.
 
-Interrupt behavior is conservative: the first interrupt for an active Pi workflow requests `_pi/workflows/pause` instead of treating the workflow as terminally cancelled. `_pi/workflows/resume` records an explicit resume request/policy in Pi workflow artifacts; actual step continuation requires the Pi workflow engine resume/recovery path for the run, not only T3Code replaying ACP presentation. Abort is terminal. Ambiguous side-effecting child steps are expected to pause/interrupt instead of being automatically rerun. Pi workflow recovery is based on Pi artifacts and ACP replay, not on injecting workflow progress into model-visible transcript context.
+Active non-terminal Pi workflow runs are surfaced in the Tasks sidebar under **Pi workflows**. The sidebar shows workflow status, run id, audit/artifact paths when known, and per-run controls derived from the advertised Pi methods:
 
-Run `/home/marcosb/.pi/agent/extensions/workflows/scripts/recovery-smoke.md` before changing Custom ACP workflow recovery. It covers T3Code UI reload, T3Code server restart, `pi-acp` process restart, parent `pi --mode rpc` restart plus ACP `session/load`, detached child crashes before/after final handoff, user interrupt followed by resume, and user interrupt followed by explicit abort.
+- **Continue** or **Resume** appears for interrupted, paused, or recovering runs and maps to `_pi/workflows/resume`.
+- **Stop** appears for running runs and maps to `_pi/workflows/interrupt` when advertised, otherwise `_pi/workflows/pause`.
+- **Abort workflow** appears in the per-run overflow menu and maps to `_pi/workflows/abort` after confirmation.
+
+The composer footer keeps the Tasks toggle visible while active workflow runs exist, and the Tasks sidebar opens automatically for active workflow state. There is no composer-level workflow-control banner.
+
+`/workflow-abort [run-id]` remains as a client-side fallback/shortcut for abort. It resolves the only abortable run when there is exactly one, requires an explicit run id when multiple abortable runs exist, and dispatches the same provider workflow-control abort action as the Tasks sidebar instead of sending raw text to the agent.
+
+Stop and Abort are intentionally different. Stop is a recoverable interruption of current workflow execution: the Tasks sidebar Stop control targets a single run and sends the advertised non-terminal interrupt/pause action. The normal turn Stop button follows the provider-level turn-interruption path; for Custom ACP with active Pi workflows, that path first attempts the conservative workflow interrupt/pause action and only falls through to ACP turn cancellation when no active workflow can be controlled or the workflow-control path fails. A stopped workflow should remain recoverable through the workflow cursor and Pi artifacts. Abort is explicit, terminal, and destructive to future execution of that run: it marks the workflow aborted, keeps audit/artifact files, and removes the active workflow cursor after terminal replay is observed. Pause is cooperative and must not be treated as proof that a live child process has exited. Ambiguous side-effecting child steps are expected to pause/interrupt instead of being automatically rerun.
+
+Pi workflow recovery is based on Pi artifacts (`run.json`, `events.jsonl`, child session artifacts, and `audit.md`) plus ACP `session/load`/workflow-event replay, not on injecting workflow progress into model-visible transcript context.
+
+Run `/home/marcosb/.pi/agent/extensions/workflows/scripts/recovery-smoke.md` before changing Custom ACP workflow recovery. It covers T3Code UI reload, T3Code server restart, `pi-acp` process restart, parent `pi --mode rpc` restart plus ACP `session/load`, detached child crashes before/after final handoff, Stop followed by resume/continue, and Stop followed by explicit abort.
