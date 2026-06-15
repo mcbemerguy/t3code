@@ -1,7 +1,6 @@
 import { ProviderDriverKind, type PiSettings, type ServerProviderModel } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import * as DateTime from "effect/DateTime";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
@@ -182,10 +181,10 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
     probe: {
       installed: true,
       version: parsedVersion,
-      status: "ready",
+      status: "warning",
       auth: { status: "unknown", label: "Managed by Pi" },
       message:
-        "Pi model and authentication are managed by Pi settings. RPC model discovery will replace the fallback model list in the native runtime phase.",
+        "Pi CLI is installed, but native Pi sessions are not wired yet. The provider is shown for settings/status only until the Pi RPC runtime lands.",
     },
   });
 });

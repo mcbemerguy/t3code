@@ -12,6 +12,7 @@ function provider(input: {
   enabled?: boolean;
   availability?: ServerProvider["availability"];
   displayName?: string;
+  status?: ServerProvider["status"];
 }): ServerProvider {
   return {
     instanceId: ProviderInstanceId.make(input.instanceId),
@@ -20,7 +21,7 @@ function provider(input: {
     enabled: input.enabled ?? true,
     installed: true,
     version: null,
-    status: "ready",
+    status: input.status ?? "ready",
     ...(input.availability ? { availability: input.availability } : {}),
     auth: { status: "authenticated" },
     checkedAt: "2026-01-01T00:00:00.000Z",
@@ -70,9 +71,25 @@ describe("resolveSelectableProviderInstance", () => {
     expect(resolveSelectableProviderInstance(providers, disabled)).toBe(fallback);
   });
 
-  it("does not return disabled, unavailable, or unknown instances when none are sendable", () => {
+  it("falls back when the requested instance is not ready", () => {
+    const limited = ProviderInstanceId.make("pi");
+    const fallback = ProviderInstanceId.make("codex");
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("pi"),
+        instanceId: limited,
+        status: "warning",
+      }),
+      provider({ provider: ProviderDriverKind.make("codex"), instanceId: fallback }),
+    ];
+
+    expect(resolveSelectableProviderInstance(providers, limited)).toBe(fallback);
+  });
+
+  it("does not return disabled, unavailable, warning, or unknown instances when none are sendable", () => {
     const disabled = ProviderInstanceId.make("codex");
     const unavailable = ProviderInstanceId.make("claudeAgent");
+    const warning = ProviderInstanceId.make("pi");
     const unknown = ProviderInstanceId.make("removed_instance");
     const providers = [
       provider({
@@ -85,10 +102,16 @@ describe("resolveSelectableProviderInstance", () => {
         instanceId: unavailable,
         availability: "unavailable",
       }),
+      provider({
+        provider: ProviderDriverKind.make("pi"),
+        instanceId: warning,
+        status: "warning",
+      }),
     ];
 
     expect(resolveSelectableProviderInstance(providers, disabled)).toBeUndefined();
     expect(resolveSelectableProviderInstance(providers, unavailable)).toBeUndefined();
+    expect(resolveSelectableProviderInstance(providers, warning)).toBeUndefined();
     expect(resolveSelectableProviderInstance(providers, unknown)).toBeUndefined();
   });
 });

@@ -2,6 +2,7 @@ import {
   DEFAULT_MODEL,
   DEFAULT_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
+  isProviderAvailable,
   ProviderDriverKind,
   type ModelCapabilities,
   type ProviderInstanceId,
@@ -63,18 +64,22 @@ export function isProviderEnabled(
   return getProviderSnapshot(providers, provider)?.enabled ?? false;
 }
 
+function isSnapshotSelectable(snapshot: ServerProvider): boolean {
+  return snapshot.enabled && snapshot.status === "ready" && isProviderAvailable(snapshot);
+}
+
 // Resolve an instance selection to the correlated live driver. If the
-// instance is absent, fall back to a live enabled provider instead of
+// instance is absent, fall back to a live ready provider instead of
 // inferring a driver from the missing instance id.
 export function resolveSelectableProvider(
   providers: ReadonlyArray<ServerProvider>,
   provider: ProviderDriverKind | ProviderInstanceId | null | undefined,
 ): ProviderDriverKind {
   const requestedEntry = providers.find((candidate) => candidate.instanceId === provider);
-  if (requestedEntry?.enabled) {
+  if (requestedEntry && isSnapshotSelectable(requestedEntry)) {
     return requestedEntry.driver;
   }
-  return providers.find((candidate) => candidate.enabled)?.driver ?? DEFAULT_DRIVER_KIND;
+  return providers.find(isSnapshotSelectable)?.driver ?? DEFAULT_DRIVER_KIND;
 }
 
 export function getProviderModelCapabilities(

@@ -12,6 +12,6 @@ Reference commits used for porting context:
 
 Phase 1 registers a first-party `pi` driver without importing Custom ACP or `.local/pi-acp` runtime modules. The T3 settings surface is intentionally minimal: `enabled` and `binaryPath` only, with `binaryPath` defaulting to `pi`. Pi's own settings remain authoritative for model/provider behavior.
 
-The initial provider snapshot uses `pi --version` as the health probe and exposes a single fallback model, `default`, so the provider can render in settings/model surfaces before the Pi RPC runtime lands. Later phases should replace that fallback with direct Pi RPC `get_available_models` discovery and `set_model` handling at session/runtime level.
+The initial provider snapshot uses `pi --version` as the health probe and exposes a single fallback model, `default`, so the provider can render in settings/status surfaces before the Pi RPC runtime lands. Even when the CLI is installed, the Phase 1 snapshot reports `warning` rather than `ready`; this keeps Pi out of sendable model/session pickers while `PiAdapter` still rejects runtime methods. Later phases should switch the provider to `ready` only after direct Pi RPC sessions, `get_available_models` discovery, and `set_model` handling are implemented.
 
 Text generation for Git commit messages, PR text, branch names, and thread titles is deliberately unsupported for Pi in Phase 1. Calls fail with a structured `TextGenerationError` until a Pi-native text-generation strategy is implemented.

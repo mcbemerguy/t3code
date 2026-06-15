@@ -12,6 +12,7 @@ function provider(input: {
   provider?: ProviderDriverKind;
   instanceId: string;
   models?: ReadonlyArray<string>;
+  status?: ServerProvider["status"];
 }): ServerProvider {
   const driver =
     input.provider ??
@@ -24,7 +25,7 @@ function provider(input: {
     enabled: true,
     installed: true,
     version: null,
-    status: "ready",
+    status: input.status ?? "ready",
     auth: { status: "authenticated" },
     checkedAt: "2026-01-01T00:00:00.000Z",
     models: (input.models ?? []).map((slug) => ({
@@ -246,6 +247,34 @@ describe("instance-scoped model selection", () => {
     expect(resolveAppModelSelectionState(settings, providers)).toEqual({
       instanceId: ProviderInstanceId.make("claude_openrouter"),
       model: "openai/gpt-5.5",
+    });
+  });
+
+  it("falls back from enabled instances that are not ready", () => {
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("pi"),
+        instanceId: "pi",
+        models: ["default"],
+        status: "warning",
+      }),
+      provider({
+        provider: ProviderDriverKind.make("codex"),
+        instanceId: "codex",
+        models: ["gpt-5.4-codex"],
+      }),
+    ];
+    const settings: UnifiedSettings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      textGenerationModelSelection: {
+        instanceId: ProviderInstanceId.make("pi"),
+        model: "default",
+      },
+    };
+
+    expect(resolveAppModelSelectionState(settings, providers)).toEqual({
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5.4-codex",
     });
   });
 });
