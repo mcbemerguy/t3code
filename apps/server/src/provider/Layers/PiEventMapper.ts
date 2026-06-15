@@ -14,6 +14,7 @@ import * as Effect from "effect/Effect";
 import type { PiRpcEvent, PiRpcRuntimeMessage } from "./PiSessionRuntime.ts";
 import {
   cancellationResponse,
+  cancellationResponseForUnsupportedExtensionUiRequest,
   describeFireAndForgetExtensionUiEvent,
   isPiExtensionUiRequest,
   parsePiExtensionUiDialogRequest,
@@ -203,10 +204,11 @@ export class PiEventMapper {
       const request = parsePiExtensionUiDialogRequest(event, message);
       const pending = request ? questionFromPiExtensionUiDialog(request) : undefined;
       if (!pending) {
-        if (request) {
-          yield* session.runtime
-            .respondExtensionUi(cancellationResponse(request))
-            .pipe(Effect.ignore);
+        const response = request
+          ? cancellationResponse(request)
+          : cancellationResponseForUnsupportedExtensionUiRequest(event);
+        if (response) {
+          yield* session.runtime.respondExtensionUi(response).pipe(Effect.ignore);
         }
         const detail = describeFireAndForgetExtensionUiEvent(event);
         if (detail) {

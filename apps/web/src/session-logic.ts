@@ -296,7 +296,7 @@ function parseUserInputQuestions(
           };
         })
         .filter((option): option is UserInputQuestion["options"][number] => option !== null);
-      if (options.length === 0) {
+      if (question.options.length > 0 && options.length === 0) {
         return null;
       }
       return {

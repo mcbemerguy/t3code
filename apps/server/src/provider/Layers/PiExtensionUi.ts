@@ -18,6 +18,13 @@ const INPUT_QUESTION_ID = "value";
 const CONFIRM_QUESTION_ID = "confirmed";
 
 const DIALOG_METHODS = new Set(["select", "input", "editor", "confirm"]);
+const FIRE_AND_FORGET_METHODS = new Set([
+  "notify",
+  "setStatus",
+  "setWidget",
+  "setTitle",
+  "set_editor_text",
+]);
 
 export interface PiExtensionUiDialogRequest {
   readonly id: string;
@@ -41,6 +48,10 @@ export function isPiExtensionUiRequest(event: PiRpcEvent): boolean {
 
 export function isDialogExtensionUiMethod(method: string): boolean {
   return DIALOG_METHODS.has(method);
+}
+
+export function isFireAndForgetExtensionUiMethod(method: string): boolean {
+  return FIRE_AND_FORGET_METHODS.has(method);
 }
 
 export function parsePiExtensionUiDialogRequest(
@@ -131,6 +142,18 @@ export function cancellationResponse(
   return request.method === "confirm"
     ? { id: request.id, confirmed: false }
     : { id: request.id, cancelled: true };
+}
+
+export function cancellationResponseForUnsupportedExtensionUiRequest(
+  event: PiRpcEvent,
+): PiExtensionUiResponseInput | undefined {
+  const id = coerceId(event.id);
+  if (!id) return undefined;
+
+  const method = readString(event.method);
+  if (method && isFireAndForgetExtensionUiMethod(method)) return undefined;
+
+  return { id, cancelled: true };
 }
 
 export function describeFireAndForgetExtensionUiEvent(event: PiRpcEvent): string | undefined {

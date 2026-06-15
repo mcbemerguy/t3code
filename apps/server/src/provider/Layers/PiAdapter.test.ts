@@ -544,6 +544,32 @@ describe("PiAdapter", () => {
     ),
   );
 
+  it.effect("cancels unknown blocking extension UI requests instead of leaving Pi blocked", () =>
+    withHarness(undefined, ({ adapter, runtime }) =>
+      Effect.gen(function* () {
+        const eventsFiber = yield* collectEvents(
+          adapter,
+          1,
+          (event) => event.type === "runtime.warning",
+        ).pipe(Effect.forkChild);
+        yield* runtime.emit({
+          type: "extension_ui_request",
+          id: "future-dialog-1",
+          method: "futureDialog",
+          message: "Unsupported dialog",
+        });
+        const [event] = yield* Fiber.join(eventsFiber);
+
+        assert.deepEqual(runtime.extensionUiResponses, [
+          { id: "future-dialog-1", cancelled: true },
+        ]);
+        assert.equal(event?.type, "runtime.warning");
+        if (event?.type === "runtime.warning")
+          assert.equal(event.payload.message, "Pi extension UI event: futureDialog");
+      }),
+    ),
+  );
+
   it.effect("emits fire-and-forget extension UI events as non-blocking notices", () =>
     withHarness(undefined, ({ adapter, runtime }) =>
       Effect.gen(function* () {
@@ -554,6 +580,7 @@ describe("PiAdapter", () => {
         ).pipe(Effect.forkChild);
         yield* runtime.emit({
           type: "extension_ui_request",
+          id: "notify-1",
           method: "notify",
           message: "Heads up",
         });
