@@ -133,8 +133,10 @@ export class PiEventMapper {
         const cursor = runCursorFromWorkflowRecord(event);
         if (cursor) {
           const previous = session.workflowRuns.get(cursor.runId);
-          if (isTerminalWorkflowRecord(event)) session.workflowRuns.delete(cursor.runId);
-          else session.workflowRuns.set(cursor.runId, mergeWorkflowRunCursor(previous, cursor));
+          if (isTerminalWorkflowRecord(event)) {
+            session.workflowRuns.delete(cursor.runId);
+            session.workflowTails.delete(cursor.runId);
+          } else session.workflowRuns.set(cursor.runId, mergeWorkflowRunCursor(previous, cursor));
         }
         const workflowMapper = session.workflowMapper ?? new PiWorkflowEventMapper();
         session.workflowMapper = workflowMapper;

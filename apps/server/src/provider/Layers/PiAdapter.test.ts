@@ -736,6 +736,70 @@ describe("PiAdapter", () => {
   );
 
   it.effect(
+    "does not duplicate workflow child assistant text when final message follows text_end",
+    () => {
+      const fixture = createWorkflowRunFixture({
+        status: "completed",
+        events: [
+          { type: "run_start", sequence: 1 },
+          {
+            type: "child_pi_event",
+            sequence: 2,
+            stepId: "code",
+            childSessionId: "child-1",
+            childEventType: "message_update",
+            event: { assistantMessageEvent: { type: "text_delta", delta: "hel" } },
+          },
+          {
+            type: "child_pi_event",
+            sequence: 3,
+            stepId: "code",
+            childSessionId: "child-1",
+            childEventType: "message_update",
+            event: { assistantMessageEvent: { type: "text_end", content: "hello" } },
+          },
+          {
+            type: "child_pi_event",
+            sequence: 4,
+            stepId: "code",
+            childSessionId: "child-1",
+            childEventType: "message_end",
+            event: { message: { role: "assistant", content: "hello" } },
+          },
+          { type: "run_end", sequence: 5, status: "completed" },
+        ],
+      });
+      return withHarness(
+        undefined,
+        ({ adapter }) =>
+          Effect.gen(function* () {
+            const events = yield* collectEvents(
+              adapter,
+              6,
+              (event) => event.raw?.source === "pi.workflow.artifact",
+            );
+            const helloDeltas = events.filter(
+              (event) =>
+                event.type === "content.delta" &&
+                event.payload.streamKind === "assistant_text" &&
+                event.payload.delta === "hello",
+            );
+
+            assert.equal(helloDeltas.length, 1);
+          }),
+        {
+          resumeCursor: makePiResumeCursor({
+            sessionFile: "/tmp/pi-session.json",
+            activeWorkflowRuns: [
+              { runId: fixture.runId, lastSequence: 0, runDir: fixture.runDir, status: "running" },
+            ],
+          }),
+        },
+      );
+    },
+  );
+
+  it.effect(
     "attaches restored active workflow runs and pauses them before aborting Pi turns",
     () => {
       const fixture = createWorkflowRunFixture({

@@ -339,6 +339,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           workflowRuns: new Map(
             (resumeCursor?.workflows?.activeRuns ?? []).map((run) => [run.runId, run] as const),
           ),
+          workflowTails: new Map(),
           workflowMonitorDisposers: new Set(),
           workflowMonitorRunIds: new Set(),
           ...(resumeCursor?.sessionFile ? { sessionFile: resumeCursor.sessionFile } : {}),
@@ -427,8 +428,10 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       );
     const status = action === "resume" ? "recovering" : action === "pause" ? "paused" : "aborted";
     const previous = session.workflowRuns.get(target);
-    if (action === "abort") session.workflowRuns.delete(target);
-    else
+    if (action === "abort") {
+      session.workflowRuns.delete(target);
+      session.workflowTails.delete(target);
+    } else
       session.workflowRuns.set(
         target,
         mergeWorkflowRunCursor(previous, {

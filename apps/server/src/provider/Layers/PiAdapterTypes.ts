@@ -34,6 +34,7 @@ export interface PiAdapterSessionContext {
   readonly tools: Map<string, PiToolState>;
   readonly pendingUserInputs: Map<RuntimeRequestId, PiPendingUserInputRequest>;
   readonly workflowRuns: Map<string, PiWorkflowRunCursor>;
+  readonly workflowTails: Map<string, PiWorkflowTailCursor>;
   readonly workflowMonitorDisposers: Set<() => void>;
   readonly workflowMonitorRunIds: Set<string>;
   workflowMapper?: PiWorkflowEventMapper;
@@ -46,6 +47,11 @@ export interface PiAdapterSessionContext {
   usageRefreshFiber?: Fiber.Fiber<void, never>;
   usageRefreshQueued: boolean;
   lastUsageKey?: string;
+}
+
+export interface PiWorkflowTailCursor {
+  readonly offset: number;
+  readonly line: number;
 }
 
 export type PiRuntimeEventOffer = (

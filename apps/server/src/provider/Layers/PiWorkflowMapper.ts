@@ -22,6 +22,9 @@ type StepPlan = { readonly step: string; readonly status: RuntimePlanStepStatus 
 export class PiWorkflowEventMapper {
   private readonly seenFallback = new Set<string>();
   private readonly steps = new Map<string, StepPlan>();
+  private readonly emittedChildTextMessages = new Set<string>();
+  private readonly pendingNoIdMessageEndSuppressions = new Set<string>();
+  private readonly noIdMessageSequences = new Map<string, number>();
 
   map(
     session: PiAdapterSessionContext,
@@ -209,34 +212,44 @@ export class PiWorkflowEventMapper {
     const stepId = stringField(record.stepId) ?? "step";
     const event = isRecord(record.event) ? record.event : undefined;
     if (!childType || !event) return [];
-    if (childType === "message_end") {
-      const text = assistantText(isRecord(event.message) ? event.message : undefined);
-      return text
-        ? [
-            {
-              ...basePiWorkflowEvent(session, record, source),
-              type: "content.delta",
-              payload: { streamKind: "assistant_text", delta: text },
-            },
-          ]
-        : [];
-    }
     if (childType === "message_update") {
       const assistant = isRecord(event.assistantMessageEvent)
         ? event.assistantMessageEvent
         : undefined;
-      const delta = stringField(assistant?.delta) ?? stringField(assistant?.content);
-      if (!delta) return [];
-      return [
-        {
-          ...basePiWorkflowEvent(session, record, source),
-          type: "content.delta",
-          payload: {
-            streamKind: assistant?.type === "thinking_delta" ? "reasoning_text" : "assistant_text",
-            delta,
-          },
-        },
-      ];
+      if (!assistant) return [];
+      if (assistant.type === "text_start") {
+        this.advancePendingNoIdMessageEndSuppression(runId, stepId, record);
+        return [];
+      }
+      if (assistant.type === "text_delta") return [];
+      if (assistant.type === "text_end") {
+        const text = stringField(assistant.content);
+        return text
+          ? this.mapChildFinalAssistantText(session, record, runId, stepId, event, text, source, {
+              assistantMessageEvent: assistant,
+              suppressFollowingNoIdMessageEnd: true,
+            })
+          : [];
+      }
+      if (assistant.type === "thinking_delta") {
+        const delta = stringField(assistant.delta);
+        return delta
+          ? [
+              {
+                ...basePiWorkflowEvent(session, record, source),
+                type: "content.delta",
+                payload: { streamKind: "reasoning_text", delta },
+              },
+            ]
+          : [];
+      }
+      return [];
+    }
+    if (childType === "message_end") {
+      const text = assistantText(isRecord(event.message) ? event.message : undefined);
+      return text
+        ? this.mapChildFinalAssistantText(session, record, runId, stepId, event, text, source)
+        : [];
     }
     if (!childType.startsWith("tool_execution_")) return [];
     const toolCallId = stringField(event.toolCallId) ?? `${stepId}-${childType}`;
@@ -277,6 +290,118 @@ export class PiWorkflowEventMapper {
         },
       });
     return events;
+  }
+
+  private mapChildFinalAssistantText(
+    session: PiAdapterSessionContext,
+    record: Record<string, unknown>,
+    runId: string,
+    stepId: string,
+    event: Record<string, unknown>,
+    text: string,
+    source: PiWorkflowReplayRecord["source"] | undefined,
+    options: {
+      readonly assistantMessageEvent?: Record<string, unknown>;
+      readonly suppressFollowingNoIdMessageEnd?: boolean;
+    } = {},
+  ): ReadonlyArray<ProviderRuntimeEvent> {
+    const identity = this.childMessageIdentity(
+      runId,
+      stepId,
+      stringField(record.childSessionId),
+      event,
+      options.assistantMessageEvent,
+    );
+    if (this.emittedChildTextMessages.has(identity.sourceKey)) {
+      this.resolvePendingNoIdMessageEndSuppression(identity, runId, stepId, record);
+      return [];
+    }
+    const pendingNoIdIdentity = this.currentNoIdChildMessageIdentity(
+      runId,
+      stepId,
+      stringField(record.childSessionId),
+    );
+    if (this.pendingNoIdMessageEndSuppressions.has(pendingNoIdIdentity.sourceKey)) {
+      this.pendingNoIdMessageEndSuppressions.delete(pendingNoIdIdentity.sourceKey);
+      this.advanceNoIdChildMessageSequence(runId, stepId, stringField(record.childSessionId));
+      return [];
+    }
+    this.emittedChildTextMessages.add(identity.sourceKey);
+    if (!identity.hasExplicitId) {
+      if (options.suppressFollowingNoIdMessageEnd)
+        this.pendingNoIdMessageEndSuppressions.add(identity.sourceKey);
+      else this.advanceNoIdChildMessageSequence(runId, stepId, stringField(record.childSessionId));
+    }
+    return [
+      {
+        ...basePiWorkflowEvent(session, record, source),
+        type: "content.delta",
+        payload: { streamKind: "assistant_text", delta: text },
+      },
+    ];
+  }
+
+  private childMessageIdentity(
+    runId: string,
+    stepId: string,
+    childSessionId: string | undefined,
+    event: Record<string, unknown>,
+    assistantMessageEvent?: Record<string, unknown>,
+  ): { readonly sourceKey: string; readonly hasExplicitId: boolean } {
+    const explicitId = childMessageExplicitId(event, assistantMessageEvent);
+    if (explicitId)
+      return {
+        sourceKey: childMessageSourceKey(runId, stepId, childSessionId, explicitId),
+        hasExplicitId: true,
+      };
+    return this.currentNoIdChildMessageIdentity(runId, stepId, childSessionId);
+  }
+
+  private currentNoIdChildMessageIdentity(
+    runId: string,
+    stepId: string,
+    childSessionId: string | undefined,
+  ): { readonly sourceKey: string; readonly hasExplicitId: false } {
+    const baseKey = childMessageNoIdBaseKey(runId, stepId, childSessionId);
+    const sequence = this.noIdMessageSequences.get(baseKey) ?? 0;
+    return { sourceKey: `${baseKey}:seq:${sequence}`, hasExplicitId: false };
+  }
+
+  private advanceNoIdChildMessageSequence(
+    runId: string,
+    stepId: string,
+    childSessionId: string | undefined,
+  ): void {
+    const baseKey = childMessageNoIdBaseKey(runId, stepId, childSessionId);
+    this.noIdMessageSequences.set(baseKey, (this.noIdMessageSequences.get(baseKey) ?? 0) + 1);
+  }
+
+  private resolvePendingNoIdMessageEndSuppression(
+    identity: { readonly sourceKey: string; readonly hasExplicitId: boolean },
+    runId: string,
+    stepId: string,
+    record: Record<string, unknown>,
+  ): void {
+    if (
+      identity.hasExplicitId ||
+      !this.pendingNoIdMessageEndSuppressions.delete(identity.sourceKey)
+    )
+      return;
+    this.advanceNoIdChildMessageSequence(runId, stepId, stringField(record.childSessionId));
+  }
+
+  private advancePendingNoIdMessageEndSuppression(
+    runId: string,
+    stepId: string,
+    record: Record<string, unknown>,
+  ): void {
+    const identity = this.currentNoIdChildMessageIdentity(
+      runId,
+      stepId,
+      stringField(record.childSessionId),
+    );
+    if (!this.pendingNoIdMessageEndSuppressions.delete(identity.sourceKey)) return;
+    this.advanceNoIdChildMessageSequence(runId, stepId, stringField(record.childSessionId));
   }
 
   private mapUsage(
@@ -385,6 +510,47 @@ function assistantText(message: Record<string, unknown> | undefined): string | u
       )
       .join("") || undefined
   );
+}
+
+function childMessageExplicitId(
+  event: Record<string, unknown>,
+  assistantMessageEvent?: Record<string, unknown>,
+): string | undefined {
+  return (
+    stringField(event.messageId) ??
+    (isRecord(event.message) ? stringField(event.message.id) : undefined) ??
+    (isRecord(assistantMessageEvent?.partial)
+      ? stringField(assistantMessageEvent.partial.id)
+      : undefined)
+  );
+}
+
+function childMessageSourceKey(
+  runId: string,
+  stepId: string,
+  childSessionId: string | undefined,
+  messageId: string,
+): string {
+  return [
+    "workflow",
+    runId,
+    "step",
+    stepId,
+    "child",
+    childSessionId ?? "unknown",
+    "message",
+    messageId,
+  ]
+    .map(encodeURIComponent)
+    .join(":");
+}
+
+function childMessageNoIdBaseKey(
+  runId: string,
+  stepId: string,
+  childSessionId: string | undefined,
+): string {
+  return childMessageSourceKey(runId, stepId, childSessionId, "current");
 }
 
 function stringifyToolOutput(value: unknown): string | undefined {

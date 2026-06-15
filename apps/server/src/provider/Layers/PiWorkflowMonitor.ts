@@ -1,4 +1,4 @@
-// @effect-diagnostics globalTimersInEffect:off runEffectInsideEffect:off
+// @effect-diagnostics globalDate:off globalTimersInEffect:off runEffectInsideEffect:off
 import * as Effect from "effect/Effect";
 
 import type { PiAdapterSessionContext, PiRuntimeEventOffer } from "./PiAdapterTypes.ts";
@@ -7,6 +7,7 @@ import {
   isTerminalWorkflowRecord,
   listPiWorkflowRuns,
   parseWorkflowCommandPrompt,
+  readPiWorkflowRun,
   replayPiWorkflowEvents,
   runCursorFromWorkflowRecord,
 } from "./PiWorkflowArtifacts.ts";
@@ -17,6 +18,8 @@ import type { PiWorkflowRunCursor } from "./PiSessionRuntime.ts";
 export interface PiWorkflowMonitorOptions {
   readonly pollIntervalMs?: number;
   readonly workflowRunsDir?: string;
+  readonly terminalFallbackGraceMs?: number;
+  readonly includeTerminalFallback?: boolean;
 }
 
 export function workflowCommandTarget(
@@ -74,11 +77,11 @@ export function startPiWorkflowCommandMonitor(
       };
       session.workflowRuns.set(run.id, cursor);
       Effect.runFork(
-        replayRun(session, offer, cursor, options).pipe(
+        replayRun(session, offer, cursor, { ...options, includeTerminalFallback: false }).pipe(
           Effect.andThen(() =>
-            isTerminalWorkflowStatus(session.workflowRuns.get(run.id)?.status)
-              ? Effect.void
-              : startPiWorkflowRunMonitor(session, offer, cursor, options),
+            session.workflowRuns.has(run.id)
+              ? startPiWorkflowRunMonitor(session, offer, cursor, options)
+              : Effect.void,
           ),
         ),
       );
@@ -98,13 +101,35 @@ export function startPiWorkflowRunMonitor(
   if (session.workflowMonitorRunIds.has(run.runId)) return Effect.void;
   return Effect.sync(() => {
     session.workflowMonitorRunIds.add(run.runId);
+    let terminalObservedAt: number | undefined;
     const tick = () => {
       if (session.stopped || !session.workflowRuns.has(run.runId)) {
         dispose();
         return;
       }
+      const activeRun = session.workflowRuns.get(run.runId) ?? run;
       Effect.runFork(
-        replayRun(session, offer, session.workflowRuns.get(run.runId) ?? run, options),
+        replayRun(session, offer, activeRun, { ...options, includeTerminalFallback: false }).pipe(
+          Effect.andThen(() => {
+            if (!session.workflowRuns.has(run.runId)) return Effect.void;
+            const terminalRun = readPiWorkflowRun(
+              activeRun.runDir ?? run.runId,
+              options.workflowRunsDir,
+            );
+            if (!isTerminalWorkflowStatus(terminalRun?.status)) {
+              terminalObservedAt = undefined;
+              return Effect.void;
+            }
+            const now = Date.now();
+            terminalObservedAt ??= now;
+            if (now - terminalObservedAt < (options.terminalFallbackGraceMs ?? 1000))
+              return Effect.void;
+            return replayRun(session, offer, session.workflowRuns.get(run.runId) ?? activeRun, {
+              ...options,
+              includeTerminalFallback: true,
+            });
+          }),
+        ),
       );
     };
     const timer = setInterval(tick, options.pollIntervalMs ?? 250);
@@ -128,18 +153,24 @@ export function replayRun(
   return Effect.gen(function* () {
     const mapper = session.workflowMapper ?? new PiWorkflowEventMapper();
     session.workflowMapper = mapper;
+    const tail = session.workflowTails.get(run.runId);
     const replayOptions = {
       ...(options.workflowRunsDir ? { workflowRunsDir: options.workflowRunsDir } : {}),
-      includeTerminalFallback: true,
+      includeTerminalFallback: options.includeTerminalFallback !== false,
+      ...(tail ? { startOffset: tail.offset, startLine: tail.line } : {}),
     };
-    for (const replay of replayPiWorkflowEvents(run, replayOptions)) {
+    const batch = replayPiWorkflowEvents(run, replayOptions);
+    if (session.workflowRuns.has(run.runId)) session.workflowTails.set(run.runId, batch.nextTail);
+    for (const replay of batch.records) {
       const cursor = runCursorFromWorkflowRecord(replay.record, run.runId);
       if (cursor) {
         const previous = session.workflowRuns.get(cursor.runId);
         if (previous && replay.sequence !== undefined && replay.sequence <= previous.lastSequence)
           continue;
-        if (isTerminalWorkflowRecord(replay.record)) session.workflowRuns.delete(cursor.runId);
-        else session.workflowRuns.set(cursor.runId, mergeWorkflowRunCursor(previous, cursor));
+        if (isTerminalWorkflowRecord(replay.record)) {
+          session.workflowRuns.delete(cursor.runId);
+          session.workflowTails.delete(cursor.runId);
+        } else session.workflowRuns.set(cursor.runId, mergeWorkflowRunCursor(previous, cursor));
       }
       const events = mapper.map(session, replay);
       if (events.length > 0) yield* offer(events);

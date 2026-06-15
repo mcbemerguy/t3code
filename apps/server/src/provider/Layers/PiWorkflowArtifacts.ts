@@ -1,5 +1,13 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  statSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve, sep } from "node:path";
 
@@ -30,6 +38,14 @@ export interface PiWorkflowReplayRecord {
   readonly sequence?: number;
   readonly source: {
     readonly sourceKey: string;
+    readonly line: number;
+  };
+}
+
+export interface PiWorkflowReplayBatch {
+  readonly records: ReadonlyArray<PiWorkflowReplayRecord>;
+  readonly nextTail: {
+    readonly offset: number;
     readonly line: number;
   };
 }
@@ -116,8 +132,13 @@ export function readPiWorkflowRun(
 
 export function replayPiWorkflowEvents(
   run: PiWorkflowRunCursor,
-  options: { readonly workflowRunsDir?: string; readonly includeTerminalFallback?: boolean } = {},
-): ReadonlyArray<PiWorkflowReplayRecord> {
+  options: {
+    readonly workflowRunsDir?: string;
+    readonly includeTerminalFallback?: boolean;
+    readonly startOffset?: number;
+    readonly startLine?: number;
+  } = {},
+): PiWorkflowReplayBatch {
   const root = options.workflowRunsDir ?? defaultPiWorkflowRunsDir();
   const runDir = resolveWorkflowRunDir(run.runDir ?? run.runId, root);
   const eventsPath = join(runDir, "events.jsonl");
@@ -125,11 +146,15 @@ export function replayPiWorkflowEvents(
   const records: Array<PiWorkflowReplayRecord> = [];
   let sawRunEnd = false;
   let maxSequence = 0;
-  const text = safeReadFile(eventsPath);
-  if (text) {
-    const lines = text.split(/\r?\n/);
+  const read = readWorkflowEventsRange(eventsPath, options.startOffset ?? 0);
+  let nextOffset = read.nextOffset;
+  let nextLine = options.startLine ?? 1;
+  if (read.text) {
+    const lines = read.text.split(/\r?\n/);
+    if (lines.at(-1) === "") lines.pop();
     for (let index = 0; index < lines.length; index += 1) {
       const trimmed = lines[index]?.trim();
+      const line = nextLine++;
       if (!trimmed) continue;
       let parsed: unknown;
       try {
@@ -145,7 +170,7 @@ export function replayPiWorkflowEvents(
       records.push({
         record: parsed,
         ...(sequence !== undefined ? { sequence } : {}),
-        source: { sourceKey, line: index + 1 },
+        source: { sourceKey, line },
       });
     }
   }
@@ -163,7 +188,7 @@ export function replayPiWorkflowEvents(
       });
     }
   }
-  return records;
+  return { records, nextTail: { offset: nextOffset, line: nextLine } };
 }
 
 export function runCursorFromWorkflowRecord(
@@ -234,11 +259,29 @@ function readJsonObject(filePath: string): Record<string, unknown> | undefined {
   }
 }
 
-function safeReadFile(filePath: string): string | undefined {
+function readWorkflowEventsRange(
+  filePath: string,
+  requestedOffset: number,
+): { readonly text?: string; readonly nextOffset: number } {
+  let fd: number | undefined;
   try {
-    return readFileSync(filePath, "utf8");
+    const stat = statSync(filePath);
+    if (!stat.isFile()) return { nextOffset: requestedOffset };
+    const start = stat.size < requestedOffset ? 0 : requestedOffset;
+    const length = stat.size - start;
+    if (length <= 0) return { nextOffset: start };
+    fd = openSync(filePath, "r");
+    const buffer = Buffer.allocUnsafe(length);
+    const bytesRead = readSync(fd, buffer, 0, length, start);
+    const text = buffer.subarray(0, bytesRead).toString("utf8");
+    const lastNewline = text.lastIndexOf("\n");
+    if (lastNewline < 0) return { nextOffset: start };
+    const completeText = text.slice(0, lastNewline + 1);
+    return { text: completeText, nextOffset: start + Buffer.byteLength(completeText) };
   } catch {
-    return undefined;
+    return { nextOffset: requestedOffset };
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }
 
