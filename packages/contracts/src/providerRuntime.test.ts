@@ -23,6 +23,28 @@ describe("ProviderRuntimeEvent", () => {
     expect(parsed.providerInstanceId).toBe("ollama_local");
   });
 
+  it("accepts native Pi raw event source literals", () => {
+    for (const source of ["pi.rpc.event", "pi.rpc.response", "pi.workflow.artifact"] as const) {
+      const parsed = decodeRuntimeEvent({
+        type: "session.state.changed",
+        eventId: `event-${source}`,
+        provider: "pi",
+        providerInstanceId: "pi",
+        createdAt: "2026-02-28T00:00:00.000Z",
+        threadId: "thread-pi",
+        raw: {
+          source,
+          payload: { ok: true },
+        },
+        payload: {
+          state: "ready",
+        },
+      });
+
+      expect(parsed.raw?.source).toBe(source);
+    }
+  });
+
   it("decodes turn.plan.updated for plan rendering", () => {
     const parsed = decodeRuntimeEvent({
       type: "turn.plan.updated",

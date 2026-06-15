@@ -635,6 +635,16 @@ export const AntigravityIcon: Icon = (props) => (
   </svg>
 );
 
+export const PiIcon: Icon = (props) => (
+  <svg {...props} viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <rect width="32" height="32" rx="8" fill="#0E254F" />
+    <path
+      d="M9 23V8h8.2c3.5 0 5.8 2.1 5.8 5.2 0 3.2-2.3 5.3-5.8 5.3h-4.3V23H9Zm3.9-7.6h3.8c1.6 0 2.5-.8 2.5-2.2s-.9-2.1-2.5-2.1h-3.8v4.3Z"
+      fill="#71BEEA"
+    />
+  </svg>
+);
+
 export const OpenCodeIcon: Icon = (props) => (
   <svg {...props} viewBox="0 0 32 40" fill="none" xmlns="http://www.w3.org/2000/svg">
     <g clipPath="url(#opencode__clip0_1311_94969)">
