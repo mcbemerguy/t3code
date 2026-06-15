@@ -183,8 +183,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
       version: parsedVersion,
       status: "warning",
       auth: { status: "unknown", label: "Managed by Pi" },
-      message:
-        "Pi CLI is installed, but native Pi sessions are not wired yet. The provider is shown for settings/status only until the Pi RPC runtime lands.",
+      message: "Pi CLI is installed. Native Pi chat sessions are available through Pi RPC.",
     },
   });
 });

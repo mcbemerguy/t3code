@@ -1,0 +1,43 @@
+import type { ProviderRuntimeEvent, RuntimeItemId, ThreadId, TurnId } from "@t3tools/contracts";
+import type * as Effect from "effect/Effect";
+import type * as Fiber from "effect/Fiber";
+import type * as Scope from "effect/Scope";
+
+import type { PiRpcRuntimeMessage, PiSessionRuntimeShape } from "./PiSessionRuntime.ts";
+import type { PiToolSnapshot } from "./PiToolPresentation.ts";
+
+export interface PiToolState {
+  readonly toolName: string;
+  readonly itemId: RuntimeItemId;
+  readonly updates: Array<unknown>;
+  readonly snapshot?: PiToolSnapshot;
+}
+
+export interface PiAdapterSessionContext {
+  readonly threadId: ThreadId;
+  readonly cwd: string;
+  readonly scope: Scope.Closeable;
+  readonly runtime: PiSessionRuntimeShape;
+  eventFiber?: Fiber.Fiber<void, never>;
+  readonly tools: Map<string, PiToolState>;
+  stopped: boolean;
+  currentTurnId?: TurnId;
+  turnCompleted: boolean;
+  assistantItemId?: RuntimeItemId;
+  reasoningItemId?: RuntimeItemId;
+  usageRefreshFiber?: Fiber.Fiber<void, never>;
+  usageRefreshQueued: boolean;
+  lastUsageKey?: string;
+}
+
+export type PiRuntimeEventOffer = (
+  events: ReadonlyArray<ProviderRuntimeEvent>,
+) => Effect.Effect<void>;
+
+export type PiUsageRefreshScheduler = (session: PiAdapterSessionContext) => Effect.Effect<void>;
+
+export type PiTurnCompleter = (
+  session: PiAdapterSessionContext,
+  raw?: PiRpcRuntimeMessage,
+  state?: "completed" | "failed" | "cancelled" | "interrupted",
+) => Effect.Effect<void>;

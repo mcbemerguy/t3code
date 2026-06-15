@@ -70,7 +70,10 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         packageName: null,
       });
 
-      const adapter = yield* makePiAdapter();
+      const adapter = yield* makePiAdapter(effectiveConfig, {
+        instanceId,
+        environment: processEnv,
+      });
       const textGeneration = makeUnsupportedPiTextGeneration();
       const checkProvider = checkPiProviderStatus(effectiveConfig, processEnv).pipe(
         Effect.map(stampIdentity),
