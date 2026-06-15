@@ -234,6 +234,15 @@ export function defaultPiCommand(platform: NodeJS.Platform = process.platform): 
   return platform === "win32" ? "pi.cmd" : "pi";
 }
 
+export function resolvePiCommand(
+  command: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return platform === "win32" && command.trim().toLowerCase() === "pi"
+    ? defaultPiCommand(platform)
+    : command;
+}
+
 export function shouldUseShellForPiCommand(
   command: string,
   platform: NodeJS.Platform = process.platform,

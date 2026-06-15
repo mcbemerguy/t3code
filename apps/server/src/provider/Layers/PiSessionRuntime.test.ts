@@ -18,6 +18,7 @@ import {
   defaultPiCommand,
   makePiSessionRuntime,
   parsePiRpcStdoutLine,
+  resolvePiCommand,
   shouldUseShellForPiCommand,
   windowsProcessTreeKillCommand,
   type PiSessionRuntimeError,
@@ -125,6 +126,9 @@ describe("Pi RPC protocol helpers", () => {
 
     assert.equal(defaultPiCommand("win32"), "pi.cmd");
     assert.equal(defaultPiCommand("linux"), "pi");
+    assert.equal(resolvePiCommand("pi", "win32"), "pi.cmd");
+    assert.equal(resolvePiCommand("C:/bin/pi", "win32"), "C:/bin/pi");
+    assert.equal(resolvePiCommand("pi", "linux"), "pi");
     assert.equal(shouldUseShellForPiCommand("C:/bin/pi.cmd", "win32"), true);
     assert.equal(shouldUseShellForPiCommand("C:/bin/pi.bat", "win32"), true);
     assert.equal(shouldUseShellForPiCommand("C:/bin/pi.exe", "win32"), false);

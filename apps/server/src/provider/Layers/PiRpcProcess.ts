@@ -17,6 +17,7 @@ import {
   PiRpcLifecycleError,
   PiRpcSpawnError,
   PiRpcTimeoutError,
+  resolvePiCommand,
   shouldUseShellForPiCommand,
   stripAnsi,
   windowsProcessTreeKillCommand,
@@ -149,11 +150,12 @@ export class PiRpcProcessHandle {
     readonly messages: Queue.Queue<PiRpcRuntimeMessage>;
   }): Promise<PiRpcProcessHandle> {
     const args = buildPiRpcSpawnArgs(params.sessionFile ? { sessionFile: params.sessionFile } : {});
-    const child = spawn(params.command, [...args], {
+    const command = resolvePiCommand(params.command);
+    const child = spawn(command, [...args], {
       cwd: params.cwd,
       stdio: "pipe",
       env: buildPiRpcSpawnEnv(params.environment),
-      shell: shouldUseShellForPiCommand(params.command),
+      shell: shouldUseShellForPiCommand(command),
     });
     const handle = new PiRpcProcessHandle(child, params.messages);
 
@@ -165,7 +167,7 @@ export class PiRpcProcessHandle {
           ? (error as { readonly code: string }).code
           : undefined;
       throw new PiRpcSpawnError({
-        command: params.command,
+        command,
         args,
         cwd: params.cwd,
         ...(code ? { code } : {}),
