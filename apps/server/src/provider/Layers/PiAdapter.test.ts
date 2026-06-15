@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import {
+  ApprovalRequestId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
@@ -19,6 +20,7 @@ import type { ProviderAdapterError } from "../Errors.ts";
 import { makePiAdapter, type PiAdapterShape } from "./PiAdapter.ts";
 import {
   PiRpcLifecycleError,
+  type PiExtensionUiResponseInput,
   type PiRpcRuntimeMessage,
   type PiSessionRuntimeOptions,
   type PiSessionRuntimeShape,
@@ -37,6 +39,7 @@ class FakePiRuntime implements PiSessionRuntimeShape {
   };
   messages: unknown = [{ id: "message-turn-1", role: "assistant", content: "hello" }];
   promptScript: ((runtime: FakePiRuntime) => Effect.Effect<void>) | undefined;
+  extensionUiResponses: Array<PiExtensionUiResponseInput> = [];
 
   startImpl = vi.fn(() => Promise.resolve(this.session("ready")));
   promptImpl = vi.fn(
@@ -100,7 +103,10 @@ class FakePiRuntime implements PiSessionRuntimeShape {
   getSessionStats = Effect.sync(() => this.stats);
   getMessages = Effect.sync(() => this.messages);
   workflowControl = () => Effect.succeed({});
-  respondExtensionUi = () => Effect.void;
+  respondExtensionUi = (input: PiExtensionUiResponseInput) =>
+    Effect.sync(() => {
+      this.extensionUiResponses.push(input);
+    });
   consumePreludeLines = Effect.succeed([]);
   close = Effect.promise(() => this.closeImpl());
 
@@ -378,6 +384,184 @@ describe("PiAdapter", () => {
         assert.equal(runtime.closeImpl.mock.calls.length, 1);
         assert.equal(snapshot.turns[0]?.id, "message-turn-1");
         assert.equal(yield* adapter.hasSession(threadId), false);
+      }),
+    ),
+  );
+
+  it.effect("maps select/input/editor/confirm extension UI requests and normalizes responses", () =>
+    withHarness(undefined, ({ adapter, runtime }) =>
+      Effect.gen(function* () {
+        const eventsFiber = yield* collectEvents(
+          adapter,
+          4,
+          (event) => event.type === "user-input.requested",
+        ).pipe(Effect.forkChild);
+
+        yield* runtime.emit({
+          type: "extension_ui_request",
+          id: "select-1",
+          method: "select",
+          title: "Choose",
+          message: "Pick one",
+          options: ["Red", "Blue", "Other (type your own answer)"],
+        });
+        yield* runtime.emit({
+          type: "extension_ui_request",
+          id: "input-1",
+          method: "input",
+          title: "Name",
+          message: "Enter a name",
+          placeholder: "Ada",
+        });
+        yield* runtime.emit({
+          type: "extension_ui_request",
+          id: "editor-1",
+          method: "editor",
+          title: "Edit",
+          message: "Edit the text",
+          prefill: "draft",
+        });
+        yield* runtime.emit({
+          type: "extension_ui_request",
+          id: "confirm-1",
+          method: "confirm",
+          title: "Confirm",
+          message: "Continue?",
+        });
+
+        const events = yield* Fiber.join(eventsFiber);
+        const requestIds = events.map((event) => ApprovalRequestId.make(event.requestId ?? ""));
+
+        assert.deepEqual(
+          events.map((event) =>
+            event.type === "user-input.requested" ? event.payload.questions[0]?.id : undefined,
+          ),
+          ["selection", "value", "value", "confirmed"],
+        );
+        const selectQuestion = events[0];
+        assert.equal(selectQuestion?.type, "user-input.requested");
+        if (selectQuestion?.type === "user-input.requested") {
+          assert.deepEqual(
+            selectQuestion.payload.questions[0]?.options.map((option) => option.label),
+            ["Red", "Blue"],
+          );
+        }
+
+        yield* adapter.respondToUserInput(threadId, requestIds[0]!, { selection: "1" });
+        yield* adapter.respondToUserInput(threadId, requestIds[1]!, { value: "Grace" });
+        yield* adapter.respondToUserInput(threadId, requestIds[2]!, { value: { label: "edited" } });
+        yield* adapter.respondToUserInput(threadId, requestIds[3]!, { confirmed: "yes" });
+
+        assert.deepEqual(runtime.extensionUiResponses, [
+          { id: "select-1", value: "Blue" },
+          { id: "input-1", value: "Grace" },
+          { id: "editor-1", value: "edited" },
+          { id: "confirm-1", confirmed: true },
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("cancels pending extension UI requests on interrupt while blocked on user input", () =>
+    withHarness(undefined, ({ adapter, runtime }) =>
+      Effect.gen(function* () {
+        runtime.promptScript = (rt) =>
+          rt.emit({
+            type: "extension_ui_request",
+            id: "blocked-input",
+            method: "input",
+            title: "Need input",
+            message: "Provide value",
+          });
+        const requestedFiber = yield* collectEvents(
+          adapter,
+          1,
+          (event) => event.type === "user-input.requested",
+        ).pipe(Effect.forkChild);
+        yield* adapter.sendTurn({ threadId, input: "ask" });
+        const [requested] = yield* Fiber.join(requestedFiber);
+        assert.equal(requested?.type, "user-input.requested");
+
+        const resolvedFiber = yield* collectEvents(
+          adapter,
+          1,
+          (event) => event.type === "user-input.resolved",
+        ).pipe(Effect.forkChild);
+        yield* adapter.interruptTurn(threadId);
+        const [resolved] = yield* Fiber.join(resolvedFiber);
+
+        assert.deepEqual(runtime.extensionUiResponses.at(-1), {
+          id: "blocked-input",
+          cancelled: true,
+        });
+        assert.equal(runtime.abortImpl.mock.calls.length, 1);
+        assert.equal(resolved?.type, "user-input.resolved");
+        if (resolved?.type === "user-input.resolved")
+          assert.deepEqual(resolved.payload.answers, { id: "blocked-input", cancelled: true });
+      }),
+    ),
+  );
+
+  it.effect("cancels pending extension UI requests on session close", () =>
+    withHarness(undefined, ({ adapter, runtime }) =>
+      Effect.gen(function* () {
+        const requestedFiber = yield* collectEvents(
+          adapter,
+          1,
+          (event) => event.type === "user-input.requested",
+        ).pipe(Effect.forkChild);
+        yield* runtime.emit({
+          type: "extension_ui_request",
+          id: "close-input",
+          method: "input",
+          title: "Need input",
+          message: "Provide value",
+        });
+        yield* Fiber.join(requestedFiber);
+
+        yield* adapter.stopSession(threadId);
+
+        assert.deepEqual(runtime.extensionUiResponses.at(-1), {
+          id: "close-input",
+          cancelled: true,
+        });
+        assert.equal(runtime.closeImpl.mock.calls.length, 1);
+        assert.equal(yield* adapter.hasSession(threadId), false);
+      }),
+    ),
+  );
+
+  it.effect("rejects unknown pending extension UI responses", () =>
+    withHarness(undefined, ({ adapter }) =>
+      Effect.gen(function* () {
+        const result = yield* adapter
+          .respondToUserInput(threadId, ApprovalRequestId.make("missing"), { value: "late" })
+          .pipe(Effect.result);
+        assert.equal(result._tag, "Failure");
+        if (result._tag === "Failure")
+          assert.match(result.failure.message, /Unknown Pi extension UI/);
+      }),
+    ),
+  );
+
+  it.effect("emits fire-and-forget extension UI events as non-blocking notices", () =>
+    withHarness(undefined, ({ adapter, runtime }) =>
+      Effect.gen(function* () {
+        const eventsFiber = yield* collectEvents(
+          adapter,
+          1,
+          (event) => event.type === "runtime.warning",
+        ).pipe(Effect.forkChild);
+        yield* runtime.emit({
+          type: "extension_ui_request",
+          method: "notify",
+          message: "Heads up",
+        });
+        const [event] = yield* Fiber.join(eventsFiber);
+
+        assert.equal(event?.type, "runtime.warning");
+        if (event?.type === "runtime.warning") assert.equal(event.payload.message, "Heads up");
+        assert.deepEqual(runtime.extensionUiResponses, []);
       }),
     ),
   );

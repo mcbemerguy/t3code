@@ -2,6 +2,7 @@
 import {
   ProviderDriverKind,
   ProviderInstanceId,
+  RuntimeRequestId,
   TurnId,
   type PiSettings,
   type ProviderRuntimeEvent,
@@ -41,6 +42,7 @@ import {
   type PiSessionRuntimeOptions,
   type PiSessionRuntimeShape,
 } from "./PiSessionRuntime.ts";
+import { cancellationResponse, normalizePiExtensionUiResponse } from "./PiExtensionUi.ts";
 import { normalizePiReadThread } from "./PiReadThread.ts";
 import { normalizePiTokenUsage } from "./PiUsage.ts";
 
@@ -197,12 +199,39 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     return session;
   });
 
+  const settlePendingUserInput = Effect.fn("settlePiPendingUserInput")(function* (
+    session: PiAdapterSessionContext,
+    requestId: RuntimeRequestId,
+    answers: Record<string, unknown>,
+  ) {
+    session.pendingUserInputs.delete(requestId);
+    yield* offer([
+      {
+        ...basePiEvent(session, { requestId }),
+        type: "user-input.resolved",
+        payload: { answers },
+      } satisfies ProviderRuntimeEvent,
+    ]);
+  });
+
+  const cancelPendingUserInputs = Effect.fn("cancelPiPendingUserInputs")(function* (
+    session: PiAdapterSessionContext,
+  ) {
+    const pending = Array.from(session.pendingUserInputs.values());
+    for (const request of pending) {
+      const response = cancellationResponse(request);
+      yield* session.runtime.respondExtensionUi(response).pipe(Effect.ignore);
+      yield* settlePendingUserInput(session, request.requestId, { ...response });
+    }
+  });
+
   const stopSessionInternal = Effect.fn("stopPiSessionInternal")(function* (
     session: PiAdapterSessionContext,
   ) {
     if (session.stopped) return;
     session.stopped = true;
     sessions.delete(session.threadId);
+    yield* cancelPendingUserInputs(session);
     if (session.usageRefreshFiber)
       yield* Fiber.interrupt(session.usageRefreshFiber).pipe(Effect.ignore);
     yield* session.runtime.close.pipe(Effect.ignore);
@@ -269,6 +298,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           scope: sessionScope,
           runtime,
           tools: new Map(),
+          pendingUserInputs: new Map(),
           stopped: false,
           turnCompleted: true,
           usageRefreshQueued: false,
@@ -376,7 +406,8 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
   const interruptTurn = (threadId: ThreadId, _turnId?: TurnId) =>
     requireSession(threadId).pipe(
       Effect.flatMap((session) =>
-        session.runtime.abort().pipe(
+        cancelPendingUserInputs(session).pipe(
+          Effect.andThen(session.runtime.abort()),
           Effect.tap(() =>
             offer([
               {
@@ -447,13 +478,30 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           detail: "Native Pi does not expose approval request responses in Phase 3.",
         }),
       ),
-    respondToUserInput: () =>
-      Effect.fail(
-        new ProviderAdapterRequestError({
-          provider: PROVIDER,
-          method: "respondToUserInput",
-          detail: "Native Pi extension UI responses are implemented in Phase 4.",
-        }),
+    respondToUserInput: (threadId, requestId, answers) =>
+      requireSession(threadId).pipe(
+        Effect.flatMap((session) =>
+          Effect.gen(function* () {
+            const runtimeRequestId = RuntimeRequestId.make(requestId);
+            const pending = session.pendingUserInputs.get(runtimeRequestId);
+            if (!pending) {
+              return yield* new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "respondToUserInput",
+                detail: `Unknown Pi extension UI request '${requestId}'.`,
+              });
+            }
+            const response = normalizePiExtensionUiResponse(pending, answers);
+            yield* session.runtime
+              .respondExtensionUi(response)
+              .pipe(
+                Effect.mapError((cause) =>
+                  mapPiRuntimeError(threadId, "extension_ui_response", cause),
+                ),
+              );
+            yield* settlePendingUserInput(session, pending.requestId, answers);
+          }),
+        ),
       ),
     stopSession,
     listSessions: () =>

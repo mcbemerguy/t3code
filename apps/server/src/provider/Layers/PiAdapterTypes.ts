@@ -1,10 +1,17 @@
-import type { ProviderRuntimeEvent, RuntimeItemId, ThreadId, TurnId } from "@t3tools/contracts";
+import type {
+  ProviderRuntimeEvent,
+  RuntimeItemId,
+  RuntimeRequestId,
+  ThreadId,
+  TurnId,
+} from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
 import type * as Fiber from "effect/Fiber";
 import type * as Scope from "effect/Scope";
 
 import type { PiRpcRuntimeMessage, PiSessionRuntimeShape } from "./PiSessionRuntime.ts";
 import type { PiToolSnapshot } from "./PiToolPresentation.ts";
+import type { PiPendingUserInputRequest } from "./PiExtensionUi.ts";
 
 export interface PiToolState {
   readonly toolName: string;
@@ -20,6 +27,7 @@ export interface PiAdapterSessionContext {
   readonly runtime: PiSessionRuntimeShape;
   eventFiber?: Fiber.Fiber<void, never>;
   readonly tools: Map<string, PiToolState>;
+  readonly pendingUserInputs: Map<RuntimeRequestId, PiPendingUserInputRequest>;
   stopped: boolean;
   currentTurnId?: TurnId;
   turnCompleted: boolean;

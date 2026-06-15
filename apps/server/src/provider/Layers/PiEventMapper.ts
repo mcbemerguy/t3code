@@ -13,6 +13,14 @@ import * as Effect from "effect/Effect";
 
 import type { PiRpcEvent, PiRpcRuntimeMessage } from "./PiSessionRuntime.ts";
 import {
+  cancellationResponse,
+  describeFireAndForgetExtensionUiEvent,
+  isPiExtensionUiRequest,
+  parsePiExtensionUiDialogRequest,
+  questionFromPiExtensionUiDialog,
+  toUserInputQuestion,
+} from "./PiExtensionUi.ts";
+import {
   buildToolEndPresentation,
   captureEditSnapshot,
   toPiToolItemType,
@@ -117,6 +125,10 @@ export class PiEventMapper {
       const event = message.payload;
       const type = readPiEventType(event);
 
+      if (isPiExtensionUiRequest(event)) {
+        return yield* self.handleExtensionUiRequest(session, message, event);
+      }
+
       if (type === "prompt_start" || type === "agent_start") {
         return yield* self.offer([
           {
@@ -178,6 +190,45 @@ export class PiEventMapper {
         yield* self.completeTurn(session, message, state);
         yield* self.scheduleUsageRefresh(session);
       }
+    });
+  }
+
+  private handleExtensionUiRequest(
+    session: PiAdapterSessionContext,
+    message: PiRpcRuntimeMessage & { readonly kind: "event" },
+    event: PiRpcEvent,
+  ) {
+    const self = this;
+    return Effect.gen(function* () {
+      const request = parsePiExtensionUiDialogRequest(event, message);
+      const pending = request ? questionFromPiExtensionUiDialog(request) : undefined;
+      if (!pending) {
+        if (request) {
+          yield* session.runtime
+            .respondExtensionUi(cancellationResponse(request))
+            .pipe(Effect.ignore);
+        }
+        const detail = describeFireAndForgetExtensionUiEvent(event);
+        if (detail) {
+          yield* self.offer([
+            {
+              ...basePiEvent(session, { raw: message }),
+              type: "runtime.warning",
+              payload: { message: detail, detail: event },
+            } satisfies ProviderRuntimeEvent,
+          ]);
+        }
+        return;
+      }
+
+      session.pendingUserInputs.set(pending.requestId, pending);
+      yield* self.offer([
+        {
+          ...basePiEvent(session, { raw: message, requestId: pending.requestId }),
+          type: "user-input.requested",
+          payload: { questions: [toUserInputQuestion(pending)] },
+        } satisfies ProviderRuntimeEvent,
+      ]);
     });
   }
 
