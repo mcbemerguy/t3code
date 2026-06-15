@@ -31,6 +31,7 @@ import {
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import { basePiEvent, PiEventMapper } from "./PiEventMapper.ts";
 import type { PiAdapterSessionContext } from "./PiAdapterTypes.ts";
+import { parsePiModelSelection } from "./PiModels.ts";
 import {
   DEFAULT_PI_RPC_TIMEOUTS,
   PiRpcLifecycleError,
@@ -200,6 +201,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     session.sessionFile
       ? makePiResumeCursor({
           sessionFile: session.sessionFile,
+          providerInstanceId: boundInstanceId,
           activeWorkflowRuns: Array.from(session.workflowRuns.values()),
         })
       : undefined;
@@ -231,6 +233,26 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     if (!session || session.stopped)
       return yield* new ProviderAdapterSessionNotFoundError({ provider: PROVIDER, threadId });
     return session;
+  });
+
+  const applyModelSelection = Effect.fn("applyPiModelSelection")(function* (
+    session: PiAdapterSessionContext,
+    modelSelection: ProviderSendTurnInput["modelSelection"] | undefined,
+    operation: string,
+  ): Effect.fn.Return<void, ProviderAdapterError> {
+    if (modelSelection?.instanceId !== boundInstanceId) return;
+    const target = parsePiModelSelection(modelSelection.model);
+    if (!target) {
+      if (modelSelection.model === "default") return;
+      return yield* new ProviderAdapterValidationError({
+        provider: PROVIDER,
+        operation,
+        issue: `Pi model '${modelSelection.model}' must use the '<provider>/<modelId>' format returned by Pi model discovery.`,
+      });
+    }
+    yield* session.runtime
+      .setModel(target.provider, target.modelId)
+      .pipe(Effect.mapError((cause) => mapPiRuntimeError(session.threadId, "set_model", cause)));
   });
 
   const settlePendingUserInput = Effect.fn("settlePiPendingUserInput")(function* (
@@ -301,7 +323,9 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           sessionScopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
         );
 
-        const parsedResumeCursor = parsePiResumeCursor(input.resumeCursor);
+        const parsedResumeCursor = parsePiResumeCursor(input.resumeCursor, {
+          expectedProviderInstanceId: boundInstanceId,
+        });
         const runtimeInput: PiSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
@@ -372,6 +396,17 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           ),
         );
         syncSessionFile(session, started);
+        yield* applyModelSelection(session, input.modelSelection, "startSession").pipe(
+          Effect.onError(() =>
+            runtime.close.pipe(
+              Effect.andThen(Effect.ignore(Scope.close(sessionScope, Exit.void))),
+              Effect.andThen(
+                session.eventFiber ? Fiber.interrupt(session.eventFiber) : Effect.void,
+              ),
+              Effect.ignore,
+            ),
+          ),
+        );
         sessions.set(input.threadId, session);
         sessionScopeTransferred = true;
         yield* restorePiWorkflowRuns(session, offer);
@@ -508,6 +543,8 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       };
     }
 
+    yield* applyModelSelection(session, input.modelSelection, "sendTurn");
+
     const turnId = TurnId.make(`pi-turn-${++turnCounter}`);
     session.currentTurnId = turnId;
     session.turnCompleted = false;
@@ -641,7 +678,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
 
   return {
     provider: PROVIDER,
-    capabilities: { sessionModelSwitch: "unsupported" },
+    capabilities: { sessionModelSwitch: "in-session" },
     startSession,
     sendTurn,
     sendActiveTurnInput,

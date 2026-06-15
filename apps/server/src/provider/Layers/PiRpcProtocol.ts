@@ -35,6 +35,7 @@ export const PiResumeCursorSchema = Schema.Struct({
   sessionFile: Schema.String,
   schemaVersion: Schema.optional(Schema.Number),
   provider: Schema.optional(Schema.Literal("pi")),
+  providerInstanceId: Schema.optional(Schema.String),
   workflows: Schema.optional(
     Schema.Struct({
       activeRuns: Schema.Array(PiWorkflowRunCursorSchema),

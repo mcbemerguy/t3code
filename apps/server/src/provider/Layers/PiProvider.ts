@@ -1,8 +1,8 @@
 import { ProviderDriverKind, type PiSettings, type ServerProviderModel } from "@t3tools/contracts";
-import { createModelCapabilities } from "@t3tools/shared/model";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
@@ -15,6 +15,9 @@ import {
   spawnAndCollect,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
+import { FALLBACK_PI_MODELS, normalizePiAvailableModels } from "./PiModels.ts";
+import { PiRpcProcessHandle } from "./PiRpcProcess.ts";
+import { PiRpcLifecycleError, type PiRpcRuntimeMessage } from "./PiSessionRuntime.ts";
 
 const PROVIDER = ProviderDriverKind.make("pi");
 const PI_PRESENTATION = {
@@ -22,16 +25,13 @@ const PI_PRESENTATION = {
   showInteractionModeToggle: false,
 } as const;
 
-const DEFAULT_PI_MODEL_CAPABILITIES = createModelCapabilities({ optionDescriptors: [] });
+export const DEFAULT_PI_MODELS: ReadonlyArray<ServerProviderModel> = FALLBACK_PI_MODELS;
 
-export const DEFAULT_PI_MODELS: ReadonlyArray<ServerProviderModel> = [
-  {
-    slug: "default",
-    name: "Pi default",
-    isCustom: false,
-    capabilities: DEFAULT_PI_MODEL_CAPABILITIES,
-  },
-];
+interface PiModelDiscoveryResult {
+  readonly models: ReadonlyArray<ServerProviderModel>;
+  readonly usedFallback: boolean;
+  readonly detail?: string;
+}
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
@@ -45,6 +45,52 @@ const runPiCommand = Effect.fn("runPiCommand")(function* (
     shell: process.platform === "win32",
   });
   return yield* spawnAndCollect(piSettings.binaryPath, command);
+});
+
+function piModelDiscoveryError(error: unknown): PiRpcLifecycleError {
+  return error instanceof PiRpcLifecycleError
+    ? error
+    : new PiRpcLifecycleError(error instanceof Error ? error.message : String(error), error);
+}
+
+export const discoverPiModelsViaRpc = Effect.fn("discoverPiModelsViaRpc")(function* (
+  piSettings: PiSettings,
+  environment: NodeJS.ProcessEnv = process.env,
+): Effect.fn.Return<PiModelDiscoveryResult, PiRpcLifecycleError> {
+  const messages = yield* Queue.unbounded<PiRpcRuntimeMessage>();
+  const handle = yield* Effect.tryPromise({
+    try: () =>
+      PiRpcProcessHandle.spawn({
+        command: piSettings.binaryPath,
+        cwd: process.cwd(),
+        environment,
+        messages,
+      }),
+    catch: piModelDiscoveryError,
+  });
+
+  return yield* Effect.gen(function* () {
+    const response = yield* Effect.tryPromise({
+      try: () => handle.request({ type: "get_available_models" }, 3_000),
+      catch: piModelDiscoveryError,
+    });
+    if (!response.success) {
+      return {
+        models: FALLBACK_PI_MODELS,
+        usedFallback: true,
+        detail: response.error ?? "Pi RPC get_available_models returned an unsuccessful response.",
+      } satisfies PiModelDiscoveryResult;
+    }
+    const models = normalizePiAvailableModels(response.data);
+    return {
+      models,
+      usedFallback: models === FALLBACK_PI_MODELS,
+    } satisfies PiModelDiscoveryResult;
+  }).pipe(
+    Effect.ensuring(
+      Effect.promise(() => handle.terminate({ attemptAbort: false })).pipe(Effect.ignore),
+    ),
+  );
 });
 
 export const makePendingPiProvider = (piSettings: PiSettings): Effect.Effect<ServerProviderDraft> =>
@@ -172,18 +218,38 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
     });
   }
 
+  const modelDiscovery = yield* discoverPiModelsViaRpc(piSettings, environment).pipe(
+    Effect.timeoutOption(5_000),
+    Effect.result,
+  );
+  const discoveredModels =
+    Result.isSuccess(modelDiscovery) && Option.isSome(modelDiscovery.success)
+      ? modelDiscovery.success.value
+      : ({
+          models: FALLBACK_PI_MODELS,
+          usedFallback: true,
+          detail: Result.isFailure(modelDiscovery)
+            ? modelDiscovery.failure.message
+            : "Pi RPC model discovery timed out.",
+        } satisfies PiModelDiscoveryResult);
+  const fallbackDetail = discoveredModels.usedFallback
+    ? discoveredModels.detail
+      ? ` Model discovery fell back to Pi default: ${discoveredModels.detail}`
+      : " Model discovery fell back to Pi default."
+    : "";
+
   return buildServerProvider({
     driver: PROVIDER,
     presentation: PI_PRESENTATION,
     enabled: true,
     checkedAt,
-    models: DEFAULT_PI_MODELS,
+    models: discoveredModels.models,
     probe: {
       installed: true,
       version: parsedVersion,
-      status: "warning",
+      status: "ready",
       auth: { status: "unknown", label: "Managed by Pi" },
-      message: "Pi CLI is installed. Native Pi chat sessions are available through Pi RPC.",
+      message: `Pi CLI is installed. Native Pi chat sessions are available through Pi RPC.${fallbackDetail}`,
     },
   });
 });

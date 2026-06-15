@@ -48,6 +48,8 @@ class FakePiRuntime implements PiSessionRuntimeShape {
   promptScript: ((runtime: FakePiRuntime) => Effect.Effect<void>) | undefined;
   extensionUiResponses: Array<PiExtensionUiResponseInput> = [];
   workflowControls: Array<PiWorkflowControlInput> = [];
+  modelSelections: Array<{ provider: string; modelId: string }> = [];
+  currentModel: string | undefined;
 
   startImpl = vi.fn(() => Promise.resolve(this.session("ready")));
   promptImpl = vi.fn(
@@ -68,6 +70,7 @@ class FakePiRuntime implements PiSessionRuntimeShape {
 
   constructor(options: PiSessionRuntimeOptions, eventQueue: Queue.Queue<PiRpcRuntimeMessage>) {
     this.options = options;
+    this.currentModel = options.model;
     this.eventQueue = eventQueue;
     this.events = Stream.fromQueue(eventQueue);
   }
@@ -107,7 +110,12 @@ class FakePiRuntime implements PiSessionRuntimeShape {
 
   getState = Effect.succeed({ sessionFile: "/tmp/pi-session.json" });
   getAvailableModels = Effect.succeed({ providers: [] });
-  setModel = (_provider: string, _modelId: string) => Effect.succeed({});
+  setModel = (provider: string, modelId: string) =>
+    Effect.sync(() => {
+      this.modelSelections.push({ provider, modelId });
+      this.currentModel = `${provider}/${modelId}`;
+      return {};
+    });
   getSessionStats = Effect.sync(() => this.stats);
   getMessages = Effect.sync(() => this.messages);
   workflowControl = (input: PiWorkflowControlInput) =>
@@ -129,11 +137,12 @@ class FakePiRuntime implements PiSessionRuntimeShape {
   private session(status: ProviderSession["status"]): ProviderSession {
     return {
       provider: PROVIDER,
-      providerInstanceId: ProviderInstanceId.make("pi"),
+      providerInstanceId: this.options.providerInstanceId ?? ProviderInstanceId.make("pi"),
       status,
       runtimeMode: this.options.runtimeMode,
       cwd: this.options.cwd,
       threadId: this.options.threadId,
+      ...(this.currentModel ? { model: this.currentModel } : {}),
       resumeCursor: this.options.resumeCursor ?? { sessionFile: "/tmp/pi-session.json" },
       createdAt: this.now,
       updatedAt: this.now,
@@ -148,6 +157,7 @@ function withHarness<T>(
     runtime: FakePiRuntime;
   }) => Effect.Effect<T, ProviderAdapterError>,
   startInput?: Partial<ProviderSessionStartInput>,
+  adapterOptions?: { readonly instanceId?: ProviderInstanceId },
 ) {
   const runtimes: Array<FakePiRuntime> = [];
   return Effect.scoped(
@@ -156,6 +166,7 @@ function withHarness<T>(
         { enabled: true, binaryPath: "pi" },
         {
           usageDebounceMs: 0,
+          ...(adapterOptions?.instanceId ? { instanceId: adapterOptions.instanceId } : {}),
           makeRuntime: (options) =>
             Effect.gen(function* () {
               const eventQueue = yield* Queue.unbounded<PiRpcRuntimeMessage>();
@@ -385,6 +396,96 @@ describe("PiAdapter", () => {
         assert.equal(runtime.promptImpl.mock.calls.length, 1);
         assert.equal(runtime.steerImpl.mock.calls[0]?.[0].message, "while active");
       }),
+    ),
+  );
+
+  it.effect("applies selected Pi models through set_model", () =>
+    withHarness(
+      undefined,
+      ({ adapter, runtime }) =>
+        Effect.gen(function* () {
+          assert.deepEqual(runtime.modelSelections, [{ provider: "mock", modelId: "model-a" }]);
+
+          yield* adapter.sendTurn({
+            threadId,
+            input: "switch",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("pi"),
+              model: "mock/model-b",
+            },
+          });
+
+          assert.deepEqual(runtime.modelSelections, [
+            { provider: "mock", modelId: "model-a" },
+            { provider: "mock", modelId: "model-b" },
+          ]);
+          assert.equal((yield* runtime.getSession).model, "mock/model-b");
+        }),
+      {
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("pi"),
+          model: "mock/model-a",
+        },
+      },
+    ),
+  );
+
+  it.effect("rejects Pi model selections that cannot be sent to set_model", () =>
+    withHarness(undefined, ({ adapter, runtime }) =>
+      Effect.gen(function* () {
+        const error = yield* adapter
+          .sendTurn({
+            threadId,
+            input: "bad model",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("pi"),
+              model: "model-without-provider",
+            },
+          })
+          .pipe(Effect.flip, Effect.orDie);
+
+        assert.match(error.message, /<provider>\/<modelId>/);
+        assert.equal(runtime.promptImpl.mock.calls.length, 0);
+      }),
+    ),
+  );
+
+  it.effect("includes Pi provider instance identity in resume cursors", () =>
+    withHarness(
+      undefined,
+      ({ adapter }) =>
+        Effect.gen(function* () {
+          const sessions = yield* adapter.listSessions();
+
+          assert.equal(sessions[0]?.providerInstanceId, "pi_work");
+          assert.deepEqual(sessions[0]?.resumeCursor, {
+            schemaVersion: 1,
+            provider: "pi",
+            providerInstanceId: "pi_work",
+            sessionFile: "/tmp/pi-session.json",
+          });
+        }),
+      undefined,
+      { instanceId: ProviderInstanceId.make("pi_work") },
+    ),
+  );
+
+  it.effect("does not restore a Pi session cursor from a different provider instance", () =>
+    withHarness(
+      undefined,
+      ({ runtime }) =>
+        Effect.sync(() => {
+          assert.equal(runtime.options.resumeCursor, undefined);
+        }),
+      {
+        resumeCursor: {
+          schemaVersion: 1,
+          provider: "pi",
+          providerInstanceId: "pi_personal",
+          sessionFile: "/tmp/personal-pi-session.json",
+        },
+      },
+      { instanceId: ProviderInstanceId.make("pi_work") },
     ),
   );
 
@@ -720,6 +821,7 @@ describe("PiAdapter", () => {
             assert.deepEqual(sessions[0]?.resumeCursor, {
               schemaVersion: 1,
               provider: "pi",
+              providerInstanceId: "pi",
               sessionFile: "/tmp/pi-session.json",
             });
           }),
@@ -822,6 +924,7 @@ describe("PiAdapter", () => {
             assert.deepEqual(sessions[0]?.resumeCursor, {
               schemaVersion: 1,
               provider: "pi",
+              providerInstanceId: "pi",
               sessionFile: "/tmp/pi-session.json",
               workflows: {
                 activeRuns: [
@@ -869,6 +972,7 @@ describe("PiAdapter", () => {
           assert.deepEqual(sessions[0]?.resumeCursor, {
             schemaVersion: 1,
             provider: "pi",
+            providerInstanceId: "pi",
             sessionFile: "/tmp/pi-session.json",
           });
         }),

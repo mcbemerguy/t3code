@@ -12,6 +12,28 @@ Reference commits used for porting context:
 
 Phase 1 registers a first-party `pi` driver without importing Custom ACP or `.local/pi-acp` runtime modules. The T3 settings surface is intentionally minimal: `enabled` and `binaryPath` only, with `binaryPath` defaulting to `pi`. Pi's own settings remain authoritative for model/provider behavior.
 
-The initial provider snapshot uses `pi --version` as the health probe and exposes a single fallback model, `default`, so the provider can render in settings/status surfaces before the Pi RPC runtime lands. Even when the CLI is installed, the Phase 1 snapshot reports `warning` rather than `ready`; this keeps Pi out of sendable model/session pickers while `PiAdapter` still rejects runtime methods. Later phases should switch the provider to `ready` only after direct Pi RPC sessions, `get_available_models` discovery, and `set_model` handling are implemented.
+The Phase 1 provider snapshot used `pi --version` as the health probe and exposed a single fallback model, `default`, so the provider could render in settings/status surfaces before the Pi RPC runtime landed. Phase 6 now marks installed Pi providers ready, fills the model picker through `get_available_models`, and keeps `default` only as the explicit fallback when model discovery is unavailable.
 
 Text generation for Git commit messages, PR text, branch names, and thread titles is deliberately unsupported for Pi in Phase 1. Calls fail with a structured `TextGenerationError` until a Pi-native text-generation strategy is implemented.
+
+## Migration from Custom ACP Pi
+
+Use the native provider instance instead of a Custom ACP entry that launches Pi through `pi-acp`:
+
+- set the provider instance `driver` to `"pi"`;
+- set `config.binaryPath` to `"pi"` unless Pi is outside `PATH`;
+- keep Pi model/provider/API behavior in Pi's own settings.
+
+Example provider instance:
+
+```json
+{
+  "driver": "pi",
+  "displayName": "Pi",
+  "config": {
+    "binaryPath": "pi"
+  }
+}
+```
+
+Native Pi discovers models with Pi RPC `get_available_models` and selects them with `set_model`. If model discovery is unavailable, T3 shows the explicit `default` fallback model and lets Pi keep its current/default model. Resume cursors include the Pi provider instance id so multiple Pi instances do not accidentally restore each other's sessions.

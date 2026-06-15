@@ -250,6 +250,41 @@ describe("instance-scoped model selection", () => {
     });
   });
 
+  it("uses native Pi RPC model slugs from the selected provider instance", () => {
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("pi"),
+        instanceId: "pi_work",
+        models: ["anthropic/claude-opus-4-5", "openai/gpt-5.2"],
+      }),
+    ];
+    const settings: UnifiedSettings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      providerInstances: {
+        [ProviderInstanceId.make("pi_work")]: {
+          driver: ProviderDriverKind.make("pi"),
+          config: { binaryPath: "pi" },
+        },
+      },
+    };
+    const pi = deriveProviderInstanceEntries(providers).find(
+      (entry) => entry.instanceId === "pi_work",
+    )!;
+
+    expect(getAppModelOptionsForInstance(settings, pi).map((option) => option.slug)).toEqual([
+      "anthropic/claude-opus-4-5",
+      "openai/gpt-5.2",
+    ]);
+    expect(
+      resolveAppModelSelectionForInstance(
+        ProviderInstanceId.make("pi_work"),
+        settings,
+        providers,
+        "openai/gpt-5.2",
+      ),
+    ).toBe("openai/gpt-5.2");
+  });
+
   it("falls back from enabled instances that are not ready", () => {
     const providers = [
       provider({

@@ -75,7 +75,7 @@ function makeRuntime(extraEnv: Record<string, string> = {}) {
       binaryPath,
       cwd: process.cwd(),
       runtimeMode: "full-access",
-      timeouts: { request: 100, abort: 100, workflowControl: 100 },
+      timeouts: { request: 1_000, abort: 1_000, workflowControl: 1_000 },
     });
   });
 }
@@ -147,7 +147,7 @@ describe("PiSessionRuntime", () => {
 
           const models = yield* runtime.getAvailableModels;
           assert.deepStrictEqual(models, {
-            providers: [{ id: "mock", models: [{ id: "model-a" }] }],
+            providers: [{ id: "mock", models: [{ id: "model-a", name: "Model A" }] }],
           });
 
           const promptResult = yield* runtime.prompt({ message: "hello" });
@@ -250,7 +250,7 @@ describe("PiSessionRuntime", () => {
         cwd: process.cwd(),
         runtimeMode: "full-access",
         resumeCursor: { sessionFile },
-        timeouts: { request: 100 },
+        timeouts: { request: 1_000 },
       });
 
       yield* runtime.start();

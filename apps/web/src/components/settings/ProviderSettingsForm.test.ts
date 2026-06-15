@@ -28,6 +28,23 @@ describe("ProviderSettingsForm helpers", () => {
     expect(deriveProviderSettingsFields(pi!).map((field) => field.key)).toEqual(["binaryPath"]);
   });
 
+  it("creates and edits native Pi provider config with only binaryPath", () => {
+    const pi = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("pi")];
+    expect(pi).toBeDefined();
+    const binaryPath = deriveProviderSettingsFields(pi!).find(
+      (field) => field.key === "binaryPath",
+    );
+    expect(binaryPath).toBeDefined();
+
+    const created = nextProviderConfigWithFieldValue(undefined, binaryPath!, "pi");
+    const edited = nextProviderConfigWithFieldValue(created, binaryPath!, "C:/tools/pi.cmd");
+    const cleared = nextProviderConfigWithFieldValue(edited, binaryPath!, "");
+
+    expect(created).toEqual({ binaryPath: "pi" });
+    expect(edited).toEqual({ binaryPath: "C:/tools/pi.cmd" });
+    expect(cleared).toBeUndefined();
+  });
+
   it("sources labels and descriptions from schema annotations", () => {
     const opencode = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("opencode")];
     expect(opencode).toBeDefined();

@@ -1,0 +1,164 @@
+import { type ServerProviderModel } from "@t3tools/contracts";
+import { createModelCapabilities } from "@t3tools/shared/model";
+
+const PI_MODEL_CAPABILITIES = createModelCapabilities({ optionDescriptors: [] });
+const FALLBACK_MODEL_SLUG = "default";
+
+export const FALLBACK_PI_MODELS: ReadonlyArray<ServerProviderModel> = [
+  {
+    slug: FALLBACK_MODEL_SLUG,
+    name: "Pi default",
+    isCustom: false,
+    capabilities: PI_MODEL_CAPABILITIES,
+  },
+];
+
+interface PiModelCandidate {
+  readonly id: string;
+  readonly name?: string;
+  readonly provider?: string;
+}
+
+export interface PiModelSelectionTarget {
+  readonly provider: string;
+  readonly modelId: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readTrimmedString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function stringField(
+  record: Record<string, unknown>,
+  keys: ReadonlyArray<string>,
+): string | undefined {
+  for (const key of keys) {
+    const value = readTrimmedString(record[key]);
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function candidateFromModel(
+  raw: unknown,
+  inheritedProvider?: string,
+): PiModelCandidate | undefined {
+  if (typeof raw === "string") {
+    const value = raw.trim();
+    if (!value) return undefined;
+    const parsed = parsePiModelSelection(value);
+    return parsed
+      ? { id: parsed.modelId, provider: parsed.provider }
+      : { id: value, ...(inheritedProvider ? { provider: inheritedProvider } : {}) };
+  }
+
+  if (!isRecord(raw)) return undefined;
+  const id = stringField(raw, ["id", "modelId", "slug", "name"]);
+  if (!id) return undefined;
+  const name = stringField(raw, ["name", "displayName", "label"]);
+  const provider = stringField(raw, ["provider", "providerId", "api"]) ?? inheritedProvider;
+  return {
+    id,
+    ...(name ? { name } : {}),
+    ...(provider ? { provider } : {}),
+  };
+}
+
+function candidatesFromProviderRecord(
+  raw: Record<string, unknown>,
+): ReadonlyArray<PiModelCandidate> {
+  const provider = stringField(raw, ["id", "provider", "providerId", "name"]);
+  const models = Array.isArray(raw.models)
+    ? raw.models
+    : Array.isArray(raw.availableModels)
+      ? raw.availableModels
+      : [];
+  return models.flatMap((model) => {
+    const candidate = candidateFromModel(model, provider);
+    return candidate ? [candidate] : [];
+  });
+}
+
+function readCandidates(payload: unknown): ReadonlyArray<PiModelCandidate> {
+  if (Array.isArray(payload)) {
+    return payload.flatMap((entry) => {
+      const candidate = candidateFromModel(entry);
+      return candidate ? [candidate] : [];
+    });
+  }
+
+  if (!isRecord(payload)) return [];
+
+  const directModels = Array.isArray(payload.models) ? payload.models : undefined;
+  if (directModels) {
+    return directModels.flatMap((entry) => {
+      const candidate = candidateFromModel(entry);
+      return candidate ? [candidate] : [];
+    });
+  }
+
+  const availableModels = Array.isArray(payload.availableModels)
+    ? payload.availableModels
+    : undefined;
+  if (availableModels) {
+    return availableModels.flatMap((entry) => {
+      const candidate = candidateFromModel(entry);
+      return candidate ? [candidate] : [];
+    });
+  }
+
+  if (Array.isArray(payload.providers)) {
+    return payload.providers.flatMap((provider) =>
+      isRecord(provider) ? candidatesFromProviderRecord(provider) : [],
+    );
+  }
+
+  if (isRecord(payload.models)) {
+    return Object.entries(payload.models).flatMap(([provider, models]) =>
+      Array.isArray(models)
+        ? models.flatMap((model) => {
+            const candidate = candidateFromModel(model, provider);
+            return candidate ? [candidate] : [];
+          })
+        : [],
+    );
+  }
+
+  return [];
+}
+
+export function normalizePiAvailableModels(payload: unknown): ReadonlyArray<ServerProviderModel> {
+  const seen = new Set<string>();
+  const models: ServerProviderModel[] = [];
+
+  for (const candidate of readCandidates(payload)) {
+    const slug = candidate.provider ? `${candidate.provider}/${candidate.id}` : candidate.id;
+    if (!slug.trim() || seen.has(slug)) continue;
+    seen.add(slug);
+    models.push({
+      slug,
+      name: candidate.name ?? candidate.id,
+      shortName: candidate.name ?? candidate.id,
+      ...(candidate.provider ? { subProvider: candidate.provider } : {}),
+      isCustom: false,
+      capabilities: PI_MODEL_CAPABILITIES,
+    });
+  }
+
+  return models.length > 0 ? models : FALLBACK_PI_MODELS;
+}
+
+export function parsePiModelSelection(model: string): PiModelSelectionTarget | undefined {
+  const trimmed = model.trim();
+  if (!trimmed || trimmed === FALLBACK_MODEL_SLUG) return undefined;
+  const slashIndex = trimmed.indexOf("/");
+  if (slashIndex <= 0 || slashIndex === trimmed.length - 1) return undefined;
+  return {
+    provider: trimmed.slice(0, slashIndex),
+    modelId: trimmed.slice(slashIndex + 1),
+  };
+}

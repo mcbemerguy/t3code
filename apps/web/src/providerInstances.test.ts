@@ -71,6 +71,15 @@ describe("resolveSelectableProviderInstance", () => {
     expect(resolveSelectableProviderInstance(providers, disabled)).toBe(fallback);
   });
 
+  it("returns a ready native Pi instance", () => {
+    const pi = ProviderInstanceId.make("pi_work");
+    const providers = [
+      provider({ provider: ProviderDriverKind.make("pi"), instanceId: pi, status: "ready" }),
+    ];
+
+    expect(resolveSelectableProviderInstance(providers, pi)).toBe(pi);
+  });
+
   it("falls back when the requested instance is not ready", () => {
     const limited = ProviderInstanceId.make("pi");
     const fallback = ProviderInstanceId.make("codex");

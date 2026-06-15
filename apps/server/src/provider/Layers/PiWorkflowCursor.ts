@@ -1,4 +1,4 @@
-import { ProviderDriverKind, type ProviderSession } from "@t3tools/contracts";
+import { ProviderDriverKind, ProviderInstanceId, type ProviderSession } from "@t3tools/contracts";
 
 import type { PiResumeCursor, PiWorkflowRunCursor } from "./PiSessionRuntime.ts";
 
@@ -48,19 +48,37 @@ export function parsePiWorkflowRunCursors(raw: unknown): ReadonlyArray<PiWorkflo
   });
 }
 
-export function parsePiResumeCursor(raw: unknown): PiResumeCursor | undefined {
+export function parsePiResumeCursor(
+  raw: unknown,
+  options?: { readonly expectedProviderInstanceId?: ProviderInstanceId },
+): PiResumeCursor | undefined {
   if (!isRecord(raw)) return undefined;
   const sessionFile = stringField(raw.sessionFile) ?? stringField(raw.sessionPath);
   if (!sessionFile) return undefined;
   if (raw.provider !== undefined && raw.provider !== PROVIDER) return undefined;
+  const providerInstanceId = stringField(raw.providerInstanceId);
+  if (
+    providerInstanceId !== undefined &&
+    options?.expectedProviderInstanceId !== undefined &&
+    providerInstanceId !== options.expectedProviderInstanceId
+  ) {
+    return undefined;
+  }
   const activeRuns = parsePiWorkflowRunCursors(raw).filter(
     (run) => !isTerminalWorkflowStatus(run.status),
   );
-  return makePiResumeCursor({ sessionFile, activeWorkflowRuns: activeRuns });
+  return makePiResumeCursor({
+    sessionFile,
+    activeWorkflowRuns: activeRuns,
+    ...(providerInstanceId
+      ? { providerInstanceId: ProviderInstanceId.make(providerInstanceId) }
+      : {}),
+  });
 }
 
 export function makePiResumeCursor(input: {
   readonly sessionFile: string;
+  readonly providerInstanceId?: ProviderInstanceId;
   readonly activeWorkflowRuns?: ReadonlyArray<PiWorkflowRunCursor>;
 }): PiResumeCursor {
   const activeRuns = (input.activeWorkflowRuns ?? [])
@@ -76,6 +94,7 @@ export function makePiResumeCursor(input: {
     schemaVersion: PI_RESUME_CURSOR_VERSION,
     provider: "pi",
     sessionFile: input.sessionFile,
+    ...(input.providerInstanceId ? { providerInstanceId: input.providerInstanceId } : {}),
     ...(activeRuns.length > 0 ? { workflows: { activeRuns } } : {}),
   };
 }

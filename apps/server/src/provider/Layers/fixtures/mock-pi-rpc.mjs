@@ -1,6 +1,11 @@
 import fs from "node:fs";
 import readline from "node:readline";
 
+if (process.argv.includes("--version")) {
+  process.stdout.write(`${process.env.MOCK_PI_RPC_VERSION ?? "pi 1.0.0"}\n`);
+  process.exit(0);
+}
+
 if (process.env.MOCK_PI_RPC_ARGS_FILE) {
   fs.writeFileSync(process.env.MOCK_PI_RPC_ARGS_FILE, JSON.stringify(process.argv.slice(2)));
 }
@@ -15,6 +20,7 @@ if (process.env.MOCK_PI_RPC_EXIT_ON_START === "1") {
 }
 
 const ignoreCommand = process.env.MOCK_PI_RPC_IGNORE_COMMAND;
+const failCommand = process.env.MOCK_PI_RPC_FAIL_COMMAND;
 const noIdCommand = process.env.MOCK_PI_RPC_NO_ID_COMMAND;
 const staleIdCommand = process.env.MOCK_PI_RPC_STALE_ID_COMMAND;
 let staleIdRequest = null;
@@ -42,6 +48,10 @@ rl.on("line", (line) => {
   if (!line.trim()) return;
   const request = JSON.parse(line);
   if (request.type === ignoreCommand) return;
+  if (request.type === failCommand) {
+    response(request.type, request, null, false, `mock failure: ${request.type}`);
+    return;
+  }
 
   if (request.type === staleIdCommand) {
     if (!staleIdRequest) {
@@ -59,7 +69,10 @@ rl.on("line", (line) => {
       break;
     case "get_available_models":
       response("get_available_models", request, {
-        providers: [{ id: "mock", models: [{ id: "model-a" }] }],
+        providers:
+          process.env.MOCK_PI_RPC_EMPTY_MODELS === "1"
+            ? []
+            : [{ id: "mock", models: [{ id: "model-a", name: "Model A" }] }],
       });
       break;
     case "prompt":
