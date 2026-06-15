@@ -17,10 +17,11 @@ import * as Stream from "effect/Stream";
 
 import type { ProviderAdapterError } from "../Errors.ts";
 import { makePiAdapter, type PiAdapterShape } from "./PiAdapter.ts";
-import type {
-  PiRpcRuntimeMessage,
-  PiSessionRuntimeOptions,
-  PiSessionRuntimeShape,
+import {
+  PiRpcLifecycleError,
+  type PiRpcRuntimeMessage,
+  type PiSessionRuntimeOptions,
+  type PiSessionRuntimeShape,
 } from "./PiSessionRuntime.ts";
 
 const PROVIDER = ProviderDriverKind.make("pi");
@@ -70,7 +71,18 @@ class FakePiRuntime implements PiSessionRuntimeShape {
     const script = this.promptScript;
     const runPrompt = this.promptImpl;
     return (script ? script(this) : Effect.void).pipe(
-      Effect.andThen(Effect.promise(() => runPrompt())),
+      Effect.andThen(
+        Effect.tryPromise({
+          try: () => runPrompt(),
+          catch: (error) =>
+            error instanceof PiRpcLifecycleError
+              ? error
+              : new PiRpcLifecycleError(
+                  error instanceof Error ? error.message : "prompt failed",
+                  error,
+                ),
+        }),
+      ),
     );
   }
 
@@ -279,6 +291,76 @@ describe("PiAdapter", () => {
             assert.equal(events[0].payload.itemType, "command_execution");
           assert.equal(events[1]?.type, "content.delta");
           assert.equal(events.at(-1)?.type, "item.completed");
+        }),
+    ),
+  );
+
+  it.effect("does not complete a turn until Pi emits a terminal event", () =>
+    withHarness(undefined, ({ adapter, runtime }) =>
+      Effect.gen(function* () {
+        const eventsFiber = yield* collectEvents(
+          adapter,
+          2,
+          (event) => event.type === "content.delta" || event.type === "turn.completed",
+        ).pipe(Effect.forkChild);
+
+        yield* adapter.sendTurn({ threadId, input: "hi" });
+        yield* runtime.emit({ type: "assistant_delta", text: "hello" });
+        yield* runtime.emit({ type: "agent_end" });
+        const events = yield* Fiber.join(eventsFiber);
+
+        assert.deepEqual(
+          events.map((event) => event.type),
+          ["content.delta", "turn.completed"],
+        );
+      }),
+    ),
+  );
+
+  it.effect("routes sendTurn to Pi steer while a turn is active", () =>
+    withHarness(undefined, ({ adapter, runtime }) =>
+      Effect.gen(function* () {
+        const first = yield* adapter.sendTurn({ threadId, input: "start" });
+        const second = yield* adapter.sendTurn({ threadId, input: "while active" });
+
+        assert.equal(first.turnId, "pi-turn-1");
+        assert.equal(second.turnId, "pi-turn-1");
+        assert.equal(runtime.promptImpl.mock.calls.length, 1);
+        assert.equal(runtime.steerImpl.mock.calls[0]?.[0].message, "while active");
+      }),
+    ),
+  );
+
+  it.effect("completes the active turn as failed when prompt acceptance fails", () =>
+    withHarness(
+      (fake) => {
+        fake.promptImpl.mockRejectedValueOnce(new Error("prompt failed"));
+      },
+      ({ adapter }) =>
+        Effect.gen(function* () {
+          const eventsFiber = yield* collectEvents(
+            adapter,
+            2,
+            (event) =>
+              event.type === "turn.completed" ||
+              (event.type === "session.state.changed" && event.payload.state === "error"),
+          ).pipe(Effect.forkChild);
+          const result = yield* adapter.sendTurn({ threadId, input: "fail" }).pipe(Effect.result);
+          const events = yield* Fiber.join(eventsFiber);
+
+          assert.equal(result._tag, "Failure");
+          assert.equal(
+            events.some(
+              (event) => event.type === "turn.completed" && event.payload.state === "failed",
+            ),
+            true,
+          );
+          assert.equal(
+            events.some(
+              (event) => event.type === "session.state.changed" && event.payload.state === "error",
+            ),
+            true,
+          );
         }),
     ),
   );

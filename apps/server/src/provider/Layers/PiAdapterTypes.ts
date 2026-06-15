@@ -36,8 +36,14 @@ export type PiRuntimeEventOffer = (
 
 export type PiUsageRefreshScheduler = (session: PiAdapterSessionContext) => Effect.Effect<void>;
 
+export interface PiTurnCompletionDetail {
+  readonly errorMessage?: string;
+  readonly stopReason?: string;
+}
+
 export type PiTurnCompleter = (
   session: PiAdapterSessionContext,
   raw?: PiRpcRuntimeMessage,
   state?: "completed" | "failed" | "cancelled" | "interrupted",
+  detail?: PiTurnCompletionDetail,
 ) => Effect.Effect<void>;

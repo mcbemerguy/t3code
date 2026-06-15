@@ -111,22 +111,35 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     session: PiAdapterSessionContext,
     raw?: PiRpcRuntimeMessage,
     state: "completed" | "failed" | "cancelled" | "interrupted" = "completed",
+    detail?: { readonly errorMessage?: string; readonly stopReason?: string },
   ) =>
     Effect.gen(function* () {
       if (session.turnCompleted) return;
       session.turnCompleted = true;
+      const rawInput = raw ? { raw } : undefined;
       yield* offer([
         {
-          ...basePiEvent(session, raw ? { raw } : undefined),
+          ...basePiEvent(session, rawInput),
           type: "turn.completed",
-          payload: { state },
+          payload: {
+            state,
+            ...(detail?.errorMessage ? { errorMessage: detail.errorMessage } : {}),
+            ...(detail?.stopReason ? { stopReason: detail.stopReason } : {}),
+          },
         } satisfies ProviderRuntimeEvent,
         {
-          ...basePiEvent(session, raw ? { raw } : undefined),
+          ...basePiEvent(session, rawInput),
           type: "session.state.changed",
-          payload: { state: state === "failed" ? "error" : "ready" },
+          payload: {
+            state: state === "failed" ? "error" : "ready",
+            ...(detail?.errorMessage ? { reason: detail.errorMessage } : {}),
+          },
         } satisfies ProviderRuntimeEvent,
       ]);
+      delete session.currentTurnId;
+      delete session.assistantItemId;
+      delete session.reasoningItemId;
+      session.tools.clear();
     });
 
   const refreshUsage = (session: PiAdapterSessionContext): Effect.Effect<void> =>
@@ -170,6 +183,12 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     });
 
   const mapper = new PiEventMapper(offer, scheduleUsageRefresh, completeTurn);
+
+  const describeError = (error: unknown, fallback: string): string => {
+    if (error instanceof Error && error.message.trim()) return error.message;
+    if (typeof error === "string" && error.trim()) return error;
+    return fallback;
+  };
 
   const requireSession = Effect.fn("requirePiSession")(function* (threadId: ThreadId) {
     const session = sessions.get(threadId);
@@ -305,6 +324,17 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     input: ProviderSendTurnInput,
   ): Effect.fn.Return<ProviderTurnStartResult, ProviderAdapterError> {
     const session = yield* requireSession(input.threadId);
+
+    if (!session.turnCompleted) {
+      yield* session.runtime
+        .steer({ message: input.input ?? "", images: [] })
+        .pipe(Effect.mapError((cause) => mapPiRuntimeError(input.threadId, "steer", cause)));
+      return {
+        threadId: input.threadId,
+        turnId: session.currentTurnId ?? TurnId.make(`pi-turn-${++turnCounter}`),
+      };
+    }
+
     const turnId = TurnId.make(`pi-turn-${++turnCounter}`);
     session.currentTurnId = turnId;
     session.turnCompleted = false;
@@ -316,11 +346,14 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         payload: { state: "running" },
       } satisfies ProviderRuntimeEvent,
     ]);
-    const result = yield* session.runtime
-      .prompt({ message: input.input ?? "", images: [] })
-      .pipe(Effect.mapError((cause) => mapPiRuntimeError(input.threadId, "prompt", cause)));
-    if (!session.turnCompleted) yield* completeTurn(session);
-    yield* scheduleUsageRefresh(session);
+    const result = yield* session.runtime.prompt({ message: input.input ?? "", images: [] }).pipe(
+      Effect.tapError((cause) =>
+        completeTurn(session, undefined, "failed", {
+          errorMessage: describeError(cause, "Pi prompt failed"),
+        }),
+      ),
+      Effect.mapError((cause) => mapPiRuntimeError(input.threadId, "prompt", cause)),
+    );
     return {
       threadId: result.threadId,
       turnId,
@@ -351,13 +384,9 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
                 type: "turn.aborted",
                 payload: { reason: "Interrupted by user" },
               } satisfies ProviderRuntimeEvent,
-              {
-                ...basePiEvent(session),
-                type: "turn.completed",
-                payload: { state: "interrupted" },
-              } satisfies ProviderRuntimeEvent,
             ]),
           ),
+          Effect.andThen(completeTurn(session, undefined, "interrupted")),
         ),
       ),
       Effect.mapError((cause) =>
