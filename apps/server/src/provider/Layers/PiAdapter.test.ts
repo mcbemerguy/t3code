@@ -16,6 +16,7 @@ import {
   type ProviderTurnStartResult,
 } from "@t3tools/contracts";
 import { describe, it, vi } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
@@ -368,35 +369,43 @@ describe("PiAdapter", () => {
     writeFileSync(join(root, "note.txt"), "old\n", "utf8");
 
     return withHarness(
-      (fake) => {
-        fake.promptScript = (rt) =>
-          Effect.gen(function* () {
-            yield* rt.emit({
-              type: "tool_execution_start",
-              toolCallId: "edit-1",
-              toolName: "edit",
-              args: { path: "note.txt" },
-            });
-            yield* Effect.yieldNow;
-            yield* Effect.yieldNow;
-            writeFileSync(join(root, "note.txt"), "new\n", "utf8");
-            yield* rt.emit({
-              type: "tool_execution_end",
-              toolCallId: "edit-1",
-              result: { content: [{ type: "text", text: "edited" }] },
-            });
-          });
-      },
-      ({ adapter }) =>
+      undefined,
+      ({ adapter, runtime }) =>
         Effect.gen(function* () {
-          const eventsFiber = yield* collectEvents(
-            adapter,
-            3,
-            (event) =>
-              event.type === "item.started" ||
-              event.type === "turn.diff.updated" ||
-              event.type === "item.completed",
-          ).pipe(Effect.forkChild);
+          const editStartObserved = yield* Deferred.make<void>();
+          runtime.promptScript = (rt) =>
+            Effect.gen(function* () {
+              yield* rt.emit({
+                type: "tool_execution_start",
+                toolCallId: "edit-1",
+                toolName: "edit",
+                args: { path: "note.txt" },
+              });
+              yield* Deferred.await(editStartObserved);
+              writeFileSync(join(root, "note.txt"), "new\n", "utf8");
+              yield* rt.emit({
+                type: "tool_execution_end",
+                toolCallId: "edit-1",
+                result: { content: [{ type: "text", text: "edited" }] },
+              });
+            });
+          const eventsFiber = yield* adapter.streamEvents.pipe(
+            Stream.filter(
+              (event) =>
+                event.type === "item.started" ||
+                event.type === "turn.diff.updated" ||
+                event.type === "item.completed",
+            ),
+            Stream.tap((event) =>
+              event.type === "item.started"
+                ? Deferred.succeed(editStartObserved, undefined).pipe(Effect.ignore)
+                : Effect.void,
+            ),
+            Stream.take(3),
+            Stream.runCollect,
+            Effect.map((events) => Array.from(events) as Array<ProviderRuntimeEvent>),
+            Effect.forkChild,
+          );
           yield* adapter.sendTurn({ threadId, input: "edit" });
           const events = yield* Fiber.join(eventsFiber);
 

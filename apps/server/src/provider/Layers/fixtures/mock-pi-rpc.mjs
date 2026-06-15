@@ -15,7 +15,7 @@ if (process.env.MOCK_PI_RPC_PRELUDE) {
 }
 
 if (process.env.MOCK_PI_RPC_EXIT_ON_START === "1") {
-  process.stderr.write("mock startup failure\n");
+  fs.writeSync(2, "mock startup failure\n");
   process.exit(7);
 }
 
@@ -50,7 +50,7 @@ rl.on("line", (line) => {
   const request = JSON.parse(line);
   if (request.type === ignoreCommand) return;
   if (request.type === exitCommand) {
-    process.stderr.write(`mock exit on ${request.type}\n`);
+    fs.writeSync(2, `mock exit on ${request.type}\n`);
     process.exit(9);
   }
   if (request.type === failCommand) {
