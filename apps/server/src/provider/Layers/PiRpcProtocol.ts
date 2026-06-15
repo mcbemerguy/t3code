@@ -22,8 +22,24 @@ export const DEFAULT_PI_RPC_TIMEOUTS: PiRpcTimeouts = {
   workflowControl: 5_000,
 };
 
+export const PiWorkflowRunCursorSchema = Schema.Struct({
+  runId: Schema.String,
+  lastSequence: Schema.Number,
+  runDir: Schema.optional(Schema.String),
+  auditPath: Schema.optional(Schema.String),
+  status: Schema.optional(Schema.String),
+});
+export type PiWorkflowRunCursor = typeof PiWorkflowRunCursorSchema.Type;
+
 export const PiResumeCursorSchema = Schema.Struct({
   sessionFile: Schema.String,
+  schemaVersion: Schema.optional(Schema.Number),
+  provider: Schema.optional(Schema.Literal("pi")),
+  workflows: Schema.optional(
+    Schema.Struct({
+      activeRuns: Schema.Array(PiWorkflowRunCursorSchema),
+    }),
+  ),
 });
 export type PiResumeCursor = typeof PiResumeCursorSchema.Type;
 

@@ -7,6 +7,7 @@ import {
   type PiSettings,
   type ProviderRuntimeEvent,
   type ProviderSendTurnInput,
+  type ProviderSession,
   type ProviderSessionStartInput,
   type ProviderTurnStartResult,
   type ThreadId,
@@ -17,7 +18,6 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
-import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
@@ -33,7 +33,6 @@ import { basePiEvent, PiEventMapper } from "./PiEventMapper.ts";
 import type { PiAdapterSessionContext } from "./PiAdapterTypes.ts";
 import {
   DEFAULT_PI_RPC_TIMEOUTS,
-  PiResumeCursorSchema,
   PiRpcLifecycleError,
   PiRpcSpawnError,
   makePiSessionRuntime,
@@ -45,10 +44,23 @@ import {
 import { cancellationResponse, normalizePiExtensionUiResponse } from "./PiExtensionUi.ts";
 import { normalizePiReadThread } from "./PiReadThread.ts";
 import { normalizePiTokenUsage } from "./PiUsage.ts";
+import {
+  sessionFileFromProviderSession,
+  isTerminalWorkflowStatus,
+  makePiResumeCursor,
+  mergeWorkflowRunCursor,
+  parsePiResumeCursor,
+} from "./PiWorkflowCursor.ts";
+import { parseWorkflowControlPrompt } from "./PiWorkflowArtifacts.ts";
+import {
+  restorePiWorkflowRuns,
+  startPiWorkflowCommandMonitor,
+  startPiWorkflowRunMonitor,
+  stopWorkflowMonitors,
+} from "./PiWorkflowMonitor.ts";
 
 const PROVIDER = ProviderDriverKind.make("pi");
 const DEFAULT_USAGE_DEBOUNCE_MS = 50;
-const isPiResumeCursor = Schema.is(PiResumeCursorSchema);
 
 export interface PiAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
@@ -184,6 +196,28 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       }).pipe(Effect.forkChild);
     });
 
+  const currentResumeCursor = (session: PiAdapterSessionContext) =>
+    session.sessionFile
+      ? makePiResumeCursor({
+          sessionFile: session.sessionFile,
+          activeWorkflowRuns: Array.from(session.workflowRuns.values()),
+        })
+      : undefined;
+
+  const syncSessionFile = (session: PiAdapterSessionContext, providerSession: ProviderSession) => {
+    const sessionFile = sessionFileFromProviderSession(providerSession);
+    if (sessionFile) session.sessionFile = sessionFile;
+  };
+
+  const runtimeSessionWithWorkflowCursor = (session: PiAdapterSessionContext) =>
+    session.runtime.getSession.pipe(
+      Effect.map((providerSession) => {
+        syncSessionFile(session, providerSession);
+        const resumeCursor = currentResumeCursor(session);
+        return resumeCursor ? { ...providerSession, resumeCursor } : providerSession;
+      }),
+    );
+
   const mapper = new PiEventMapper(offer, scheduleUsageRefresh, completeTurn);
 
   const describeError = (error: unknown, fallback: string): string => {
@@ -234,6 +268,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     yield* cancelPendingUserInputs(session);
     if (session.usageRefreshFiber)
       yield* Fiber.interrupt(session.usageRefreshFiber).pipe(Effect.ignore);
+    yield* stopWorkflowMonitors(session);
     yield* session.runtime.close.pipe(Effect.ignore);
     yield* Effect.ignore(Scope.close(session.scope, Exit.void));
     if (session.eventFiber) yield* Fiber.interrupt(session.eventFiber).pipe(Effect.ignore);
@@ -266,6 +301,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           sessionScopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
         );
 
+        const parsedResumeCursor = parsePiResumeCursor(input.resumeCursor);
         const runtimeInput: PiSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
@@ -273,7 +309,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           cwd: input.cwd ?? process.cwd(),
           runtimeMode: input.runtimeMode,
           ...(options?.environment ? { environment: options.environment } : {}),
-          ...(isPiResumeCursor(input.resumeCursor) ? { resumeCursor: input.resumeCursor } : {}),
+          ...(parsedResumeCursor ? { resumeCursor: parsedResumeCursor } : {}),
           ...(input.modelSelection?.instanceId === boundInstanceId
             ? { model: input.modelSelection.model }
             : {}),
@@ -292,6 +328,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
               }),
           ),
         );
+        const resumeCursor = parsedResumeCursor;
         const session: PiAdapterSessionContext = {
           threadId: input.threadId,
           cwd: runtimeInput.cwd,
@@ -299,6 +336,12 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           runtime,
           tools: new Map(),
           pendingUserInputs: new Map(),
+          workflowRuns: new Map(
+            (resumeCursor?.workflows?.activeRuns ?? []).map((run) => [run.runId, run] as const),
+          ),
+          workflowMonitorDisposers: new Set(),
+          workflowMonitorRunIds: new Set(),
+          ...(resumeCursor?.sessionFile ? { sessionFile: resumeCursor.sessionFile } : {}),
           stopped: false,
           turnCompleted: true,
           usageRefreshQueued: false,
@@ -327,13 +370,15 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
             ),
           ),
         );
+        syncSessionFile(session, started);
         sessions.set(input.threadId, session);
         sessionScopeTransferred = true;
+        yield* restorePiWorkflowRuns(session, offer);
         yield* offer([
           {
             ...basePiEvent(session),
             type: "session.started",
-            payload: input.resumeCursor !== undefined ? { resume: input.resumeCursor } : {},
+            payload: currentResumeCursor(session) ? { resume: currentResumeCursor(session) } : {},
           } satisfies ProviderRuntimeEvent,
           {
             ...basePiEvent(session),
@@ -346,14 +391,109 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
             payload: { state: "ready" },
           } satisfies ProviderRuntimeEvent,
         ]);
-        return started;
+        return yield* runtimeSessionWithWorkflowCursor(session);
       }),
     );
+
+  const emitWorkflowControlNotice = (
+    session: PiAdapterSessionContext,
+    text: string,
+    detail: Record<string, unknown>,
+  ) =>
+    offer([
+      {
+        ...basePiEvent(session),
+        type: "content.delta",
+        payload: { streamKind: "assistant_text", delta: text },
+        raw: { source: "pi.workflow.artifact", method: "workflow_control", payload: detail },
+      } satisfies ProviderRuntimeEvent,
+    ]);
+
+  const runWorkflowControl = Effect.fn("runPiWorkflowControl")(function* (
+    session: PiAdapterSessionContext,
+    action: "pause" | "resume" | "abort",
+    target: string,
+    reason: string,
+  ) {
+    yield* session.runtime
+      .workflowControl({
+        action,
+        target,
+        reason,
+        ...(action === "resume" ? { policy: "continue-existing-session" as const } : {}),
+      })
+      .pipe(
+        Effect.mapError((cause) => mapPiRuntimeError(session.threadId, "workflow_control", cause)),
+      );
+    const status = action === "resume" ? "recovering" : action === "pause" ? "paused" : "aborted";
+    const previous = session.workflowRuns.get(target);
+    if (action === "abort") session.workflowRuns.delete(target);
+    else
+      session.workflowRuns.set(
+        target,
+        mergeWorkflowRunCursor(previous, {
+          runId: target,
+          lastSequence: previous?.lastSequence ?? 0,
+          status,
+        }),
+      );
+    yield* emitWorkflowControlNotice(session, `Workflow ${target} ${action} requested.`, {
+      action,
+      target,
+      status,
+    });
+    if (action !== "abort")
+      yield* startPiWorkflowRunMonitor(
+        session,
+        offer,
+        session.workflowRuns.get(target)!,
+        undefined,
+      );
+  });
+
+  const handleWorkflowControlPrompt = Effect.fn("handlePiWorkflowControlPrompt")(function* (
+    session: PiAdapterSessionContext,
+    input: ProviderSendTurnInput,
+  ): Effect.fn.Return<ProviderTurnStartResult | undefined, ProviderAdapterError> {
+    const parsed = parseWorkflowControlPrompt(input.input ?? "");
+    if (!parsed) return undefined;
+    const targets = parsed.target
+      ? [parsed.target]
+      : Array.from(session.workflowRuns.values())
+          .filter((run) => !isTerminalWorkflowStatus(run.status))
+          .map((run) => run.runId);
+    if (targets.length === 0) {
+      yield* emitWorkflowControlNotice(
+        session,
+        `No active workflow runs available to ${parsed.action}.`,
+        {
+          action: parsed.action,
+        },
+      );
+    } else {
+      for (const target of targets) {
+        yield* runWorkflowControl(
+          session,
+          parsed.action,
+          target,
+          `User requested workflow ${parsed.action} from t3code.`,
+        );
+      }
+    }
+    const turnId = TurnId.make(`pi-turn-${++turnCounter}`);
+    return {
+      threadId: input.threadId,
+      turnId,
+      ...(currentResumeCursor(session) ? { resumeCursor: currentResumeCursor(session) } : {}),
+    };
+  });
 
   const sendTurn = Effect.fn("sendPiTurn")(function* (
     input: ProviderSendTurnInput,
   ): Effect.fn.Return<ProviderTurnStartResult, ProviderAdapterError> {
     const session = yield* requireSession(input.threadId);
+    const controlResult = yield* handleWorkflowControlPrompt(session, input);
+    if (controlResult) return controlResult;
 
     if (!session.turnCompleted) {
       yield* session.runtime
@@ -376,7 +516,14 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         payload: { state: "running" },
       } satisfies ProviderRuntimeEvent,
     ]);
+    yield* startPiWorkflowCommandMonitor(session, offer, input.input ?? "");
     const result = yield* session.runtime.prompt({ message: input.input ?? "", images: [] }).pipe(
+      Effect.tap((providerResult) =>
+        Effect.sync(() => {
+          const cursor = parsePiResumeCursor(providerResult.resumeCursor);
+          if (cursor?.sessionFile) session.sessionFile = cursor.sessionFile;
+        }),
+      ),
       Effect.tapError((cause) =>
         completeTurn(session, undefined, "failed", {
           errorMessage: describeError(cause, "Pi prompt failed"),
@@ -387,7 +534,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     return {
       threadId: result.threadId,
       turnId,
-      ...(result.resumeCursor !== undefined ? { resumeCursor: result.resumeCursor } : {}),
+      ...(currentResumeCursor(session) ? { resumeCursor: currentResumeCursor(session) } : {}),
     };
   });
 
@@ -403,28 +550,54 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       ),
     );
 
+  const pauseActiveWorkflows = (session: PiAdapterSessionContext) =>
+    Effect.gen(function* () {
+      const runs = Array.from(session.workflowRuns.values()).filter(
+        (run) => !isTerminalWorkflowStatus(run.status),
+      );
+      if (runs.length === 0) return false;
+      for (const run of runs) {
+        yield* runWorkflowControl(
+          session,
+          "pause",
+          run.runId,
+          "User requested workflow interruption from t3code.",
+        );
+      }
+      yield* emitWorkflowControlNotice(
+        session,
+        "Workflow pause requested. Use /workflow:resume or /workflow:abort to continue or terminate it explicitly.",
+        { activeWorkflowRuns: runs.map((run) => run.runId) },
+      );
+      return true;
+    });
+
   const interruptTurn = (threadId: ThreadId, _turnId?: TurnId) =>
     requireSession(threadId).pipe(
       Effect.flatMap((session) =>
-        cancelPendingUserInputs(session).pipe(
-          Effect.andThen(session.runtime.abort()),
-          Effect.tap(() =>
-            offer([
-              {
-                ...basePiEvent(session),
-                type: "turn.aborted",
-                payload: { reason: "Interrupted by user" },
-              } satisfies ProviderRuntimeEvent,
-            ]),
-          ),
-          Effect.andThen(completeTurn(session, undefined, "interrupted")),
+        pauseActiveWorkflows(session).pipe(
+          Effect.flatMap((pausedWorkflow) => {
+            if (pausedWorkflow) return cancelPendingUserInputs(session);
+            return cancelPendingUserInputs(session).pipe(
+              Effect.andThen(session.runtime.abort()),
+              Effect.tap(() =>
+                offer([
+                  {
+                    ...basePiEvent(session),
+                    type: "turn.aborted",
+                    payload: { reason: "Interrupted by user" },
+                  } satisfies ProviderRuntimeEvent,
+                ]),
+              ),
+              Effect.andThen(completeTurn(session, undefined, "interrupted")),
+            );
+          }),
         ),
       ),
-      Effect.mapError((cause) =>
-        cause._tag === "ProviderAdapterSessionNotFoundError"
-          ? cause
-          : mapPiRuntimeError(threadId, "abort", cause),
-      ),
+      Effect.mapError((cause): ProviderAdapterError => {
+        if (cause._tag.startsWith("ProviderAdapter")) return cause as ProviderAdapterError;
+        return mapPiRuntimeError(threadId, "abort", cause as PiSessionRuntimeError);
+      }),
     );
 
   const readThread = (threadId: ThreadId) =>
@@ -507,7 +680,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     listSessions: () =>
       Effect.forEach(
         Array.from(sessions.values()).filter((session) => !session.stopped),
-        (session) => session.runtime.getSession,
+        (session) => runtimeSessionWithWorkflowCursor(session),
         { concurrency: 1 },
       ),
     hasSession: (threadId) =>

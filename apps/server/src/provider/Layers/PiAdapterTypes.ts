@@ -9,9 +9,14 @@ import type * as Effect from "effect/Effect";
 import type * as Fiber from "effect/Fiber";
 import type * as Scope from "effect/Scope";
 
-import type { PiRpcRuntimeMessage, PiSessionRuntimeShape } from "./PiSessionRuntime.ts";
+import type {
+  PiRpcRuntimeMessage,
+  PiSessionRuntimeShape,
+  PiWorkflowRunCursor,
+} from "./PiSessionRuntime.ts";
 import type { PiToolSnapshot } from "./PiToolPresentation.ts";
 import type { PiPendingUserInputRequest } from "./PiExtensionUi.ts";
+import type { PiWorkflowEventMapper } from "./PiWorkflowMapper.ts";
 
 export interface PiToolState {
   readonly toolName: string;
@@ -28,6 +33,11 @@ export interface PiAdapterSessionContext {
   eventFiber?: Fiber.Fiber<void, never>;
   readonly tools: Map<string, PiToolState>;
   readonly pendingUserInputs: Map<RuntimeRequestId, PiPendingUserInputRequest>;
+  readonly workflowRuns: Map<string, PiWorkflowRunCursor>;
+  readonly workflowMonitorDisposers: Set<() => void>;
+  readonly workflowMonitorRunIds: Set<string>;
+  workflowMapper?: PiWorkflowEventMapper;
+  sessionFile?: string;
   stopped: boolean;
   currentTurnId?: TurnId;
   turnCompleted: boolean;

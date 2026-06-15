@@ -27,6 +27,9 @@ import {
   toPiToolItemType,
   toolResultToText,
 } from "./PiToolPresentation.ts";
+import { isTerminalWorkflowRecord, runCursorFromWorkflowRecord } from "./PiWorkflowArtifacts.ts";
+import { mergeWorkflowRunCursor } from "./PiWorkflowCursor.ts";
+import { PiWorkflowEventMapper } from "./PiWorkflowMapper.ts";
 import type {
   PiAdapterSessionContext,
   PiRuntimeEventOffer,
@@ -125,6 +128,21 @@ export class PiEventMapper {
     return Effect.gen(function* () {
       const event = message.payload;
       const type = readPiEventType(event);
+
+      if (isWorkflowArtifactEvent(event)) {
+        const cursor = runCursorFromWorkflowRecord(event);
+        if (cursor) {
+          const previous = session.workflowRuns.get(cursor.runId);
+          if (isTerminalWorkflowRecord(event)) session.workflowRuns.delete(cursor.runId);
+          else session.workflowRuns.set(cursor.runId, mergeWorkflowRunCursor(previous, cursor));
+        }
+        const workflowMapper = session.workflowMapper ?? new PiWorkflowEventMapper();
+        session.workflowMapper = workflowMapper;
+        const events = workflowMapper.map(session, event);
+        if (events.length > 0) yield* self.offer(events);
+        if (type === "context_usage_update") yield* self.scheduleUsageRefresh(session);
+        return;
+      }
 
       if (isPiExtensionUiRequest(event)) {
         return yield* self.handleExtensionUiRequest(session, message, event);
@@ -477,6 +495,27 @@ function toolCallId(event: PiRpcEvent): string {
 
 function toolName(event: PiRpcEvent): string {
   return trimText(event.toolName) ?? trimText(event.name) ?? "tool";
+}
+
+function isWorkflowArtifactEvent(event: PiRpcEvent): boolean {
+  const type = readPiEventType(event);
+  return (
+    trimText(event.runId) !== undefined &&
+    (type === "run_start" ||
+      type === "run_end" ||
+      type === "run_paused" ||
+      type === "run_interrupted" ||
+      type === "run_resume_requested" ||
+      type === "step_start" ||
+      type === "step_update" ||
+      type === "step_end" ||
+      type === "inline_subworkflow_start" ||
+      type === "inline_subworkflow_end" ||
+      type === "subworkflow_call_start" ||
+      type === "subworkflow_call_end" ||
+      type === "child_pi_event" ||
+      type === "context_usage_update")
+  );
 }
 
 function assistantMessageEvent(event: PiRpcEvent): Record<string, unknown> | undefined {

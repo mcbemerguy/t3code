@@ -44,6 +44,7 @@ import {
   type PiWorkflowControlAction,
   type PiWorkflowControlInput,
   type PiWorkflowControlPolicy,
+  type PiWorkflowRunCursor,
 } from "./PiRpcProtocol.ts";
 
 export {
@@ -72,6 +73,7 @@ export {
   type PiWorkflowControlAction,
   type PiWorkflowControlInput,
   type PiWorkflowControlPolicy,
+  type PiWorkflowRunCursor,
 };
 
 const PROVIDER = ProviderDriverKind.make("pi");

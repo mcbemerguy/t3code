@@ -46,15 +46,17 @@ function firstBoolean(...values: ReadonlyArray<unknown>): boolean | undefined {
 export function normalizePiTokenUsage(stats: unknown): ThreadTokenUsageSnapshot | undefined {
   if (!isRecord(stats)) return undefined;
 
-  const tokens = nestedRecord(stats, "tokens");
+  const usage = nestedRecord(stats, "usage");
+  const root = usage ?? stats;
+  const tokens = nestedRecord(root, "tokens") ?? nestedRecord(root, "totals");
   const lastTokens =
-    nestedRecord(stats, "lastRequest") ??
-    nestedRecord(stats, "lastTurn") ??
-    nestedRecord(stats, "lastUsage");
-  const contextUsage = nestedRecord(stats, "contextUsage");
-  const context = nestedRecord(stats, "context") ?? nestedRecord(stats, "contextWindow");
-  const model = nestedRecord(stats, "model");
-  const autoCompaction = nestedRecord(stats, "autoCompaction") ?? nestedRecord(stats, "compaction");
+    nestedRecord(root, "lastRequest") ??
+    nestedRecord(root, "lastTurn") ??
+    nestedRecord(root, "lastUsage");
+  const contextUsage = nestedRecord(root, "contextUsage");
+  const context = nestedRecord(root, "context") ?? nestedRecord(root, "contextWindow");
+  const model = nestedRecord(root, "model");
+  const autoCompaction = nestedRecord(root, "autoCompaction") ?? nestedRecord(root, "compaction");
 
   const inputTokens = firstNonNegativeInt(tokens?.input, tokens?.inputTokens);
   const outputTokens = firstNonNegativeInt(tokens?.output, tokens?.outputTokens);
@@ -77,8 +79,8 @@ export function normalizePiTokenUsage(stats: unknown): ThreadTokenUsageSnapshot 
     contextUsage?.usedTokens,
     context?.used,
     context?.usedTokens,
-    stats.usedTokens,
-    stats.contextUsed,
+    root.usedTokens,
+    root.contextUsed,
   );
   const derivedUsed =
     (inputTokens ?? 0) +
@@ -97,9 +99,9 @@ export function normalizePiTokenUsage(stats: unknown): ThreadTokenUsageSnapshot 
     context?.size,
     context?.maxTokens,
     context?.contextWindow,
-    stats.contextSize,
-    stats.contextWindow,
-    stats.maxTokens,
+    root.contextSize,
+    root.contextWindow,
+    root.maxTokens,
     model?.contextWindow,
     model?.maxTokens,
   );
@@ -149,13 +151,13 @@ export function normalizePiTokenUsage(stats: unknown): ThreadTokenUsageSnapshot 
     ...(lastCachedInputTokens !== undefined ? { lastCachedInputTokens } : {}),
     ...(lastOutputTokens !== undefined ? { lastOutputTokens } : {}),
     ...(lastReasoningOutputTokens !== undefined ? { lastReasoningOutputTokens } : {}),
-    ...(firstBoolean(autoCompaction?.enabled, autoCompaction?.automatic, stats.autoCompaction) !==
+    ...(firstBoolean(autoCompaction?.enabled, autoCompaction?.automatic, root.autoCompaction) !==
     undefined
       ? {
           compactsAutomatically: firstBoolean(
             autoCompaction?.enabled,
             autoCompaction?.automatic,
-            stats.autoCompaction,
+            root.autoCompaction,
           ),
         }
       : {}),
