@@ -76,6 +76,35 @@ export {
 
 const PROVIDER = ProviderDriverKind.make("pi");
 
+function formatPiModelValue(provider: string, modelId: string): string {
+  return `${provider}/${modelId}`;
+}
+
+function readPiModelValue(data: unknown): string | undefined {
+  if (typeof data !== "object" || data === null) return undefined;
+  const record = data as Record<string, unknown>;
+  const model = record.model;
+
+  if (typeof model === "string" && model.trim()) return model.trim();
+
+  if (typeof model === "object" && model !== null) {
+    const modelRecord = model as Record<string, unknown>;
+    const provider = readTrimmedString(modelRecord.provider);
+    const id = readTrimmedString(modelRecord.id) ?? readTrimmedString(modelRecord.modelId);
+    if (provider && id) return formatPiModelValue(provider, id);
+    if (id) return id;
+  }
+
+  const modelId = readTrimmedString(record.modelId);
+  if (!modelId) return undefined;
+  const provider = readTrimmedString(record.provider);
+  return provider ? formatPiModelValue(provider, modelId) : modelId;
+}
+
+function readTrimmedString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 export interface PiSessionRuntimeShape {
   readonly start: () => Effect.Effect<ProviderSession, PiSessionRuntimeError>;
   readonly getSession: Effect.Effect<ProviderSession>;
@@ -112,6 +141,7 @@ class PiSessionRuntimeImpl implements PiSessionRuntimeShape {
   private process: PiRpcProcessHandle | null = null;
   private status: ProviderSession["status"] = "connecting";
   private sessionFile: string | undefined;
+  private currentModel: string | undefined;
   private activeTurnId: TurnId | undefined;
   private turnCounter = 0;
   private readonly timeouts: typeof DEFAULT_PI_RPC_TIMEOUTS;
@@ -129,6 +159,7 @@ class PiSessionRuntimeImpl implements PiSessionRuntimeShape {
     this.createdAt = createdAt;
     this.events = Stream.fromQueue(messages);
     this.sessionFile = options.resumeCursor?.sessionFile;
+    this.currentModel = options.model;
     this.timeouts = { ...DEFAULT_PI_RPC_TIMEOUTS, ...options.timeouts };
   }
 
@@ -175,7 +206,7 @@ class PiSessionRuntimeImpl implements PiSessionRuntimeShape {
         status: self.status,
         runtimeMode: self.options.runtimeMode,
         cwd: self.options.cwd,
-        ...(self.options.model ? { model: self.options.model } : {}),
+        ...(self.currentModel ? { model: self.currentModel } : {}),
         threadId: self.options.threadId,
         ...(self.sessionFile
           ? { resumeCursor: { sessionFile: self.sessionFile } satisfies PiResumeCursor }
@@ -263,6 +294,8 @@ class PiSessionRuntimeImpl implements PiSessionRuntimeShape {
         { type: "set_model", provider, modelId },
         self.timeouts.request,
       );
+      self.applyState(response.data);
+      self.currentModel = readPiModelValue(response.data) ?? formatPiModelValue(provider, modelId);
       return response.data;
     });
   };
@@ -320,7 +353,7 @@ class PiSessionRuntimeImpl implements PiSessionRuntimeShape {
   readonly respondExtensionUi = (
     input: PiExtensionUiResponseInput,
   ): Effect.Effect<void, PiSessionRuntimeError> =>
-    this.requestVoid({ type: "extension_ui_response", ...input }, this.timeouts.request);
+    this.send({ type: "extension_ui_response", ...input });
 
   readonly consumePreludeLines: Effect.Effect<ReadonlyArray<string>> = Effect.sync(
     () => this.process?.consumePreludeLines() ?? [],
@@ -332,6 +365,21 @@ class PiSessionRuntimeImpl implements PiSessionRuntimeShape {
     this.process = null;
     if (proc) await proc.terminate({ attemptAbort: false });
   });
+
+  private send(command: PiRpcCommand): Effect.Effect<void, PiSessionRuntimeError> {
+    const self = this;
+    return Effect.gen(function* () {
+      const proc = self.process;
+      if (!proc)
+        return yield* Effect.fail(
+          new PiRpcLifecycleError(`Pi RPC process has not started; cannot send ${command.type}.`),
+        );
+      return yield* Effect.tryPromise({
+        try: () => proc.send(command),
+        catch: (error) => self.normalizeError(error),
+      });
+    });
+  }
 
   private request(
     command: PiRpcCommand,
@@ -387,6 +435,9 @@ class PiSessionRuntimeImpl implements PiSessionRuntimeShape {
         mkdirSync(dirname(sessionFile), { recursive: true });
       } catch {}
     }
+
+    const model = readPiModelValue(data);
+    if (model) this.currentModel = model;
   }
 
   private normalizeError(error: unknown): PiSessionRuntimeError {

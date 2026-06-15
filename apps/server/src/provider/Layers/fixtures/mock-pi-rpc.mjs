@@ -16,6 +16,9 @@ if (process.env.MOCK_PI_RPC_EXIT_ON_START === "1") {
 
 const ignoreCommand = process.env.MOCK_PI_RPC_IGNORE_COMMAND;
 const noIdCommand = process.env.MOCK_PI_RPC_NO_ID_COMMAND;
+const staleIdCommand = process.env.MOCK_PI_RPC_STALE_ID_COMMAND;
+let staleIdRequest = null;
+const extensionUiFile = process.env.MOCK_PI_RPC_EXTENSION_UI_FILE;
 const sessionFile = process.env.MOCK_PI_RPC_SESSION_FILE ?? "/tmp/mock-pi-session.json";
 
 function write(message) {
@@ -39,6 +42,16 @@ rl.on("line", (line) => {
   if (!line.trim()) return;
   const request = JSON.parse(line);
   if (request.type === ignoreCommand) return;
+
+  if (request.type === staleIdCommand) {
+    if (!staleIdRequest) {
+      staleIdRequest = request;
+      return;
+    }
+    response(request.type, staleIdRequest, { stale: true });
+    response(request.type, request, { fresh: true });
+    return;
+  }
 
   switch (request.type) {
     case "get_state":
@@ -76,7 +89,10 @@ rl.on("line", (line) => {
       }
       break;
     case "extension_ui_response":
-      response("extension_ui_response", request, { received: true });
+      if (extensionUiFile) fs.writeFileSync(extensionUiFile, JSON.stringify(request));
+      if (process.env.MOCK_PI_RPC_EXTENSION_UI_NO_RESPONSE !== "1") {
+        response("extension_ui_response", request, { received: true });
+      }
       break;
     default:
       response(request.type, request, null, false, `unknown command: ${request.type}`);

@@ -2,6 +2,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 import { assert, describe, it } from "@effect/vitest";
@@ -51,6 +52,19 @@ async function makeMockPiWrapper(extraEnv: Record<string, string> = {}): Promise
   );
   await chmod(wrapperPath, 0o755);
   return wrapperPath;
+}
+
+async function readJsonFileEventually(filePath: string): Promise<unknown> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    try {
+      return JSON.parse(await readFile(filePath, "utf8"));
+    } catch (error) {
+      lastError = error;
+      await sleep(10);
+    }
+  }
+  throw lastError;
 }
 
 function makeRuntime(extraEnv: Record<string, string> = {}) {
@@ -126,6 +140,7 @@ describe("PiSessionRuntime", () => {
         Effect.gen(function* () {
           const session = yield* runtime.getSession;
           assert.equal(session.status, "ready");
+          assert.equal(session.model, "mock/model");
           assert.deepStrictEqual(session.resumeCursor, {
             sessionFile: "/tmp/mock-pi-session.json",
           });
@@ -137,6 +152,8 @@ describe("PiSessionRuntime", () => {
 
           const promptResult = yield* runtime.prompt({ message: "hello" });
           assert.equal(promptResult.turnId, "turn-mock");
+          yield* runtime.setModel("mock", "model-b");
+          assert.equal((yield* runtime.getSession).model, "mock/model-b");
           yield* runtime.abort();
           assert.deepStrictEqual(yield* runtime.getSessionStats, {
             tokens: { input: 10, output: 2 },
@@ -169,6 +186,42 @@ describe("PiSessionRuntime", () => {
         }
       }),
     ),
+  );
+
+  it.effect("does not correlate late responses with stale ids to newer requests", () =>
+    withStartedRuntime({ MOCK_PI_RPC_STALE_ID_COMMAND: "get_session_stats" }, (runtime) =>
+      Effect.gen(function* () {
+        const error = yield* runtime.getSessionStats.pipe(Effect.flip, Effect.orDie);
+        assert.equal(error instanceof PiRpcTimeoutError, true);
+
+        const stats = yield* runtime.getSessionStats;
+        assert.deepStrictEqual(stats, { fresh: true });
+      }),
+    ),
+  );
+
+  it.effect("sends extension UI responses without replacing the Pi UI request id", () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "pi-rpc-ui-")));
+      const responseFile = path.join(dir, "extension-ui.json");
+      const runtime = yield* makeRuntime({
+        MOCK_PI_RPC_EXTENSION_UI_FILE: responseFile,
+        MOCK_PI_RPC_EXTENSION_UI_NO_RESPONSE: "1",
+      });
+
+      yield* runtime.start();
+      yield* Effect.gen(function* () {
+        yield* runtime.respondExtensionUi({ id: "ui-request-123", value: "answer" });
+        const request = (yield* Effect.promise(() =>
+          readJsonFileEventually(responseFile),
+        )) as Record<string, unknown>;
+        assert.deepStrictEqual(request, {
+          type: "extension_ui_response",
+          id: "ui-request-123",
+          value: "answer",
+        });
+      }).pipe(Effect.ensuring(runtime.close));
+    }).pipe(Effect.orDie),
   );
 
   it.effect("reports stderr diagnostics when the process exits during startup", () =>

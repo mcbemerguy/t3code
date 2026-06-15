@@ -233,6 +233,19 @@ export class PiRpcProcessHandle {
     });
   }
 
+  async send(command: PiRpcCommand): Promise<void> {
+    return await new Promise<void>((resolve, reject) => {
+      try {
+        this.writeLine(command, (error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
   async terminate(
     opts: {
       readonly attemptAbort?: boolean;
@@ -339,6 +352,7 @@ export class PiRpcProcessHandle {
         pending.resolve(response);
         return true;
       }
+      return false;
     }
 
     const matches = Array.from(this.pending.entries()).filter(
