@@ -363,6 +363,55 @@ describe("PiAdapter", () => {
     ),
   );
 
+  it.effect("maps Pi edit tool file changes to structured diffs", () => {
+    const root = mkdtempSync(join(tmpdir(), "t3-pi-edit-"));
+    writeFileSync(join(root, "note.txt"), "old\n", "utf8");
+
+    return withHarness(
+      (fake) => {
+        fake.promptScript = (rt) =>
+          Effect.gen(function* () {
+            yield* rt.emit({
+              type: "tool_execution_start",
+              toolCallId: "edit-1",
+              toolName: "edit",
+              args: { path: "note.txt" },
+            });
+            yield* Effect.yieldNow;
+            yield* Effect.yieldNow;
+            writeFileSync(join(root, "note.txt"), "new\n", "utf8");
+            yield* rt.emit({
+              type: "tool_execution_end",
+              toolCallId: "edit-1",
+              result: { content: [{ type: "text", text: "edited" }] },
+            });
+          });
+      },
+      ({ adapter }) =>
+        Effect.gen(function* () {
+          const eventsFiber = yield* collectEvents(
+            adapter,
+            3,
+            (event) =>
+              event.type === "item.started" ||
+              event.type === "turn.diff.updated" ||
+              event.type === "item.completed",
+          ).pipe(Effect.forkChild);
+          yield* adapter.sendTurn({ threadId, input: "edit" });
+          const events = yield* Fiber.join(eventsFiber);
+
+          const diff = events.find((event) => event.type === "turn.diff.updated");
+          assert.equal(diff?.type, "turn.diff.updated");
+          if (diff?.type === "turn.diff.updated") {
+            assert.match(diff.payload.unifiedDiff, /--- a\/note\.txt/);
+            assert.match(diff.payload.unifiedDiff, /\+new/);
+            assert.match(diff.payload.unifiedDiff, /-old/);
+          }
+        }),
+      { cwd: root },
+    );
+  });
+
   it.effect("does not complete a turn until Pi emits a terminal event", () =>
     withHarness(undefined, ({ adapter, runtime }) =>
       Effect.gen(function* () {

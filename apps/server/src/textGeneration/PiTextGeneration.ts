@@ -8,7 +8,7 @@ const unsupported = (operation: string) =>
     new TextGenerationError({
       operation,
       detail:
-        "Native Pi text generation is intentionally unsupported in Phase 1; use a chat-capable provider for Git/title generation until Pi RPC text-generation helpers are implemented.",
+        "Native Pi text generation is intentionally unsupported; use a chat-capable provider for Git/title generation until Pi RPC text-generation helpers are implemented.",
     }),
   );
 

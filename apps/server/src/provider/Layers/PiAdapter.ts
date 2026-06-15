@@ -688,7 +688,8 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         new ProviderAdapterRequestError({
           provider: PROVIDER,
           method: "respondToRequest",
-          detail: "Native Pi does not expose approval request responses in Phase 3.",
+          detail:
+            "Native Pi does not expose approval request responses; extension UI prompts use respondToUserInput instead.",
         }),
       ),
     respondToUserInput: (threadId, requestId, answers) =>

@@ -1,20 +1,8 @@
 # Native Pi provider implementation notes
 
-## Phase 1 baseline
+The native `pi` driver launches `pi --mode rpc` directly and does not import Custom ACP or `pi-acp` runtime modules. The T3 settings surface stays intentionally minimal: `enabled` and `binaryPath`, with `binaryPath` defaulting to `pi`. Pi's own settings remain authoritative for model/provider behavior, credentials, and API routing.
 
-Branch: `feature/native-pi-provider`, created from `upstream/main`.
-
-Reference commits used for porting context:
-
-- T3Code upstream baseline: `upstream/main` at `0e4a43519fe4fa85ce60aa8d6d53c067e56d2fca`
-- T3Code fork reference: `custom-acp` at `41bd4548cb3de01dfb0f4f15b4313a703b70e861`
-- Pi ACP adapter reference: `.local/pi-acp` at `fd7850e8f7c685f99c4582bb837e5cad0a733395`
-
-Phase 1 registers a first-party `pi` driver without importing Custom ACP or `.local/pi-acp` runtime modules. The T3 settings surface is intentionally minimal: `enabled` and `binaryPath` only, with `binaryPath` defaulting to `pi`. Pi's own settings remain authoritative for model/provider behavior.
-
-The Phase 1 provider snapshot used `pi --version` as the health probe and exposed a single fallback model, `default`, so the provider could render in settings/status surfaces before the Pi RPC runtime landed. Phase 6 now marks installed Pi providers ready, fills the model picker through `get_available_models`, and keeps `default` only as the explicit fallback when model discovery is unavailable.
-
-Text generation for Git commit messages, PR text, branch names, and thread titles is deliberately unsupported for Pi in Phase 1. Calls fail with a structured `TextGenerationError` until a Pi-native text-generation strategy is implemented.
+Native Pi sessions support chat, assistant text/thought streaming, tool rendering, edit diffs, usage/context updates, active-turn steering, interruption/cancel, extension UI dialogs, Pi session restore, workflow replay/control, model discovery, and in-session model selection through Pi RPC.
 
 ## Migration from Custom ACP Pi
 
@@ -36,4 +24,10 @@ Example provider instance:
 }
 ```
 
-Native Pi discovers models with Pi RPC `get_available_models` and selects them with `set_model`. If model discovery is unavailable, T3 shows the explicit `default` fallback model and lets Pi keep its current/default model. Resume cursors include the Pi provider instance id so multiple Pi instances do not accidentally restore each other's sessions.
+Native Pi discovers models with Pi RPC `get_available_models` and selects them with `set_model`. Selectable model slugs use the `provider/modelId` shape returned by Pi. If model discovery is unavailable, T3 shows the explicit `default` fallback model and lets Pi keep its current/default model. Resume cursors include the Pi provider instance id so multiple Pi instances do not accidentally restore each other's sessions.
+
+## Known limitations and follow-ups
+
+- Native Pi text-generation helpers for Git commit messages, PR text, branch names, and thread titles are not implemented yet. Those calls fail with a structured `TextGenerationError`.
+- Native Pi rollback is unsupported because Pi RPC does not expose a safe thread rollback API.
+- If the Pi subprocess exits while idle, T3 reports the failure on the next provider operation. Exits during startup or an in-flight RPC request include bounded process diagnostics and stderr/prelude tails.

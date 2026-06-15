@@ -15,8 +15,10 @@ import {
   PiRpcTimeoutError,
   buildPiRpcSpawnArgs,
   buildPiRpcSpawnEnv,
+  defaultPiCommand,
   makePiSessionRuntime,
   parsePiRpcStdoutLine,
+  shouldUseShellForPiCommand,
   windowsProcessTreeKillCommand,
   type PiSessionRuntimeError,
   type PiSessionRuntimeShape,
@@ -107,7 +109,7 @@ describe("Pi RPC protocol helpers", () => {
     });
   });
 
-  it("builds spawn args/env and exposes Windows tree-kill command shape", () => {
+  it("builds spawn args/env and exposes Windows command helpers", () => {
     assert.deepStrictEqual(buildPiRpcSpawnArgs({ sessionFile: "C:/tmp/pi-session.json" }), [
       "--mode",
       "rpc",
@@ -120,6 +122,13 @@ describe("Pi RPC protocol helpers", () => {
     assert.equal(env.PI_ACP, "1");
     assert.equal(env.PI_ACP_RPC, "1");
     assert.equal(env.PI_DELEGATED_TOOL_CAP, "edit,shell");
+
+    assert.equal(defaultPiCommand("win32"), "pi.cmd");
+    assert.equal(defaultPiCommand("linux"), "pi");
+    assert.equal(shouldUseShellForPiCommand("C:/bin/pi.cmd", "win32"), true);
+    assert.equal(shouldUseShellForPiCommand("C:/bin/pi.bat", "win32"), true);
+    assert.equal(shouldUseShellForPiCommand("C:/bin/pi.exe", "win32"), false);
+    assert.equal(shouldUseShellForPiCommand("pi.cmd", "linux"), false);
 
     assert.deepStrictEqual(windowsProcessTreeKillCommand(1234), {
       command: "taskkill",
@@ -182,6 +191,26 @@ describe("PiSessionRuntime", () => {
         assert.equal(error instanceof PiRpcTimeoutError, true);
         if (error instanceof PiRpcTimeoutError) {
           assert.equal(error.input.command, "get_session_stats");
+          assert.equal(error.message.includes("process status:"), true);
+        }
+      }),
+    ),
+  );
+
+  it.effect("reports process-exit diagnostics for in-flight requests", () =>
+    withStartedRuntime({ MOCK_PI_RPC_EXIT_ON_COMMAND: "get_session_stats" }, (runtime) =>
+      Effect.gen(function* () {
+        const error = yield* runtime.getSessionStats.pipe(Effect.flip, Effect.orDie);
+        assert.equal(error instanceof PiRpcLifecycleError, true);
+        if (error instanceof PiRpcLifecycleError) {
+          assert.equal(
+            error.message.includes(
+              "Pi RPC process exited before a response to get_session_stats was received",
+            ),
+            true,
+          );
+          assert.equal(error.message.includes("request write completed"), true);
+          assert.equal(error.message.includes("mock exit on get_session_stats"), true);
           assert.equal(error.message.includes("process status:"), true);
         }
       }),

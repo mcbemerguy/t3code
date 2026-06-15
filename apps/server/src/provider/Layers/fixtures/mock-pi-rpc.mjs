@@ -21,6 +21,7 @@ if (process.env.MOCK_PI_RPC_EXIT_ON_START === "1") {
 
 const ignoreCommand = process.env.MOCK_PI_RPC_IGNORE_COMMAND;
 const failCommand = process.env.MOCK_PI_RPC_FAIL_COMMAND;
+const exitCommand = process.env.MOCK_PI_RPC_EXIT_ON_COMMAND;
 const noIdCommand = process.env.MOCK_PI_RPC_NO_ID_COMMAND;
 const staleIdCommand = process.env.MOCK_PI_RPC_STALE_ID_COMMAND;
 let staleIdRequest = null;
@@ -48,6 +49,10 @@ rl.on("line", (line) => {
   if (!line.trim()) return;
   const request = JSON.parse(line);
   if (request.type === ignoreCommand) return;
+  if (request.type === exitCommand) {
+    process.stderr.write(`mock exit on ${request.type}\n`);
+    process.exit(9);
+  }
   if (request.type === failCommand) {
     response(request.type, request, null, false, `mock failure: ${request.type}`);
     return;
