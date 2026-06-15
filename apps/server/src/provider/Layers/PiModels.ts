@@ -136,14 +136,19 @@ export function normalizePiAvailableModels(payload: unknown): ReadonlyArray<Serv
   const models: ServerProviderModel[] = [];
 
   for (const candidate of readCandidates(payload)) {
-    const slug = candidate.provider ? `${candidate.provider}/${candidate.id}` : candidate.id;
+    const parsedId = candidate.provider ? undefined : parsePiModelSelection(candidate.id);
+    const provider = candidate.provider ?? parsedId?.provider;
+    const modelId = candidate.provider ? candidate.id : parsedId?.modelId;
+    if (!provider || !modelId) continue;
+
+    const slug = `${provider}/${modelId}`;
     if (!slug.trim() || seen.has(slug)) continue;
     seen.add(slug);
     models.push({
       slug,
-      name: candidate.name ?? candidate.id,
-      shortName: candidate.name ?? candidate.id,
-      ...(candidate.provider ? { subProvider: candidate.provider } : {}),
+      name: candidate.name ?? modelId,
+      shortName: candidate.name ?? modelId,
+      subProvider: provider,
       isCustom: false,
       capabilities: PI_MODEL_CAPABILITIES,
     });

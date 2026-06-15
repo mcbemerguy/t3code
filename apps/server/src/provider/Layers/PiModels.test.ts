@@ -49,6 +49,24 @@ describe("Pi model normalization", () => {
     );
   });
 
+  it("does not expose providerless model ids that set_model cannot apply", () => {
+    assert.deepEqual(
+      normalizePiAvailableModels({ models: [{ id: "model-a" }, "model-b"] }).map(
+        (model) => model.slug,
+      ),
+      ["default"],
+    );
+    assert.deepEqual(
+      normalizePiAvailableModels(["mock/model-c", { id: "mock/model-d", name: "Model D" }]).map(
+        (model) => ({ slug: model.slug, name: model.name, subProvider: model.subProvider }),
+      ),
+      [
+        { slug: "mock/model-c", name: "model-c", subProvider: "mock" },
+        { slug: "mock/model-d", name: "Model D", subProvider: "mock" },
+      ],
+    );
+  });
+
   it("parses selectable Pi model slugs for set_model", () => {
     assert.deepEqual(parsePiModelSelection("anthropic/claude-opus-4-5"), {
       provider: "anthropic",
