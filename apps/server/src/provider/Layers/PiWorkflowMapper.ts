@@ -12,7 +12,7 @@ import {
 } from "@t3tools/contracts";
 
 import type { PiAdapterSessionContext } from "./PiAdapterTypes.ts";
-import { normalizePiTokenUsage } from "./PiUsage.ts";
+import { inferPiUsageContextChange, piWorkflowUsageContextKey } from "./PiUsage.ts";
 import type { PiWorkflowReplayRecord } from "./PiWorkflowArtifacts.ts";
 
 const PROVIDER = ProviderDriverKind.make("pi");
@@ -409,7 +409,15 @@ export class PiWorkflowEventMapper {
     record: Record<string, unknown>,
     source: PiWorkflowReplayRecord["source"] | undefined,
   ): ReadonlyArray<ProviderRuntimeEvent> {
-    const usage = normalizePiTokenUsage(record.usage ?? record);
+    const stats = record.usage ?? record;
+    const contextKey = piWorkflowUsageContextKey(record);
+    const contextChange = inferPiUsageContextChange(record);
+    const usage = session.usageState.update({
+      source: "workflow",
+      stats,
+      ...(contextKey ? { contextKey } : {}),
+      ...(contextChange ? { contextChange } : {}),
+    });
     return usage
       ? [
           {

@@ -195,7 +195,10 @@ export class PiEventMapper {
               ? "Context nearing limit, running automatic compaction..."
               : "Automatic compaction finished; context was summarized to continue the session.";
         yield* self.emitAssistantDelta(session, message, text);
-        return yield* self.scheduleUsageRefresh(session);
+        return yield* self.scheduleUsageRefresh(
+          session,
+          type === "auto_compaction_end" ? { contextChange: "compaction" } : undefined,
+        );
       }
 
       if (type === "prompt_end" || type === "agent_end") {

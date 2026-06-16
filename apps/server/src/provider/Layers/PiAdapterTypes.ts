@@ -16,6 +16,7 @@ import type {
 } from "./PiSessionRuntime.ts";
 import type { PiToolSnapshot } from "./PiToolPresentation.ts";
 import type { PiPendingUserInputRequest } from "./PiExtensionUi.ts";
+import type { PiUsageState, PiUsageContextChange } from "./PiUsage.ts";
 import type { PiWorkflowEventMapper } from "./PiWorkflowMapper.ts";
 
 export interface PiToolState {
@@ -46,7 +47,7 @@ export interface PiAdapterSessionContext {
   reasoningItemId?: RuntimeItemId;
   usageRefreshFiber?: Fiber.Fiber<void, never>;
   usageRefreshQueued: boolean;
-  lastUsageKey?: string;
+  readonly usageState: PiUsageState;
 }
 
 export interface PiWorkflowTailCursor {
@@ -58,7 +59,10 @@ export type PiRuntimeEventOffer = (
   events: ReadonlyArray<ProviderRuntimeEvent>,
 ) => Effect.Effect<void>;
 
-export type PiUsageRefreshScheduler = (session: PiAdapterSessionContext) => Effect.Effect<void>;
+export type PiUsageRefreshScheduler = (
+  session: PiAdapterSessionContext,
+  options?: { readonly contextChange?: PiUsageContextChange },
+) => Effect.Effect<void>;
 
 export interface PiTurnCompletionDetail {
   readonly errorMessage?: string;

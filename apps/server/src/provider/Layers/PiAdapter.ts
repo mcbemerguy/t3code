@@ -49,7 +49,7 @@ import {
 } from "./PiSessionRuntime.ts";
 import { cancellationResponse, normalizePiExtensionUiResponse } from "./PiExtensionUi.ts";
 import { normalizePiReadThread } from "./PiReadThread.ts";
-import { normalizePiTokenUsage } from "./PiUsage.ts";
+import { PiUsageState, type PiUsageContextChange } from "./PiUsage.ts";
 import {
   sessionFileFromProviderSession,
   isTerminalWorkflowStatus,
@@ -170,15 +170,19 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       session.tools.clear();
     });
 
-  const refreshUsage = (session: PiAdapterSessionContext): Effect.Effect<void> =>
+  const refreshUsage = (
+    session: PiAdapterSessionContext,
+    refreshOptions?: { readonly contextChange?: PiUsageContextChange },
+  ): Effect.Effect<void> =>
     Effect.gen(function* () {
       const statsResult = yield* session.runtime.getSessionStats.pipe(Effect.result);
       if (Result.isFailure(statsResult)) return;
-      const usage = normalizePiTokenUsage(statsResult.success);
+      const usage = session.usageState.update({
+        source: "parent",
+        stats: statsResult.success,
+        ...(refreshOptions?.contextChange ? { contextChange: refreshOptions.contextChange } : {}),
+      });
       if (!usage) return;
-      const key = JSON.stringify(usage);
-      if (key === session.lastUsageKey) return;
-      session.lastUsageKey = key;
       yield* offer([
         {
           ...basePiEvent(session),
@@ -188,7 +192,10 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       ]);
     });
 
-  const scheduleUsageRefresh = (session: PiAdapterSessionContext): Effect.Effect<void> =>
+  const scheduleUsageRefresh = (
+    session: PiAdapterSessionContext,
+    refreshOptions?: { readonly contextChange?: PiUsageContextChange },
+  ): Effect.Effect<void> =>
     Effect.gen(function* () {
       if (session.usageRefreshFiber) {
         session.usageRefreshQueued = true;
@@ -196,16 +203,16 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       }
       const debounceMs = options?.usageDebounceMs ?? DEFAULT_USAGE_DEBOUNCE_MS;
       if (debounceMs <= 0) {
-        yield* refreshUsage(session);
+        yield* refreshUsage(session, refreshOptions);
         return;
       }
       session.usageRefreshFiber = yield* Effect.gen(function* () {
         yield* Effect.sleep(Duration.millis(debounceMs));
-        yield* refreshUsage(session);
+        yield* refreshUsage(session, refreshOptions);
         delete session.usageRefreshFiber;
         if (session.usageRefreshQueued && !session.stopped) {
           session.usageRefreshQueued = false;
-          yield* scheduleUsageRefresh(session);
+          yield* scheduleUsageRefresh(session, refreshOptions);
         }
       }).pipe(Effect.forkChild);
     });
@@ -447,6 +454,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           stopped: false,
           turnCompleted: true,
           usageRefreshQueued: false,
+          usageState: new PiUsageState(),
         };
         session.eventFiber = yield* Stream.runForEach(runtime.events, (message) =>
           mapper.handle(session, message),
