@@ -34,7 +34,7 @@ import {
 } from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import { basePiEvent, PiEventMapper } from "./PiEventMapper.ts";
-import type { PiAdapterSessionContext } from "./PiAdapterTypes.ts";
+import type { PiAdapterSessionContext, PiUsageRefreshOptions } from "./PiAdapterTypes.ts";
 import { parsePiModelSelection } from "./PiModels.ts";
 import { isPiThinkingLevel } from "./PiThinking.ts";
 import {
@@ -49,7 +49,7 @@ import {
 } from "./PiSessionRuntime.ts";
 import { cancellationResponse, normalizePiExtensionUiResponse } from "./PiExtensionUi.ts";
 import { normalizePiReadThread } from "./PiReadThread.ts";
-import { PiUsageState, type PiUsageContextChange } from "./PiUsage.ts";
+import { PiUsageState } from "./PiUsage.ts";
 import {
   sessionFileFromProviderSession,
   isTerminalWorkflowStatus,
@@ -67,6 +67,19 @@ import {
 
 const PROVIDER = ProviderDriverKind.make("pi");
 const DEFAULT_USAGE_DEBOUNCE_MS = 50;
+
+function mergeUsageRefreshOptions(
+  previous: PiUsageRefreshOptions | undefined,
+  next: PiUsageRefreshOptions | undefined,
+): PiUsageRefreshOptions | undefined {
+  const contextChange =
+    previous?.contextChange === "reset" || next?.contextChange === "reset"
+      ? "reset"
+      : previous?.contextChange === "compaction" || next?.contextChange === "compaction"
+        ? "compaction"
+        : undefined;
+  return contextChange ? { contextChange } : undefined;
+}
 
 type PiImageContent = {
   readonly type: "image";
@@ -172,7 +185,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
 
   const refreshUsage = (
     session: PiAdapterSessionContext,
-    refreshOptions?: { readonly contextChange?: PiUsageContextChange },
+    refreshOptions?: PiUsageRefreshOptions,
   ): Effect.Effect<void> =>
     Effect.gen(function* () {
       const statsResult = yield* session.runtime.getSessionStats.pipe(Effect.result);
@@ -194,11 +207,17 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
 
   const scheduleUsageRefresh = (
     session: PiAdapterSessionContext,
-    refreshOptions?: { readonly contextChange?: PiUsageContextChange },
+    refreshOptions?: PiUsageRefreshOptions,
   ): Effect.Effect<void> =>
     Effect.gen(function* () {
       if (session.usageRefreshFiber) {
         session.usageRefreshQueued = true;
+        const queuedOptions = mergeUsageRefreshOptions(
+          session.usageRefreshQueuedOptions,
+          refreshOptions,
+        );
+        if (queuedOptions) session.usageRefreshQueuedOptions = queuedOptions;
+        else delete session.usageRefreshQueuedOptions;
         return;
       }
       const debounceMs = options?.usageDebounceMs ?? DEFAULT_USAGE_DEBOUNCE_MS;
@@ -210,9 +229,12 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         yield* Effect.sleep(Duration.millis(debounceMs));
         yield* refreshUsage(session, refreshOptions);
         delete session.usageRefreshFiber;
-        if (session.usageRefreshQueued && !session.stopped) {
-          session.usageRefreshQueued = false;
-          yield* scheduleUsageRefresh(session, refreshOptions);
+        const wasQueued = session.usageRefreshQueued;
+        const queuedOptions = session.usageRefreshQueuedOptions;
+        session.usageRefreshQueued = false;
+        delete session.usageRefreshQueuedOptions;
+        if (wasQueued && !session.stopped) {
+          yield* scheduleUsageRefresh(session, queuedOptions);
         }
       }).pipe(Effect.forkChild);
     });

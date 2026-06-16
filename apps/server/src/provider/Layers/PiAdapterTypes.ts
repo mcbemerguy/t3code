@@ -47,6 +47,7 @@ export interface PiAdapterSessionContext {
   reasoningItemId?: RuntimeItemId;
   usageRefreshFiber?: Fiber.Fiber<void, never>;
   usageRefreshQueued: boolean;
+  usageRefreshQueuedOptions?: PiUsageRefreshOptions;
   readonly usageState: PiUsageState;
 }
 
@@ -59,9 +60,13 @@ export type PiRuntimeEventOffer = (
   events: ReadonlyArray<ProviderRuntimeEvent>,
 ) => Effect.Effect<void>;
 
+export interface PiUsageRefreshOptions {
+  readonly contextChange?: PiUsageContextChange;
+}
+
 export type PiUsageRefreshScheduler = (
   session: PiAdapterSessionContext,
-  options?: { readonly contextChange?: PiUsageContextChange },
+  options?: PiUsageRefreshOptions,
 ) => Effect.Effect<void>;
 
 export interface PiTurnCompletionDetail {

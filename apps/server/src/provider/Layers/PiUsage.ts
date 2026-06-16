@@ -21,6 +21,10 @@ interface PiUsageUpdate {
   readonly richness: number;
 }
 
+export interface NormalizePiTokenUsageOptions {
+  readonly allowZeroUsedTokens?: boolean;
+}
+
 interface PiUsageEntry {
   readonly usage: ThreadTokenUsageSnapshot;
   readonly source: PiUsageSourceKind;
@@ -149,10 +153,23 @@ function mergeResetUsage(
   return preserveKnownFields(previous, next, PRESERVED_CONTEXT_RESET_KEYS);
 }
 
+function mergeStaleRegressionUsage(
+  previous: ThreadTokenUsageSnapshot,
+  next: ThreadTokenUsageSnapshot,
+): ThreadTokenUsageSnapshot {
+  const merged: Record<string, unknown> = { ...previous };
+  for (const key of PRESERVED_CONTEXT_RESET_KEYS) {
+    if (merged[key] === undefined && next[key] !== undefined) merged[key] = next[key];
+  }
+  return merged as ThreadTokenUsageSnapshot;
+}
+
 function normalizePiUsageUpdate(input: PiUsageUpdateInput): PiUsageUpdate | undefined {
-  const usage = normalizePiTokenUsage(input.stats);
-  if (!usage) return undefined;
   const contextChange = input.contextChange ?? inferPiUsageContextChange(input.stats);
+  const usage = normalizePiTokenUsage(input.stats, {
+    allowZeroUsedTokens: contextChange !== undefined,
+  });
+  if (!usage) return undefined;
   return {
     usage,
     source: input.source,
@@ -197,7 +214,7 @@ export class PiUsageState {
 
     if (this.isStaleRegression(previous, next)) {
       return {
-        usage: mergePartialUsage(previous.usage, next.usage, previous.usage.usedTokens),
+        usage: mergeStaleRegressionUsage(previous.usage, next.usage),
         keepPreviousSource: true,
       };
     }
@@ -271,7 +288,10 @@ export function inferPiUsageContextChange(stats: unknown): PiUsageContextChange 
   return undefined;
 }
 
-export function normalizePiTokenUsage(stats: unknown): ThreadTokenUsageSnapshot | undefined {
+export function normalizePiTokenUsage(
+  stats: unknown,
+  options?: NormalizePiTokenUsageOptions,
+): ThreadTokenUsageSnapshot | undefined {
   if (!isRecord(stats)) return undefined;
 
   const usage = nestedRecord(stats, "usage");
@@ -321,7 +341,8 @@ export function normalizePiTokenUsage(stats: unknown): ThreadTokenUsageSnapshot 
       ? Math.max(contextUsedTokens, processedUsedTokens)
       : (contextUsedTokens ?? processedUsedTokens);
 
-  if (usedTokens === undefined || usedTokens <= 0) return undefined;
+  if (usedTokens === undefined || (!options?.allowZeroUsedTokens && usedTokens <= 0))
+    return undefined;
 
   const maxTokens = firstPositiveInt(
     contextUsage?.contextWindow,

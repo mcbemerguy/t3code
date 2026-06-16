@@ -155,7 +155,10 @@ describe("PiUsage", () => {
     assert.equal(
       state.update({
         source: "parent",
-        stats: { contextUsage: { tokens: 613, contextWindow: 272_000 } },
+        stats: {
+          tokens: { input: 603, output: 10, total: 613 },
+          contextUsage: { tokens: 613, contextWindow: 272_000 },
+        },
       }),
       undefined,
     );
@@ -182,6 +185,27 @@ describe("PiUsage", () => {
       }),
       {
         usedTokens: 10_000,
+        maxTokens: 272_000,
+      },
+    );
+  });
+
+  it("allows explicit reset or compaction to report zero usage", () => {
+    const state = new PiUsageState();
+    state.update({
+      source: "parent",
+      stats: { contextUsage: { tokens: 80_000, contextWindow: 272_000 } },
+    });
+
+    assert.equal(normalizePiTokenUsage({ contextUsage: { tokens: 0 } }), undefined);
+    assert.deepStrictEqual(
+      state.update({
+        source: "parent",
+        contextChange: "reset",
+        stats: { contextUsage: { tokens: 0 } },
+      }),
+      {
+        usedTokens: 0,
         maxTokens: 272_000,
       },
     );
