@@ -5,6 +5,7 @@ import type {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import type * as Deferred from "effect/Deferred";
 import type * as Effect from "effect/Effect";
 import type * as Fiber from "effect/Fiber";
 import type * as Scope from "effect/Scope";
@@ -45,9 +46,16 @@ export interface PiAdapterSessionContext {
   turnCompleted: boolean;
   assistantItemId?: RuntimeItemId;
   reasoningItemId?: RuntimeItemId;
-  usageRefreshFiber?: Fiber.Fiber<void, never>;
+  usageRefreshTimerFiber?: Fiber.Fiber<void, never>;
+  usageRefreshInFlight: boolean;
   usageRefreshQueued: boolean;
+  usageRefreshQueuedForce: boolean;
+  usageRefreshPendingOptions?: PiUsageRefreshOptions;
   usageRefreshQueuedOptions?: PiUsageRefreshOptions;
+  readonly usageRefreshWaiters: Set<Deferred.Deferred<void>>;
+  usageRefreshSequence: number;
+  latestForcedUsageRefreshSequence: number;
+  forcedUsageRefreshInFlight: number;
   readonly usageState: PiUsageState;
 }
 

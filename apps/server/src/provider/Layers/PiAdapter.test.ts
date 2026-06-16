@@ -135,9 +135,12 @@ class FakePiRuntime implements PiSessionRuntimeShape {
       this.modelOptionOperations.push(`set_thinking_level:${level}`);
       return {};
     });
-  getSessionStats = Effect.sync(() => {
+  getSessionStats = Effect.suspend(() => {
     this.statsReadCount += 1;
-    return this.statsResponses.length > 0 ? this.statsResponses.shift() : this.stats;
+    const response = this.statsResponses.length > 0 ? this.statsResponses.shift() : this.stats;
+    return response instanceof Error
+      ? Effect.fail(new PiRpcLifecycleError(response.message, response))
+      : Effect.succeed(response);
   });
   getMessages = Effect.sync(() => this.messages);
   workflowControl = (input: PiWorkflowControlInput) =>
@@ -179,7 +182,7 @@ function withHarness<T, R = never>(
     runtime: FakePiRuntime;
   }) => Effect.Effect<T, ProviderAdapterError, R>,
   startInput?: Partial<ProviderSessionStartInput>,
-  adapterOptions?: { readonly instanceId?: ProviderInstanceId },
+  adapterOptions?: { readonly instanceId?: ProviderInstanceId; readonly usageDebounceMs?: number },
 ) {
   const runtimes: Array<FakePiRuntime> = [];
   return Effect.scoped(
@@ -187,7 +190,7 @@ function withHarness<T, R = never>(
       const adapter = yield* makePiAdapter(
         { enabled: true, binaryPath: "pi" },
         {
-          usageDebounceMs: 0,
+          usageDebounceMs: adapterOptions?.usageDebounceMs ?? 0,
           ...(adapterOptions?.instanceId ? { instanceId: adapterOptions.instanceId } : {}),
           makeRuntime: (options) =>
             Effect.gen(function* () {
@@ -607,6 +610,62 @@ describe("PiAdapter", () => {
           assert.deepEqual(events.map(usageUsedTokens), [100, 200, 300, 400, 500]);
         }),
     ),
+  );
+
+  it.effect("continues scheduling usage refreshes after a stats failure", () =>
+    withHarness(
+      (fake) => {
+        fake.statsResponses = [new Error("stats unavailable"), piStats(900)];
+      },
+      ({ adapter, runtime }) =>
+        Effect.gen(function* () {
+          const eventsFiber = yield* collectEvents(adapter, 1, isUsageEvent).pipe(
+            Effect.timeout("1 second"),
+            Effect.orDie,
+            Effect.forkChild,
+          );
+          yield* runtime.emit({
+            type: "message_end",
+            message: { role: "assistant", content: "first" },
+          });
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("100 millis");
+          assert.equal(runtime.statsReadCount, 1);
+
+          yield* runtime.emit({
+            type: "message_end",
+            message: { role: "assistant", content: "second" },
+          });
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("100 millis");
+          const events = yield* Fiber.join(eventsFiber);
+
+          assert.equal(runtime.statsReadCount, 2);
+          assert.equal(usageUsedTokens(events[0]!), 900);
+        }),
+      undefined,
+      { usageDebounceMs: 50 },
+    ).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("cancels pending usage refresh timers when a Pi session stops", () =>
+    withHarness(
+      undefined,
+      ({ adapter, runtime }) =>
+        Effect.gen(function* () {
+          yield* runtime.emit({
+            type: "message_end",
+            message: { role: "assistant", content: "pending" },
+          });
+          yield* Effect.yieldNow;
+          yield* adapter.stopSession(threadId);
+          yield* TestClock.adjust("1 second");
+
+          assert.equal(runtime.statsReadCount, 0);
+        }),
+      undefined,
+      { usageDebounceMs: 500 },
+    ).pipe(Effect.provide(TestClock.layer())),
   );
 
   it.effect("forces a final native Pi usage refresh after prompt completion", () =>

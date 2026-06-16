@@ -13,6 +13,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -183,26 +184,110 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       session.tools.clear();
     });
 
-  const refreshUsage = (
+  const queueUsageRefresh = (
     session: PiAdapterSessionContext,
     refreshOptions?: PiUsageRefreshOptions,
+    force = false,
+  ) => {
+    session.usageRefreshQueued = true;
+    session.usageRefreshQueuedForce = session.usageRefreshQueuedForce || force;
+    const queuedOptions = mergeUsageRefreshOptions(
+      session.usageRefreshQueuedOptions,
+      refreshOptions,
+    );
+    if (queuedOptions) session.usageRefreshQueuedOptions = queuedOptions;
+    else delete session.usageRefreshQueuedOptions;
+  };
+
+  const flushUsageRefreshWaiters = (session: PiAdapterSessionContext): Effect.Effect<void> =>
+    Effect.forEach(Array.from(session.usageRefreshWaiters), (waiter) =>
+      Deferred.succeed(waiter, undefined),
+    ).pipe(Effect.asVoid, Effect.ensuring(Effect.sync(() => session.usageRefreshWaiters.clear())));
+
+  const clearUsageRefreshTimer = (session: PiAdapterSessionContext): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const fiber = session.usageRefreshTimerFiber;
+      if (!fiber) return;
+      delete session.usageRefreshTimerFiber;
+      delete session.usageRefreshPendingOptions;
+      yield* Fiber.interrupt(fiber).pipe(Effect.ignore);
+    });
+
+  const refreshUsage = (
+    session: PiAdapterSessionContext,
+    refreshOptions?: PiUsageRefreshOptions & { readonly force?: boolean },
   ): Effect.Effect<void> =>
     Effect.gen(function* () {
-      const statsResult = yield* session.runtime.getSessionStats.pipe(Effect.result);
-      if (Result.isFailure(statsResult)) return;
-      const usage = session.usageState.update({
-        source: "parent",
-        stats: statsResult.success,
-        ...(refreshOptions?.contextChange ? { contextChange: refreshOptions.contextChange } : {}),
-      });
-      if (!usage) return;
-      yield* offer([
-        {
-          ...basePiEvent(session),
-          type: "thread.token-usage.updated",
-          payload: { usage },
-        } satisfies ProviderRuntimeEvent,
-      ]);
+      const sequence = ++session.usageRefreshSequence;
+      const startedDuringForcedRefresh =
+        refreshOptions?.force !== true && session.forcedUsageRefreshInFlight > 0;
+      if (refreshOptions?.force === true) {
+        session.latestForcedUsageRefreshSequence = sequence;
+        session.forcedUsageRefreshInFlight += 1;
+      }
+      try {
+        const statsResult = yield* session.runtime.getSessionStats.pipe(Effect.result);
+        if (Result.isFailure(statsResult)) return;
+        if (
+          sequence < session.latestForcedUsageRefreshSequence ||
+          startedDuringForcedRefresh ||
+          session.stopped
+        )
+          return;
+        const usage = session.usageState.update({
+          source: "parent",
+          stats: statsResult.success,
+          ...(refreshOptions?.contextChange ? { contextChange: refreshOptions.contextChange } : {}),
+        });
+        const usageToEmit =
+          usage ?? (refreshOptions?.force === true ? session.usageState.snapshot() : undefined);
+        if (!usageToEmit) return;
+        yield* offer([
+          {
+            ...basePiEvent(session),
+            type: "thread.token-usage.updated",
+            payload: { usage: usageToEmit },
+          } satisfies ProviderRuntimeEvent,
+        ]);
+      } finally {
+        if (refreshOptions?.force === true)
+          session.forcedUsageRefreshInFlight = Math.max(0, session.forcedUsageRefreshInFlight - 1);
+      }
+    });
+
+  const runUsageRefreshNow = (
+    session: PiAdapterSessionContext,
+    refreshOptions?: PiUsageRefreshOptions & { readonly force?: boolean },
+  ): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      if (session.stopped) return;
+      if (session.usageRefreshInFlight) {
+        queueUsageRefresh(session, refreshOptions, refreshOptions?.force === true);
+        return;
+      }
+
+      session.usageRefreshInFlight = true;
+      try {
+        yield* refreshUsage(session, refreshOptions);
+      } finally {
+        session.usageRefreshInFlight = false;
+      }
+
+      const wasQueued = session.usageRefreshQueued;
+      const queuedOptions = session.usageRefreshQueuedOptions;
+      const queuedForce = session.usageRefreshQueuedForce;
+      session.usageRefreshQueued = false;
+      session.usageRefreshQueuedForce = false;
+      delete session.usageRefreshQueuedOptions;
+
+      if (wasQueued && !session.stopped) {
+        if (queuedForce) {
+          yield* runUsageRefreshNow(session, { ...queuedOptions, force: true });
+          yield* flushUsageRefreshWaiters(session);
+        } else {
+          yield* scheduleUsageRefresh(session, queuedOptions);
+        }
+      }
     });
 
   const scheduleUsageRefresh = (
@@ -210,33 +295,55 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     refreshOptions?: PiUsageRefreshOptions,
   ): Effect.Effect<void> =>
     Effect.gen(function* () {
-      if (session.usageRefreshFiber) {
-        session.usageRefreshQueued = true;
-        const queuedOptions = mergeUsageRefreshOptions(
-          session.usageRefreshQueuedOptions,
+      if (session.stopped) return;
+      if (session.usageRefreshInFlight) {
+        queueUsageRefresh(session, refreshOptions);
+        return;
+      }
+      if (session.usageRefreshTimerFiber) {
+        const pendingOptions = mergeUsageRefreshOptions(
+          session.usageRefreshPendingOptions,
           refreshOptions,
         );
-        if (queuedOptions) session.usageRefreshQueuedOptions = queuedOptions;
-        else delete session.usageRefreshQueuedOptions;
+        if (pendingOptions) session.usageRefreshPendingOptions = pendingOptions;
+        else delete session.usageRefreshPendingOptions;
         return;
       }
+
       const debounceMs = options?.usageDebounceMs ?? DEFAULT_USAGE_DEBOUNCE_MS;
       if (debounceMs <= 0) {
-        yield* refreshUsage(session, refreshOptions);
+        yield* runUsageRefreshNow(session, refreshOptions);
         return;
       }
-      session.usageRefreshFiber = yield* Effect.gen(function* () {
+      if (refreshOptions) session.usageRefreshPendingOptions = refreshOptions;
+      else delete session.usageRefreshPendingOptions;
+      session.usageRefreshTimerFiber = yield* Effect.gen(function* () {
         yield* Effect.sleep(Duration.millis(debounceMs));
-        yield* refreshUsage(session, refreshOptions);
-        delete session.usageRefreshFiber;
-        const wasQueued = session.usageRefreshQueued;
-        const queuedOptions = session.usageRefreshQueuedOptions;
-        session.usageRefreshQueued = false;
-        delete session.usageRefreshQueuedOptions;
-        if (wasQueued && !session.stopped) {
-          yield* scheduleUsageRefresh(session, queuedOptions);
-        }
-      }).pipe(Effect.forkChild);
+        const pendingOptions = session.usageRefreshPendingOptions;
+        delete session.usageRefreshTimerFiber;
+        delete session.usageRefreshPendingOptions;
+        yield* runUsageRefreshNow(session, pendingOptions);
+      }).pipe(Effect.forkIn(session.scope));
+    });
+
+  const forceUsageRefresh = (
+    session: PiAdapterSessionContext,
+    refreshOptions?: PiUsageRefreshOptions,
+  ): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      if (session.stopped) return;
+      yield* clearUsageRefreshTimer(session);
+      session.usageRefreshQueued = false;
+      session.usageRefreshQueuedForce = false;
+      delete session.usageRefreshQueuedOptions;
+      if (session.usageRefreshInFlight) {
+        const waiter = yield* Deferred.make<void>();
+        session.usageRefreshWaiters.add(waiter);
+        queueUsageRefresh(session, refreshOptions, true);
+        yield* Deferred.await(waiter);
+        return;
+      }
+      yield* runUsageRefreshNow(session, { ...refreshOptions, force: true });
     });
 
   const currentResumeCursor = (session: PiAdapterSessionContext) =>
@@ -394,8 +501,8 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     session.stopped = true;
     sessions.delete(session.threadId);
     yield* cancelPendingUserInputs(session);
-    if (session.usageRefreshFiber)
-      yield* Fiber.interrupt(session.usageRefreshFiber).pipe(Effect.ignore);
+    yield* clearUsageRefreshTimer(session);
+    yield* flushUsageRefreshWaiters(session);
     yield* stopWorkflowMonitors(session);
     yield* session.runtime.close.pipe(Effect.ignore);
     yield* Effect.ignore(Scope.close(session.scope, Exit.void));
@@ -475,7 +582,13 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           ...(resumeCursor?.sessionFile ? { sessionFile: resumeCursor.sessionFile } : {}),
           stopped: false,
           turnCompleted: true,
+          usageRefreshInFlight: false,
           usageRefreshQueued: false,
+          usageRefreshQueuedForce: false,
+          usageRefreshWaiters: new Set(),
+          usageRefreshSequence: 0,
+          latestForcedUsageRefreshSequence: 0,
+          forcedUsageRefreshInFlight: 0,
           usageState: new PiUsageState(),
         };
         session.eventFiber = yield* Stream.runForEach(runtime.events, (message) =>
@@ -638,7 +751,10 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
   ): Effect.fn.Return<ProviderTurnStartResult, ProviderAdapterError> {
     const session = yield* requireSession(input.threadId);
     const controlResult = yield* handleWorkflowControlPrompt(session, input);
-    if (controlResult) return controlResult;
+    if (controlResult) {
+      yield* forceUsageRefresh(session);
+      return controlResult;
+    }
 
     if (!session.turnCompleted) {
       const images = yield* resolveImageAttachments("turn/start", input);
@@ -680,6 +796,10 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       ),
       Effect.mapError((cause) => mapPiRuntimeError(input.threadId, "prompt", cause)),
     );
+    for (let index = 0; index < 5 && !session.turnCompleted; index += 1) {
+      yield* Effect.yieldNow;
+    }
+    yield* forceUsageRefresh(session);
     return {
       threadId: result.threadId,
       turnId,
