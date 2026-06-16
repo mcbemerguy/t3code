@@ -23,6 +23,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -611,9 +612,10 @@ describe("PiAdapter", () => {
   it.effect("forces a final native Pi usage refresh after prompt completion", () =>
     withHarness(
       (fake) => {
-        fake.statsResponses = [piStats(613), piStats(42_000)];
+        fake.stats = piStats(613);
         fake.promptScript = (rt) => rt.emit({ type: "agent_end", success: true });
         fake.promptImpl = vi.fn(async () => {
+          fake.stats = piStats(42_000);
           return {
             threadId: fake.options.threadId,
             turnId: TurnId.make("pi-provider-turn"),
@@ -622,18 +624,30 @@ describe("PiAdapter", () => {
       },
       ({ adapter, runtime }) =>
         Effect.gen(function* () {
-          const eventsFiber = yield* collectEventsThroughTurnCompleted(adapter, isUsageEvent).pipe(
+          const throughCompletionFiber = yield* collectEventsThroughTurnCompleted(
+            adapter,
+            isUsageEvent,
+          ).pipe(Effect.forkChild);
+          yield* adapter.sendTurn({ threadId, input: "final usage grows after terminal event" });
+          const throughCompletion = (yield* Fiber.join(throughCompletionFiber)).filter(
+            isUsageEvent,
+          );
+          const afterCompletionFiber = yield* collectEvents(adapter, 1, isUsageEvent).pipe(
+            Effect.timeout("1 second"),
+            Effect.orDie,
             Effect.forkChild,
           );
-          yield* adapter.sendTurn({ threadId, input: "final usage grows after terminal event" });
-          const events = (yield* Fiber.join(eventsFiber)).filter(isUsageEvent);
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("1 second");
+          const afterCompletion = yield* Fiber.join(afterCompletionFiber);
+          const events = [...throughCompletion, ...afterCompletion];
           const latest = events.at(-1);
 
           assert.equal(runtime.statsReadCount >= 2, true);
           assert.equal(usageUsedTokens(latest!), 42_000);
           assert.equal(usageMaxTokens(latest!), 272_000);
         }),
-    ),
+    ).pipe(Effect.provide(TestClock.layer())),
   );
 
   it.effect("does not let stale parent stats overwrite richer live workflow usage", () =>
