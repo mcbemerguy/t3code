@@ -49,6 +49,8 @@ class FakePiRuntime implements PiSessionRuntimeShape {
     tokens: { input: 10, output: 2 },
     contextUsage: { usedTokens: 12, maxTokens: 100 },
   };
+  statsResponses: Array<unknown> = [];
+  statsReadCount = 0;
   messages: unknown = [{ id: "message-turn-1", role: "assistant", content: "hello" }];
   promptScript: ((runtime: FakePiRuntime) => Effect.Effect<void>) | undefined;
   promptInputs: Array<{ readonly message: string; readonly images?: ReadonlyArray<unknown> }> = [];
@@ -132,7 +134,10 @@ class FakePiRuntime implements PiSessionRuntimeShape {
       this.modelOptionOperations.push(`set_thinking_level:${level}`);
       return {};
     });
-  getSessionStats = Effect.sync(() => this.stats);
+  getSessionStats = Effect.sync(() => {
+    this.statsReadCount += 1;
+    return this.statsResponses.length > 0 ? this.statsResponses.shift() : this.stats;
+  });
   getMessages = Effect.sync(() => this.messages);
   workflowControl = (input: PiWorkflowControlInput) =>
     Effect.sync(() => {
@@ -219,6 +224,37 @@ function collectEvents(
   return Stream.runCollect(
     adapter.streamEvents.pipe(Stream.filter(predicate), Stream.take(count)),
   ).pipe(Effect.map((events) => Array.from(events) as Array<ProviderRuntimeEvent>));
+}
+
+function collectEventsThroughTurnCompleted(
+  adapter: PiAdapterShape,
+  predicate: (event: ProviderRuntimeEvent) => boolean,
+): Effect.Effect<Array<ProviderRuntimeEvent>> {
+  return Stream.runCollect(
+    adapter.streamEvents.pipe(
+      Stream.filter((event) => predicate(event) || event.type === "turn.completed"),
+      Stream.takeUntil((event) => event.type === "turn.completed"),
+    ),
+  ).pipe(Effect.map((events) => Array.from(events) as Array<ProviderRuntimeEvent>));
+}
+
+function isUsageEvent(event: ProviderRuntimeEvent): boolean {
+  return event.type === "thread.token-usage.updated";
+}
+
+function usageUsedTokens(event: ProviderRuntimeEvent): number | undefined {
+  return event.type === "thread.token-usage.updated" ? event.payload.usage.usedTokens : undefined;
+}
+
+function usageMaxTokens(event: ProviderRuntimeEvent): number | undefined {
+  return event.type === "thread.token-usage.updated" ? event.payload.usage.maxTokens : undefined;
+}
+
+function piStats(usedTokens: number, maxTokens = 272_000) {
+  return {
+    tokens: { input: Math.max(usedTokens - 10, 0), output: 10, total: usedTokens },
+    contextUsage: { tokens: usedTokens, contextWindow: maxTokens },
+  };
 }
 
 function createWorkflowRunFixture(input: {
@@ -514,6 +550,128 @@ describe("PiAdapter", () => {
           assert.equal(
             events.some((event) => event.type === "thread.token-usage.updated"),
             true,
+          );
+        }),
+    ),
+  );
+
+  it.effect("refreshes native Pi usage on live event boundaries", () =>
+    withHarness(
+      (fake) => {
+        fake.statsResponses = [
+          piStats(100),
+          piStats(200),
+          piStats(300),
+          piStats(400),
+          piStats(500),
+        ];
+        fake.promptScript = (rt) =>
+          Effect.gen(function* () {
+            yield* rt.emit({
+              type: "message_update",
+              assistantMessageEvent: { type: "thinking_start" },
+            });
+            yield* rt.emit({
+              type: "message_update",
+              assistantMessageEvent: { type: "thinking_end" },
+            });
+
+            yield* rt.emit({
+              type: "tool_execution_start",
+              toolCallId: "tool-usage",
+              toolName: "bash",
+              args: { command: "echo ok" },
+            });
+            yield* rt.emit({
+              type: "tool_execution_end",
+              toolCallId: "tool-usage",
+              result: { stdout: "ok" },
+            });
+
+            yield* rt.emit({ type: "auto_compaction_end" });
+
+            yield* rt.emit({
+              type: "message_end",
+              message: { role: "assistant", content: "done" },
+            });
+
+            yield* rt.emit({ type: "prompt_end", success: true });
+          });
+      },
+      ({ adapter }) =>
+        Effect.gen(function* () {
+          yield* adapter.sendTurn({ threadId, input: "exercise usage boundaries" });
+          const events = yield* collectEvents(adapter, 5, isUsageEvent);
+
+          assert.deepEqual(events.map(usageUsedTokens), [100, 200, 300, 400, 500]);
+        }),
+    ),
+  );
+
+  it.effect("forces a final native Pi usage refresh after prompt completion", () =>
+    withHarness(
+      (fake) => {
+        fake.statsResponses = [piStats(613), piStats(42_000)];
+        fake.promptScript = (rt) => rt.emit({ type: "agent_end", success: true });
+        fake.promptImpl = vi.fn(async () => {
+          return {
+            threadId: fake.options.threadId,
+            turnId: TurnId.make("pi-provider-turn"),
+          } satisfies ProviderTurnStartResult;
+        });
+      },
+      ({ adapter, runtime }) =>
+        Effect.gen(function* () {
+          const eventsFiber = yield* collectEventsThroughTurnCompleted(adapter, isUsageEvent).pipe(
+            Effect.forkChild,
+          );
+          yield* adapter.sendTurn({ threadId, input: "final usage grows after terminal event" });
+          const events = (yield* Fiber.join(eventsFiber)).filter(isUsageEvent);
+          const latest = events.at(-1);
+
+          assert.equal(runtime.statsReadCount >= 2, true);
+          assert.equal(usageUsedTokens(latest!), 42_000);
+          assert.equal(usageMaxTokens(latest!), 272_000);
+        }),
+    ),
+  );
+
+  it.effect("does not let stale parent stats overwrite richer live workflow usage", () =>
+    withHarness(
+      (fake) => {
+        fake.stats = piStats(613);
+        fake.promptScript = (rt) =>
+          Effect.gen(function* () {
+            yield* rt.emit({
+              type: "context_usage_update",
+              runId: "run-usage-ordering",
+              workflowId: "review-fix",
+              sequence: 1,
+              usage: {
+                context: { usedTokens: 80_000, maxTokens: 272_000 },
+                totals: { inputTokens: 74_000, outputTokens: 6_000 },
+              },
+            });
+            yield* rt.emit({ type: "agent_end", success: true });
+          });
+      },
+      ({ adapter }) =>
+        Effect.gen(function* () {
+          const eventsFiber = yield* collectEventsThroughTurnCompleted(adapter, isUsageEvent).pipe(
+            Effect.forkChild,
+          );
+          yield* adapter.sendTurn({ threadId, input: "/workflow:review-fix" });
+          const events = (yield* Fiber.join(eventsFiber)).filter(isUsageEvent);
+          const workflowUsageIndex = events.findIndex(
+            (event) => event.raw?.source === "pi.workflow.artifact",
+          );
+          const laterUsages = events.slice(workflowUsageIndex + 1).map(usageUsedTokens);
+
+          assert.notEqual(workflowUsageIndex, -1);
+          assert.equal(usageUsedTokens(events.at(-1)!), 80_000);
+          assert.equal(
+            laterUsages.some((usedTokens) => usedTokens !== undefined && usedTokens < 80_000),
+            false,
           );
         }),
     ),
