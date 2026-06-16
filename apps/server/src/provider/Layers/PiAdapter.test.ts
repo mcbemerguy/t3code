@@ -47,6 +47,7 @@ class FakePiRuntime implements PiSessionRuntimeShape {
   };
   messages: unknown = [{ id: "message-turn-1", role: "assistant", content: "hello" }];
   promptScript: ((runtime: FakePiRuntime) => Effect.Effect<void>) | undefined;
+  promptInputs: Array<{ readonly message: string; readonly images?: ReadonlyArray<unknown> }> = [];
   extensionUiResponses: Array<PiExtensionUiResponseInput> = [];
   workflowControls: Array<PiWorkflowControlInput> = [];
   modelSelections: Array<{ provider: string; modelId: string }> = [];
@@ -56,7 +57,7 @@ class FakePiRuntime implements PiSessionRuntimeShape {
 
   startImpl = vi.fn(() => Promise.resolve(this.session("ready")));
   promptImpl = vi.fn(
-    async () =>
+    async (_input: { readonly message: string; readonly images?: ReadonlyArray<unknown> }) =>
       ({
         threadId: this.options.threadId,
         turnId: TurnId.make("pi-provider-turn"),
@@ -84,13 +85,14 @@ class FakePiRuntime implements PiSessionRuntimeShape {
 
   getSession = Effect.sync(() => this.session("ready"));
 
-  prompt(_input: { readonly message: string; readonly images?: ReadonlyArray<unknown> }) {
+  prompt(input: { readonly message: string; readonly images?: ReadonlyArray<unknown> }) {
+    this.promptInputs.push(input);
     const script = this.promptScript;
     const runPrompt = this.promptImpl;
     return (script ? script(this) : Effect.void).pipe(
       Effect.andThen(
         Effect.tryPromise({
-          try: () => runPrompt(),
+          try: () => runPrompt(input),
           catch: (error) =>
             error instanceof PiRpcLifecycleError
               ? error
@@ -561,6 +563,40 @@ describe("PiAdapter", () => {
           instanceId: ProviderInstanceId.make("pi"),
           model: "default",
           options: [{ id: "reasoning", value: "high" }],
+        },
+      },
+    ),
+  );
+
+  it.effect("ignores Pi fastMode selections because Pi has no writable Fast RPC", () =>
+    withHarness(
+      undefined,
+      ({ adapter, runtime }) =>
+        Effect.gen(function* () {
+          assert.equal(runtime.modelOptionOperations.length, 0);
+          assert.equal(runtime.promptInputs.length, 0);
+
+          yield* adapter.sendTurn({
+            threadId,
+            input: "use pi without fast hack",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("pi"),
+              model: "default",
+              options: [{ id: "fastMode", value: true }],
+            },
+          });
+
+          assert.deepEqual(runtime.modelOptionOperations, []);
+          assert.deepEqual(
+            runtime.promptInputs.map((input) => input.message),
+            ["use pi without fast hack"],
+          );
+        }),
+      {
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("pi"),
+          model: "default",
+          options: [{ id: "fastMode", value: true }],
         },
       },
     ),

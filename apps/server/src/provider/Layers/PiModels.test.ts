@@ -73,6 +73,24 @@ describe("Pi model normalization", () => {
     assert.deepEqual(models[0]?.capabilities?.optionDescriptors, []);
   });
 
+  it("does not expose writable fastMode for statically eligible Pi OpenAI Fast models", () => {
+    const models = normalizePiAvailableModels({
+      models: [
+        {
+          id: "gpt-5.4",
+          provider: "openai-codex",
+          api: "openai-codex-responses",
+          reasoning: true,
+        },
+      ],
+    });
+
+    assert.deepEqual(
+      models[0]?.capabilities?.optionDescriptors?.map((descriptor) => descriptor.id),
+      ["reasoning"],
+    );
+  });
+
   it("only exposes xhigh when Pi metadata explicitly supports it", () => {
     const models = normalizePiAvailableModels({
       models: [{ id: "reasoning-model", provider: "mock", reasoning: true }],
