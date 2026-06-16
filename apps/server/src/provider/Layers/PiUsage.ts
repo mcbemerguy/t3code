@@ -87,8 +87,11 @@ export function normalizePiTokenUsage(stats: unknown): ThreadTokenUsageSnapshot 
     (outputTokens ?? 0) +
     (cachedInputTokens ?? 0) +
     (reasoningOutputTokens ?? 0);
+  const processedUsedTokens = totalProcessedTokens ?? (derivedUsed > 0 ? derivedUsed : undefined);
   const usedTokens =
-    contextUsedTokens ?? totalProcessedTokens ?? (derivedUsed > 0 ? derivedUsed : undefined);
+    contextUsedTokens !== undefined && processedUsedTokens !== undefined
+      ? Math.max(contextUsedTokens, processedUsedTokens)
+      : (contextUsedTokens ?? processedUsedTokens);
 
   if (usedTokens === undefined || usedTokens <= 0) return undefined;
 

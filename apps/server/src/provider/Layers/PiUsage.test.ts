@@ -26,4 +26,38 @@ describe("normalizePiTokenUsage", () => {
       outputTokens: 1_200,
     });
   });
+
+  it("keeps larger context usage when token totals are only partial details", () => {
+    const usage = normalizePiTokenUsage({
+      totals: {
+        inputTokens: 20,
+        outputTokens: 5,
+      },
+      context: {
+        usedTokens: 42,
+        maxTokens: 100,
+      },
+      autoCompaction: {
+        enabled: true,
+      },
+    });
+
+    assert.deepStrictEqual(usage, {
+      usedTokens: 42,
+      maxTokens: 100,
+      inputTokens: 20,
+      outputTokens: 5,
+      compactsAutomatically: true,
+    });
+  });
+
+  it("does not fabricate usage from context window size alone", () => {
+    const usage = normalizePiTokenUsage({
+      contextUsage: {
+        contextWindow: 272_000,
+      },
+    });
+
+    assert.equal(usage, undefined);
+  });
 });
