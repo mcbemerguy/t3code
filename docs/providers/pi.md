@@ -32,6 +32,6 @@ Do not point T3 Code at `pi-acp` for native Pi. The native provider talks to Pi 
 
 T3 Code asks Pi for models with `get_available_models` and applies picker changes with `set_model`. If Pi cannot report models, T3 Code shows one explicit fallback model, `default`, which leaves model choice to Pi.
 
-Reasoning-capable Pi models show the generic Reasoning selector. T3 applies that value through Pi RPC `set_thinking_level`, including when the selected model is `default`.
+Reasoning-capable Pi models show the generic Reasoning selector. T3 applies that value through Pi RPC `set_thinking_level`. The `default` fallback model does not advertise a Reasoning selector, but if a caller supplies a `default` model selection with a reasoning option, T3 still applies it without calling `set_model`.
 
 OpenAI Fast is not exposed as a native Pi Fast Mode option yet. Pi currently controls Fast through its own extension commands and provider-request rewriting, not through a clean RPC/core session API. T3 therefore avoids showing a writable Fast control that would appear to work but could only be implemented with a `/fast` prompt hack.
