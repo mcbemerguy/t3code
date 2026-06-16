@@ -690,10 +690,10 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       );
     const status = action === "resume" ? "recovering" : action === "pause" ? "paused" : "aborted";
     const previous = session.workflowRuns.get(target);
-    if (action === "abort") {
+    if (action === "abort" && !previous) {
       session.workflowRuns.delete(target);
       session.workflowTails.delete(target);
-    } else
+    } else {
       session.workflowRuns.set(
         target,
         mergeWorkflowRunCursor(previous, {
@@ -702,18 +702,14 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           status,
         }),
       );
+    }
     yield* emitWorkflowControlNotice(session, `Workflow ${target} ${action} requested.`, {
       action,
       target,
       status,
     });
-    if (action !== "abort")
-      yield* startPiWorkflowRunMonitor(
-        session,
-        offer,
-        session.workflowRuns.get(target)!,
-        undefined,
-      );
+    const controlledRun = session.workflowRuns.get(target);
+    if (controlledRun) yield* startPiWorkflowRunMonitor(session, offer, controlledRun, undefined);
   });
 
   const handleWorkflowControlPrompt = Effect.fn("handlePiWorkflowControlPrompt")(function* (

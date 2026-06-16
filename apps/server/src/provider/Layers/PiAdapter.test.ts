@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -261,11 +261,18 @@ function piStats(usedTokens: number, maxTokens = 272_000) {
   };
 }
 
+type WorkflowRunFixture = {
+  readonly root: string;
+  readonly runId: string;
+  readonly runDir: string;
+  readonly auditPath: string;
+};
+
 function createWorkflowRunFixture(input: {
   readonly runId?: string;
   readonly status?: string;
   readonly events?: ReadonlyArray<Record<string, unknown>>;
-}) {
+}): WorkflowRunFixture {
   const root = mkdtempSync(join(tmpdir(), "t3-pi-workflow-"));
   const runId = input.runId ?? "run-1";
   const runDir = join(root, runId);
@@ -296,6 +303,44 @@ function createWorkflowRunFixture(input: {
     "utf8",
   );
   return { root, runId, runDir, auditPath };
+}
+
+function appendWorkflowFixtureEvents(
+  fixture: WorkflowRunFixture,
+  events: ReadonlyArray<Record<string, unknown>>,
+) {
+  appendFileSync(
+    join(fixture.runDir, "events.jsonl"),
+    events
+      .map((event) =>
+        JSON.stringify({
+          runId: fixture.runId,
+          workflowId: "review-fix",
+          runDir: fixture.runDir,
+          auditPath: fixture.auditPath,
+          ...event,
+        }),
+      )
+      .join("\n") + "\n",
+    "utf8",
+  );
+}
+
+function writeWorkflowFixtureStatus(fixture: WorkflowRunFixture, status: string) {
+  writeFileSync(
+    join(fixture.runDir, "run.json"),
+    `${JSON.stringify({
+      id: fixture.runId,
+      workflowId: "review-fix",
+      commandName: "workflow:review-fix",
+      cwd: process.cwd(),
+      runDir: fixture.runDir,
+      auditPath: fixture.auditPath,
+      status,
+      endedAt: "2026-01-01T00:00:00.000Z",
+    })}\n`,
+    "utf8",
+  );
 }
 
 describe("PiAdapter", () => {
@@ -1624,6 +1669,55 @@ describe("PiAdapter", () => {
       );
     },
   );
+
+  it.effect("keeps workflow monitors alive long enough to emit usage after abort controls", () => {
+    const fixture = createWorkflowRunFixture({
+      status: "running",
+      events: [{ type: "run_start", sequence: 1 }],
+    });
+    return withHarness(
+      undefined,
+      ({ adapter }) =>
+        Effect.gen(function* () {
+          const usageFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) =>
+              event.type === "thread.token-usage.updated" &&
+              event.raw?.source === "pi.workflow.artifact",
+          ).pipe(Effect.timeout("2 seconds"), Effect.orDie, Effect.forkChild);
+
+          yield* adapter.sendTurn({ threadId, input: `/workflow:abort ${fixture.runId}` });
+          appendWorkflowFixtureEvents(fixture, [
+            {
+              type: "context_usage_update",
+              sequence: 2,
+              usage: { context: { usedTokens: 45_000, maxTokens: 272_000 } },
+            },
+            { type: "run_end", sequence: 3, status: "aborted" },
+          ]);
+          writeWorkflowFixtureStatus(fixture, "aborted");
+          const [usageEvent] = yield* Fiber.join(usageFiber);
+          const sessions = yield* adapter.listSessions();
+
+          assert.equal(usageUsedTokens(usageEvent!), 45_000);
+          assert.deepEqual(sessions[0]?.resumeCursor, {
+            schemaVersion: 1,
+            provider: "pi",
+            providerInstanceId: "pi",
+            sessionFile: "/tmp/pi-session.json",
+          });
+        }),
+      {
+        resumeCursor: makePiResumeCursor({
+          sessionFile: "/tmp/pi-session.json",
+          activeWorkflowRuns: [
+            { runId: fixture.runId, lastSequence: 0, runDir: fixture.runDir, status: "running" },
+          ],
+        }),
+      },
+    );
+  });
 
   it.effect("maps workflow resume and abort prompts to Pi workflow_control", () => {
     const fixture = createWorkflowRunFixture({

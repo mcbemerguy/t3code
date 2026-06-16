@@ -68,13 +68,14 @@ export function startPiWorkflowCommandMonitor(
       if (!run) return;
       clearInterval(timer);
       session.workflowMonitorDisposers.delete(dispose);
-      const cursor: PiWorkflowRunCursor = {
+      const discoveredCursor: PiWorkflowRunCursor = {
         runId: run.id,
         lastSequence: 0,
         runDir: run.runDir,
         ...(run.auditPath ? { auditPath: run.auditPath } : {}),
         status: run.status,
       };
+      const cursor = mergeWorkflowRunCursor(session.workflowRuns.get(run.id), discoveredCursor);
       session.workflowRuns.set(run.id, cursor);
       Effect.runFork(
         replayRun(session, offer, cursor, { ...options, includeTerminalFallback: false }).pipe(
