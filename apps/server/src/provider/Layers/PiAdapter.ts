@@ -688,7 +688,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       .pipe(
         Effect.mapError((cause) => mapPiRuntimeError(session.threadId, "workflow_control", cause)),
       );
-    const status = action === "resume" ? "recovering" : action === "pause" ? "paused" : "aborted";
+    const status = action === "resume" ? "recovering" : action === "pause" ? "paused" : "aborting";
     const previous = session.workflowRuns.get(target);
     if (action === "abort" && !previous) {
       session.workflowRuns.delete(target);

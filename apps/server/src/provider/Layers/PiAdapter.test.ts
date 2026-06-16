@@ -1470,6 +1470,7 @@ describe("PiAdapter", () => {
         sessionFile: "/tmp/pi-session.json",
         activeWorkflowRuns: [
           { runId: "active", lastSequence: 4, runDir: "/tmp/run", status: "running" },
+          { runId: "aborting", lastSequence: 5, runDir: "/tmp/aborting", status: "aborting" },
           { runId: "done", lastSequence: 9, status: "completed" },
         ],
       });
@@ -1478,7 +1479,10 @@ describe("PiAdapter", () => {
         provider: "pi",
         sessionFile: "/tmp/pi-session.json",
         workflows: {
-          activeRuns: [{ runId: "active", lastSequence: 4, runDir: "/tmp/run", status: "running" }],
+          activeRuns: [
+            { runId: "active", lastSequence: 4, runDir: "/tmp/run", status: "running" },
+            { runId: "aborting", lastSequence: 5, runDir: "/tmp/aborting", status: "aborting" },
+          ],
         },
       });
     }),
@@ -1719,6 +1723,85 @@ describe("PiAdapter", () => {
     );
   });
 
+  it.effect("persists pending abort cursors so restored sessions replay trailing usage", () => {
+    const fixture = createWorkflowRunFixture({
+      status: "running",
+      events: [{ type: "run_start", sequence: 1 }],
+    });
+    return Effect.gen(function* () {
+      const resumeCursor = yield* withHarness(
+        undefined,
+        ({ adapter }) =>
+          Effect.gen(function* () {
+            yield* adapter.sendTurn({ threadId, input: `/workflow:abort ${fixture.runId}` });
+            const sessions = yield* adapter.listSessions();
+            assert.deepEqual(sessions[0]?.resumeCursor, {
+              schemaVersion: 1,
+              provider: "pi",
+              providerInstanceId: "pi",
+              sessionFile: "/tmp/pi-session.json",
+              workflows: {
+                activeRuns: [
+                  {
+                    runId: fixture.runId,
+                    lastSequence: 1,
+                    runDir: fixture.runDir,
+                    auditPath: fixture.auditPath,
+                    status: "aborting",
+                  },
+                ],
+              },
+            });
+            return sessions[0]?.resumeCursor;
+          }),
+        {
+          resumeCursor: makePiResumeCursor({
+            sessionFile: "/tmp/pi-session.json",
+            activeWorkflowRuns: [
+              { runId: fixture.runId, lastSequence: 0, runDir: fixture.runDir, status: "running" },
+            ],
+          }),
+        },
+      );
+
+      writeWorkflowFixtureStatus(fixture, "aborted");
+
+      yield* withHarness(
+        undefined,
+        ({ adapter }) =>
+          Effect.gen(function* () {
+            const eventsFiber = yield* collectEvents(
+              adapter,
+              2,
+              (event) =>
+                (event.type === "thread.token-usage.updated" || event.type === "task.completed") &&
+                event.raw?.source === "pi.workflow.artifact",
+            ).pipe(Effect.timeout("2 seconds"), Effect.orDie, Effect.forkChild);
+            appendWorkflowFixtureEvents(fixture, [
+              {
+                type: "context_usage_update",
+                sequence: 2,
+                usage: { context: { usedTokens: 55_000, maxTokens: 272_000 } },
+              },
+              { type: "run_end", sequence: 3, status: "aborted" },
+            ]);
+            const events = yield* Fiber.join(eventsFiber);
+            const sessions = yield* adapter.listSessions();
+
+            assert.equal(usageUsedTokens(events[0]!), 55_000);
+            assert.equal(events[1]?.type, "task.completed");
+            assert.deepEqual(sessions[0]?.resumeCursor, {
+              schemaVersion: 1,
+              provider: "pi",
+              providerInstanceId: "pi",
+              sessionFile: "/tmp/pi-session.json",
+            });
+          }),
+        { resumeCursor },
+      );
+    });
+  });
+
   it.effect("maps workflow resume and abort prompts to Pi workflow_control", () => {
     const fixture = createWorkflowRunFixture({
       status: "paused",
@@ -1742,6 +1825,16 @@ describe("PiAdapter", () => {
             provider: "pi",
             providerInstanceId: "pi",
             sessionFile: "/tmp/pi-session.json",
+            workflows: {
+              activeRuns: [
+                {
+                  runId: fixture.runId,
+                  lastSequence: 1,
+                  runDir: fixture.runDir,
+                  status: "aborting",
+                },
+              ],
+            },
           });
         }),
       {

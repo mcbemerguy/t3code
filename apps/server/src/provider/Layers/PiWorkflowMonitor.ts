@@ -35,7 +35,7 @@ export function restorePiWorkflowRuns(
 ): Effect.Effect<void> {
   return Effect.gen(function* () {
     for (const run of Array.from(session.workflowRuns.values())) {
-      yield* replayRun(session, offer, run, options);
+      yield* replayRun(session, offer, run, { ...options, includeTerminalFallback: false });
       if (!isTerminalWorkflowStatus(session.workflowRuns.get(run.runId)?.status)) {
         yield* startPiWorkflowRunMonitor(session, offer, run, options);
       }
