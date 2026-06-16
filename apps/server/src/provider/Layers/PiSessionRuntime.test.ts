@@ -20,6 +20,7 @@ import {
   parsePiRpcStdoutLine,
   resolvePiCommand,
   shouldUseShellForPiCommand,
+  stripAnsi,
   windowsProcessTreeKillCommand,
   type PiSessionRuntimeError,
   type PiSessionRuntimeShape,
@@ -108,6 +109,23 @@ describe("Pi RPC protocol helpers", () => {
       kind: "prelude",
       line: "Context loaded",
     });
+    assert.deepStrictEqual(
+      parsePiRpcStdoutLine(
+        "\u001b[2K\u001b]8;;https://example.com\u0007Context loaded\u001b]8;;\u0007",
+      ),
+      {
+        kind: "prelude",
+        line: "Context loaded",
+      },
+    );
+    assert.deepStrictEqual(parsePiRpcStdoutLine("\u001b[38:2::128:128:128mColor\u001b[0m"), {
+      kind: "prelude",
+      line: "Color",
+    });
+  });
+
+  it("strips ANSI escape sequences without consuming following text", () => {
+    assert.equal(stripAnsi("a\u001b7text\u001b8"), "atext");
   });
 
   it("builds spawn args/env and exposes Windows command helpers", () => {

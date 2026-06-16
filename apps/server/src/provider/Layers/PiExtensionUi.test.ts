@@ -9,6 +9,10 @@ import {
 
 const dimAnsi = "\u001b[38;2;128;128;128m";
 const resetAnsi = "\u001b[39m";
+const eraseLineAnsi = "\u001b[2K";
+const cursorUpAnsi = "\u001b[1A";
+const hyperlinkStartAnsi = "\u001b]8;;https://example.com\u0007";
+const hyperlinkEndAnsi = "\u001b]8;;\u0007";
 
 describe("PiExtensionUi", () => {
   it("ignores fire-and-forget status and widget updates", () => {
@@ -51,7 +55,7 @@ describe("PiExtensionUi", () => {
       describeFireAndForgetExtensionUiEvent({
         type: "extension_ui_request",
         method: "notify",
-        message: `${dimAnsi}Pi needs attention${resetAnsi}`,
+        message: `${eraseLineAnsi}${hyperlinkStartAnsi}${dimAnsi}Pi needs attention${resetAnsi}${hyperlinkEndAnsi}`,
       }),
       "Pi needs attention",
     );
@@ -63,8 +67,8 @@ describe("PiExtensionUi", () => {
       id: "ask-1",
       method: "input",
       title: `${dimAnsi}Question${resetAnsi}`,
-      message: `${dimAnsi}What next?${resetAnsi}`,
-      placeholder: `${dimAnsi}Type here${resetAnsi}`,
+      message: `${cursorUpAnsi}${hyperlinkStartAnsi}${dimAnsi}What next?${resetAnsi}${hyperlinkEndAnsi}`,
+      placeholder: `${eraseLineAnsi}${dimAnsi}Type here${resetAnsi}`,
     });
 
     assert.equal(request?.title, "Question");

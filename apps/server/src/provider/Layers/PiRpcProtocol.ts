@@ -4,8 +4,15 @@ import { type SpawnOptions } from "node:child_process";
 import { type ProviderInstanceId, type RuntimeMode, type ThreadId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
-const ANSI_ESCAPE_CHAR = String.fromCharCode(27);
-const ANSI_ESCAPE_REGEX = new RegExp(`${ANSI_ESCAPE_CHAR}\\[[0-9;]*m`, "g");
+const ANSI_BEL = 0x07;
+const ANSI_ESC = 0x1b;
+const ANSI_ST = 0x9c;
+const ANSI_CSI = 0x9b;
+const ANSI_OSC = 0x9d;
+const ANSI_DCS = 0x90;
+const ANSI_SOS = 0x98;
+const ANSI_PM = 0x9e;
+const ANSI_APC = 0x9f;
 const ASK_USER_QUESTIONS_TOOL_NAME = "ask_user_questions";
 
 export interface PiRpcTimeouts {
@@ -217,7 +224,93 @@ export interface ParsedPiRpcLine {
 }
 
 export function stripAnsi(value: string): string {
-  return value.replace(ANSI_ESCAPE_REGEX, "");
+  let result = "";
+  for (let index = 0; index < value.length; ) {
+    const code = value.charCodeAt(index);
+
+    if (code === ANSI_ESC) {
+      index = consumeEscSequence(value, index);
+      continue;
+    }
+
+    if (code === ANSI_CSI) {
+      index = consumeCsiSequence(value, index + 1);
+      continue;
+    }
+
+    if (code === ANSI_OSC) {
+      index = consumeControlString(value, index + 1, true);
+      continue;
+    }
+
+    if (code === ANSI_DCS || code === ANSI_SOS || code === ANSI_PM || code === ANSI_APC) {
+      index = consumeControlString(value, index + 1, false);
+      continue;
+    }
+
+    if (code === ANSI_BEL || code === ANSI_ST) {
+      index++;
+      continue;
+    }
+
+    result += value[index];
+    index++;
+  }
+  return result;
+}
+
+function consumeEscSequence(value: string, start: number): number {
+  const next = value.charCodeAt(start + 1);
+  if (Number.isNaN(next)) return value.length;
+
+  switch (next) {
+    case 0x5b:
+      return consumeCsiSequence(value, start + 2);
+    case 0x5d:
+      return consumeControlString(value, start + 2, true);
+    case 0x50:
+    case 0x58:
+    case 0x5e:
+    case 0x5f:
+      return consumeControlString(value, start + 2, false);
+    default:
+      return consumeShortEscSequence(value, start + 1);
+  }
+}
+
+function consumeCsiSequence(value: string, start: number): number {
+  for (let index = start; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code >= 0x40 && code <= 0x7e) return index + 1;
+    if (code < 0x20 || code > 0x3f) return index;
+  }
+  return value.length;
+}
+
+function consumeControlString(value: string, start: number, allowBel: boolean): number {
+  for (let index = start; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (allowBel && code === ANSI_BEL) return index + 1;
+    if (code === ANSI_ST) return index + 1;
+    if (code === ANSI_ESC && value.charCodeAt(index + 1) === 0x5c) return index + 2;
+  }
+  return value.length;
+}
+
+function consumeShortEscSequence(value: string, start: number): number {
+  let index = start;
+  while (index < value.length) {
+    const code = value.charCodeAt(index);
+    if (code < 0x20 || code > 0x2f) break;
+    index++;
+  }
+
+  if (index < value.length) {
+    const code = value.charCodeAt(index);
+    if (code >= 0x30 && code <= 0x7e) return index + 1;
+  }
+
+  return start;
 }
 
 export function parsePiRpcStdoutLine(line: string): ParsedPiRpcLine | null {
