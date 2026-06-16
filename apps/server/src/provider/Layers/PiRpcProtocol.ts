@@ -4,6 +4,8 @@ import { type SpawnOptions } from "node:child_process";
 import { type ProviderInstanceId, type RuntimeMode, type ThreadId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
+import { type PiThinkingLevel } from "./PiThinking.ts";
+
 const ANSI_BEL = 0x07;
 const ANSI_ESC = 0x1b;
 const ANSI_ST = 0x9c;
@@ -82,6 +84,7 @@ export type PiRpcCommand =
       readonly provider: string;
       readonly modelId: string;
     }
+  | { readonly type: "set_thinking_level"; readonly id?: string; readonly level: PiThinkingLevel }
   | { readonly type: "get_session_stats"; readonly id?: string }
   | { readonly type: "get_messages"; readonly id?: string }
   | {

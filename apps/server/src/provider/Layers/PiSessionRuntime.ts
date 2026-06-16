@@ -16,6 +16,7 @@ import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 
 import { PiRpcProcessHandle, killProcessTree } from "./PiRpcProcess.ts";
+import { type PiThinkingLevel } from "./PiThinking.ts";
 import {
   DEFAULT_PI_RPC_TIMEOUTS,
   PiResumeCursorSchema,
@@ -47,6 +48,8 @@ import {
   type PiWorkflowControlPolicy,
   type PiWorkflowRunCursor,
 } from "./PiRpcProtocol.ts";
+
+export { type PiThinkingLevel } from "./PiThinking.ts";
 
 export {
   DEFAULT_PI_RPC_TIMEOUTS,
@@ -126,6 +129,9 @@ export interface PiSessionRuntimeShape {
   readonly setModel: (
     provider: string,
     modelId: string,
+  ) => Effect.Effect<unknown, PiSessionRuntimeError>;
+  readonly setThinkingLevel: (
+    level: PiThinkingLevel,
   ) => Effect.Effect<unknown, PiSessionRuntimeError>;
   readonly getSessionStats: Effect.Effect<unknown, PiSessionRuntimeError>;
   readonly getMessages: Effect.Effect<unknown, PiSessionRuntimeError>;
@@ -300,6 +306,20 @@ class PiSessionRuntimeImpl implements PiSessionRuntimeShape {
       );
       self.applyState(response.data);
       self.currentModel = readPiModelValue(response.data) ?? formatPiModelValue(provider, modelId);
+      return response.data;
+    });
+  };
+
+  readonly setThinkingLevel = (
+    level: PiThinkingLevel,
+  ): Effect.Effect<unknown, PiSessionRuntimeError> => {
+    const self = this;
+    return Effect.gen(function* () {
+      const response = yield* self.requestAndRequireSuccess(
+        { type: "set_thinking_level", level },
+        self.timeouts.request,
+      );
+      self.applyState(response.data);
       return response.data;
     });
   };

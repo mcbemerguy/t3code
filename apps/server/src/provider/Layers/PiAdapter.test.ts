@@ -50,6 +50,8 @@ class FakePiRuntime implements PiSessionRuntimeShape {
   extensionUiResponses: Array<PiExtensionUiResponseInput> = [];
   workflowControls: Array<PiWorkflowControlInput> = [];
   modelSelections: Array<{ provider: string; modelId: string }> = [];
+  thinkingLevels: Array<string> = [];
+  modelOptionOperations: Array<string> = [];
   currentModel: string | undefined;
 
   startImpl = vi.fn(() => Promise.resolve(this.session("ready")));
@@ -114,7 +116,14 @@ class FakePiRuntime implements PiSessionRuntimeShape {
   setModel = (provider: string, modelId: string) =>
     Effect.sync(() => {
       this.modelSelections.push({ provider, modelId });
+      this.modelOptionOperations.push(`set_model:${provider}/${modelId}`);
       this.currentModel = `${provider}/${modelId}`;
+      return {};
+    });
+  setThinkingLevel = (level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh") =>
+    Effect.sync(() => {
+      this.thinkingLevels.push(level);
+      this.modelOptionOperations.push(`set_thinking_level:${level}`);
       return {};
     });
   getSessionStats = Effect.sync(() => this.stats);
@@ -485,6 +494,98 @@ describe("PiAdapter", () => {
           model: "mock/model-a",
         },
       },
+    ),
+  );
+
+  it.effect("applies Pi reasoning after concrete model switches", () =>
+    withHarness(
+      undefined,
+      ({ adapter, runtime }) =>
+        Effect.gen(function* () {
+          assert.deepEqual(runtime.modelOptionOperations, [
+            "set_model:mock/model-a",
+            "set_thinking_level:low",
+          ]);
+
+          yield* adapter.sendTurn({
+            threadId,
+            input: "switch",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("pi"),
+              model: "mock/model-b",
+              options: [{ id: "reasoning", value: "high" }],
+            },
+          });
+
+          assert.deepEqual(runtime.modelOptionOperations, [
+            "set_model:mock/model-a",
+            "set_thinking_level:low",
+            "set_model:mock/model-b",
+            "set_thinking_level:high",
+          ]);
+        }),
+      {
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("pi"),
+          model: "mock/model-a",
+          options: [{ id: "reasoning", value: "low" }],
+        },
+      },
+    ),
+  );
+
+  it.effect("applies Pi reasoning for the default model without switching models", () =>
+    withHarness(
+      undefined,
+      ({ adapter, runtime }) =>
+        Effect.gen(function* () {
+          assert.deepEqual(runtime.modelSelections, []);
+          assert.deepEqual(runtime.thinkingLevels, ["high"]);
+
+          yield* adapter.sendTurn({
+            threadId,
+            input: "default reasoning",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("pi"),
+              model: "default",
+              options: [{ id: "reasoning", value: "medium" }],
+            },
+          });
+
+          assert.deepEqual(runtime.modelSelections, []);
+          assert.deepEqual(runtime.thinkingLevels, ["high", "medium"]);
+          assert.equal(runtime.promptImpl.mock.calls.length, 1);
+        }),
+      {
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("pi"),
+          model: "default",
+          options: [{ id: "reasoning", value: "high" }],
+        },
+      },
+    ),
+  );
+
+  it.effect("rejects invalid Pi reasoning before switching concrete models", () =>
+    withHarness(undefined, ({ adapter, runtime }) =>
+      Effect.gen(function* () {
+        const error = yield* adapter
+          .sendTurn({
+            threadId,
+            input: "bad reasoning",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("pi"),
+              model: "mock/model-b",
+              options: [{ id: "reasoning", value: "turbo" }],
+            },
+          })
+          .pipe(Effect.flip, Effect.orDie);
+
+        assert.match(error.message, /thinking level 'turbo'/);
+        assert.deepEqual(runtime.modelSelections, []);
+        assert.deepEqual(runtime.thinkingLevels, []);
+        assert.equal(runtime.promptImpl.mock.calls.length, 0);
+      }),
     ),
   );
 
