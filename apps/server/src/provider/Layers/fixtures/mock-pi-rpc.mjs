@@ -81,6 +81,48 @@ rl.on("line", (line) => {
             : [{ id: "mock", models: [{ id: "model-a", name: "Model A" }] }],
       });
       break;
+    case "get_commands":
+      response("get_commands", request, {
+        commands: [
+          {
+            name: "workflow:list",
+            description: "List workflow runs",
+            source: "extension",
+            sourceInfo: {
+              path: "/mock/pi/extensions/workflows/index.ts",
+              source: "workflows",
+              scope: "user",
+              origin: "top-level",
+              baseDir: "/mock/pi/extensions/workflows",
+            },
+          },
+          {
+            name: "commit-message",
+            description: "Draft a commit message",
+            source: "prompt",
+            sourceInfo: {
+              path: "/workspace/.pi/prompts/commit-message.md",
+              source: "commit-message.md",
+              scope: "project",
+              origin: "top-level",
+              baseDir: "/workspace/.pi/prompts",
+            },
+          },
+          {
+            name: "browser-tools",
+            description: "Interactive browser automation",
+            source: "skill",
+            sourceInfo: {
+              path: "/mock/pi/skills/browser-tools/SKILL.md",
+              source: "browser-tools",
+              scope: "user",
+              origin: "top-level",
+              baseDir: "/mock/pi/skills/browser-tools",
+            },
+          },
+        ],
+      });
+      break;
     case "prompt":
       write({ type: "assistant_delta", text: "hello" });
       response("prompt", request, { turnId: "turn-mock", sessionFile });

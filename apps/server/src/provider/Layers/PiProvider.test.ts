@@ -56,6 +56,29 @@ it.layer(NodeServices.layer)("checkPiProviderStatus", (it) => {
     }),
   );
 
+  it.effect("maps Pi RPC commands into slash commands and skills", () =>
+    Effect.gen(function* () {
+      const binaryPath = yield* Effect.promise(() => makeMockPiWrapper());
+      const provider = yield* checkPiProviderStatus({ enabled: true, binaryPath });
+
+      expect(provider.slashCommands).toEqual([
+        { name: "workflow:list", description: "List workflow runs" },
+        { name: "commit-message", description: "Draft a commit message" },
+      ]);
+      expect(provider.skills).toEqual([
+        {
+          name: "browser-tools",
+          description: "Interactive browser automation",
+          path: "/mock/pi/skills/browser-tools/SKILL.md",
+          scope: "user",
+          enabled: true,
+          displayName: "browser-tools",
+          shortDescription: "Interactive browser automation",
+        },
+      ]);
+    }),
+  );
+
   it.effect("falls back to Pi default when model discovery returns no models", () =>
     Effect.gen(function* () {
       const binaryPath = yield* Effect.promise(() =>

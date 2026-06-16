@@ -15,13 +15,17 @@ import {
   type ProviderSessionStartInput,
   type ProviderTurnStartResult,
 } from "@t3tools/contracts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, it, vi } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 
+import { attachmentRelativePath } from "../../attachmentStore.ts";
+import { ServerConfig } from "../../config.ts";
 import type { ProviderAdapterError } from "../Errors.ts";
 import { makePiAdapter, type PiAdapterShape } from "./PiAdapter.ts";
 import {
@@ -162,12 +166,12 @@ class FakePiRuntime implements PiSessionRuntimeShape {
   }
 }
 
-function withHarness<T>(
+function withHarness<T, R = never>(
   configure: ((runtime: FakePiRuntime) => void) | undefined,
   use: (harness: {
     adapter: PiAdapterShape;
     runtime: FakePiRuntime;
-  }) => Effect.Effect<T, ProviderAdapterError>,
+  }) => Effect.Effect<T, ProviderAdapterError, R>,
   startInput?: Partial<ProviderSessionStartInput>,
   adapterOptions?: { readonly instanceId?: ProviderInstanceId },
 ) {
@@ -284,6 +288,47 @@ describe("PiAdapter", () => {
         }),
     ),
   );
+
+  it.effect("forwards composer image attachments to Pi prompt input", () => {
+    const attachment = {
+      type: "image" as const,
+      id: "thread-pi-adapter-123e4567-e89b-12d3-a456-426614174000",
+      name: "diagram.png",
+      mimeType: "image/png",
+      sizeBytes: 4,
+    };
+
+    return withHarness(undefined, ({ adapter, runtime }) =>
+      Effect.gen(function* () {
+        const serverConfig = yield* ServerConfig;
+        writeFileSync(
+          join(serverConfig.attachmentsDir, attachmentRelativePath(attachment)),
+          Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+        );
+
+        yield* adapter.sendTurn({
+          threadId,
+          input: "describe this image",
+          attachments: [attachment],
+        });
+
+        assert.equal(runtime.promptInputs.length, 1);
+        assert.deepEqual(runtime.promptInputs[0]?.images, [
+          {
+            type: "image",
+            mimeType: "image/png",
+            data: "iVBORw==",
+          },
+        ]);
+      }),
+    ).pipe(
+      Effect.provide(
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-pi-attachments-" }).pipe(
+          Layer.provide(NodeServices.layer),
+        ),
+      ),
+    );
+  });
 
   it.effect("maps thought streaming and usage refresh", () =>
     withHarness(
