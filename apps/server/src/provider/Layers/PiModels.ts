@@ -1,7 +1,13 @@
-import { type ServerProviderModel } from "@t3tools/contracts";
+import { type ModelCapabilities, type ServerProviderModel } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 
-const PI_MODEL_CAPABILITIES = createModelCapabilities({ optionDescriptors: [] });
+import {
+  getSupportedPiThinkingLevels,
+  PI_THINKING_LEVEL_LABELS,
+  type PiThinkingLevelMap,
+} from "./PiThinking.ts";
+
+const EMPTY_PI_MODEL_CAPABILITIES = createModelCapabilities({ optionDescriptors: [] });
 const FALLBACK_MODEL_SLUG = "default";
 
 export const FALLBACK_PI_MODELS: ReadonlyArray<ServerProviderModel> = [
@@ -9,7 +15,7 @@ export const FALLBACK_PI_MODELS: ReadonlyArray<ServerProviderModel> = [
     slug: FALLBACK_MODEL_SLUG,
     name: "Pi default",
     isCustom: false,
-    capabilities: PI_MODEL_CAPABILITIES,
+    capabilities: EMPTY_PI_MODEL_CAPABILITIES,
   },
 ];
 
@@ -17,6 +23,9 @@ interface PiModelCandidate {
   readonly id: string;
   readonly name?: string;
   readonly provider?: string;
+  readonly api?: string;
+  readonly reasoning?: boolean;
+  readonly thinkingLevelMap?: PiThinkingLevelMap;
 }
 
 export interface PiModelSelectionTarget {
@@ -43,6 +52,23 @@ function stringField(
   return undefined;
 }
 
+function booleanField(record: Record<string, unknown>, key: string): boolean | undefined {
+  const value = record[key];
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function readThinkingLevelMap(value: unknown): PiThinkingLevelMap | undefined {
+  if (!isRecord(value)) return undefined;
+  const map: PiThinkingLevelMap = {};
+  for (const level of Object.keys(PI_THINKING_LEVEL_LABELS) as Array<
+    keyof typeof PI_THINKING_LEVEL_LABELS
+  >) {
+    const mapped = value[level];
+    if (mapped === null || typeof mapped === "string") map[level] = mapped;
+  }
+  return map;
+}
+
 function candidateFromModel(
   raw: unknown,
   inheritedProvider?: string,
@@ -60,11 +86,17 @@ function candidateFromModel(
   const id = stringField(raw, ["id", "modelId", "slug", "name"]);
   if (!id) return undefined;
   const name = stringField(raw, ["name", "displayName", "label"]);
-  const provider = stringField(raw, ["provider", "providerId", "api"]) ?? inheritedProvider;
+  const provider = stringField(raw, ["provider", "providerId"]) ?? inheritedProvider;
+  const api = stringField(raw, ["api"]);
+  const reasoning = booleanField(raw, "reasoning");
+  const thinkingLevelMap = readThinkingLevelMap(raw.thinkingLevelMap);
   return {
     id,
     ...(name ? { name } : {}),
     ...(provider ? { provider } : {}),
+    ...(api ? { api } : {}),
+    ...(reasoning !== undefined ? { reasoning } : {}),
+    ...(thinkingLevelMap ? { thinkingLevelMap } : {}),
   };
 }
 
@@ -131,6 +163,31 @@ function readCandidates(payload: unknown): ReadonlyArray<PiModelCandidate> {
   return [];
 }
 
+function makePiModelCapabilities(candidate: PiModelCandidate): ModelCapabilities {
+  if (candidate.reasoning !== true) return EMPTY_PI_MODEL_CAPABILITIES;
+
+  const thinkingLevels = getSupportedPiThinkingLevels(candidate);
+  const firstLevel = thinkingLevels[0];
+  if (!firstLevel) return EMPTY_PI_MODEL_CAPABILITIES;
+
+  const defaultLevel = thinkingLevels.includes("medium") ? "medium" : firstLevel;
+  return createModelCapabilities({
+    optionDescriptors: [
+      {
+        id: "reasoning",
+        label: "Reasoning",
+        type: "select" as const,
+        options: thinkingLevels.map((level) => ({
+          id: level,
+          label: PI_THINKING_LEVEL_LABELS[level],
+          ...(level === defaultLevel ? { isDefault: true } : {}),
+        })),
+        currentValue: defaultLevel,
+      },
+    ],
+  });
+}
+
 export function normalizePiAvailableModels(payload: unknown): ReadonlyArray<ServerProviderModel> {
   const seen = new Set<string>();
   const models: ServerProviderModel[] = [];
@@ -150,7 +207,7 @@ export function normalizePiAvailableModels(payload: unknown): ReadonlyArray<Serv
       shortName: candidate.name ?? modelId,
       subProvider: provider,
       isCustom: false,
-      capabilities: PI_MODEL_CAPABILITIES,
+      capabilities: makePiModelCapabilities(candidate),
     });
   }
 

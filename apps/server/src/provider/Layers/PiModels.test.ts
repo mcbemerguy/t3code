@@ -30,6 +30,62 @@ describe("Pi model normalization", () => {
     );
   });
 
+  it("builds Pi reasoning capabilities from model metadata", () => {
+    const models = normalizePiAvailableModels({
+      models: [
+        {
+          id: "gpt-5.4",
+          name: "GPT 5.4",
+          provider: "openai-codex",
+          api: "openai-codex-responses",
+          reasoning: true,
+          thinkingLevelMap: {
+            minimal: null,
+            high: "high",
+            xhigh: "xhigh",
+          },
+        },
+      ],
+    });
+
+    assert.deepEqual(models[0]?.capabilities?.optionDescriptors, [
+      {
+        id: "reasoning",
+        label: "Reasoning",
+        type: "select",
+        options: [
+          { id: "off", label: "Off" },
+          { id: "low", label: "Low" },
+          { id: "medium", label: "Medium", isDefault: true },
+          { id: "high", label: "High" },
+          { id: "xhigh", label: "Extra High" },
+        ],
+        currentValue: "medium",
+      },
+    ]);
+  });
+
+  it("does not expose reasoning capabilities for non-reasoning Pi models", () => {
+    const models = normalizePiAvailableModels({
+      models: [{ id: "plain-model", provider: "mock", reasoning: false }],
+    });
+
+    assert.deepEqual(models[0]?.capabilities?.optionDescriptors, []);
+  });
+
+  it("only exposes xhigh when Pi metadata explicitly supports it", () => {
+    const models = normalizePiAvailableModels({
+      models: [{ id: "reasoning-model", provider: "mock", reasoning: true }],
+    });
+
+    const descriptor = models[0]?.capabilities?.optionDescriptors?.[0];
+    assert.equal(descriptor?.type, "select");
+    assert.deepEqual(
+      descriptor?.type === "select" ? descriptor.options.map((option) => option.id) : [],
+      ["off", "minimal", "low", "medium", "high"],
+    );
+  });
+
   it("normalizes provider-grouped model lists", () => {
     const models = normalizePiAvailableModels({
       providers: [{ id: "mock", models: [{ id: "model-a" }, "model-b"] }],

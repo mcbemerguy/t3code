@@ -12,6 +12,7 @@ import {
   type ProviderTurnStartResult,
   type ThreadId,
 } from "@t3tools/contracts";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -32,6 +33,7 @@ import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import { basePiEvent, PiEventMapper } from "./PiEventMapper.ts";
 import type { PiAdapterSessionContext } from "./PiAdapterTypes.ts";
 import { parsePiModelSelection } from "./PiModels.ts";
+import { isPiThinkingLevel } from "./PiThinking.ts";
 import {
   DEFAULT_PI_RPC_TIMEOUTS,
   PiRpcLifecycleError,
@@ -242,17 +244,36 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
   ): Effect.fn.Return<void, ProviderAdapterError> {
     if (modelSelection?.instanceId !== boundInstanceId) return;
     const target = parsePiModelSelection(modelSelection.model);
-    if (!target) {
-      if (modelSelection.model === "default") return;
+    if (target) {
+      yield* session.runtime
+        .setModel(target.provider, target.modelId)
+        .pipe(Effect.mapError((cause) => mapPiRuntimeError(session.threadId, "set_model", cause)));
+    } else if (modelSelection.model !== "default") {
       return yield* new ProviderAdapterValidationError({
         provider: PROVIDER,
         operation,
         issue: `Pi model '${modelSelection.model}' must use the '<provider>/<modelId>' format returned by Pi model discovery.`,
       });
     }
+
+    const selectedThinkingLevel =
+      getModelSelectionStringOptionValue(modelSelection, "reasoning") ??
+      getModelSelectionStringOptionValue(modelSelection, "reasoningEffort");
+    if (selectedThinkingLevel === undefined) return;
+    if (!isPiThinkingLevel(selectedThinkingLevel)) {
+      return yield* new ProviderAdapterValidationError({
+        provider: PROVIDER,
+        operation,
+        issue: `Pi thinking level '${selectedThinkingLevel}' is not supported by Pi RPC.`,
+      });
+    }
     yield* session.runtime
-      .setModel(target.provider, target.modelId)
-      .pipe(Effect.mapError((cause) => mapPiRuntimeError(session.threadId, "set_model", cause)));
+      .setThinkingLevel(selectedThinkingLevel)
+      .pipe(
+        Effect.mapError((cause) =>
+          mapPiRuntimeError(session.threadId, "set_thinking_level", cause),
+        ),
+      );
   });
 
   const settlePendingUserInput = Effect.fn("settlePiPendingUserInput")(function* (

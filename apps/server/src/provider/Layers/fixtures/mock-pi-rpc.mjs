@@ -26,6 +26,7 @@ const noIdCommand = process.env.MOCK_PI_RPC_NO_ID_COMMAND;
 const staleIdCommand = process.env.MOCK_PI_RPC_STALE_ID_COMMAND;
 let staleIdRequest = null;
 const extensionUiFile = process.env.MOCK_PI_RPC_EXTENSION_UI_FILE;
+const thinkingFile = process.env.MOCK_PI_RPC_THINKING_FILE;
 const sessionFile = process.env.MOCK_PI_RPC_SESSION_FILE ?? "/tmp/mock-pi-session.json";
 
 function write(message) {
@@ -92,6 +93,10 @@ rl.on("line", (line) => {
       break;
     case "set_model":
       response("set_model", request, { provider: request.provider, modelId: request.modelId });
+      break;
+    case "set_thinking_level":
+      if (thinkingFile) fs.writeFileSync(thinkingFile, JSON.stringify(request));
+      response("set_thinking_level", request, { thinkingLevel: request.level, sessionFile });
       break;
     case "get_session_stats":
       response("get_session_stats", request, { tokens: { input: 10, output: 2 } });

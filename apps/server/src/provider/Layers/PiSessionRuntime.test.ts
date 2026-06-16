@@ -206,6 +206,28 @@ describe("PiSessionRuntime", () => {
     ),
   );
 
+  it.effect("sends set_thinking_level over Pi RPC", () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "pi-rpc-thinking-")));
+      const thinkingFile = path.join(dir, "thinking.json");
+      const runtime = yield* makeRuntime({ MOCK_PI_RPC_THINKING_FILE: thinkingFile });
+
+      yield* runtime.start();
+      yield* Effect.gen(function* () {
+        const result = yield* runtime.setThinkingLevel("high");
+        assert.deepStrictEqual(result, {
+          thinkingLevel: "high",
+          sessionFile: "/tmp/mock-pi-session.json",
+        });
+        const request = (yield* Effect.promise(() =>
+          readJsonFileEventually(thinkingFile),
+        )) as Record<string, unknown>;
+        assert.equal(request.type, "set_thinking_level");
+        assert.equal(request.level, "high");
+      }).pipe(Effect.ensuring(runtime.close));
+    }).pipe(Effect.orDie),
+  );
+
   it.effect("times out pending requests with process diagnostics", () =>
     withStartedRuntime({ MOCK_PI_RPC_IGNORE_COMMAND: "get_session_stats" }, (runtime) =>
       Effect.gen(function* () {
