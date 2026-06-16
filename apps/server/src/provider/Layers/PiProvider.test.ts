@@ -104,4 +104,19 @@ it.layer(NodeServices.layer)("checkPiProviderStatus", (it) => {
       expect(provider.message).toContain("mock failure: get_available_models");
     }),
   );
+
+  it.effect("keeps the provider available when Pi RPC command discovery fails", () =>
+    Effect.gen(function* () {
+      const binaryPath = yield* Effect.promise(() =>
+        makeMockPiWrapper({ MOCK_PI_RPC_FAIL_COMMAND: "get_commands" }),
+      );
+      const provider = yield* checkPiProviderStatus({ enabled: true, binaryPath });
+
+      expect(provider.status).toBe("ready");
+      expect(provider.models.map((model) => model.slug)).toEqual(["mock/model-a"]);
+      expect(provider.slashCommands).toEqual([]);
+      expect(provider.skills).toEqual([]);
+      expect(provider.message).toContain("Command discovery failed: mock failure: get_commands");
+    }),
+  );
 });

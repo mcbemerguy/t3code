@@ -78,6 +78,7 @@ export type PiRpcCommand =
   | { readonly type: "abort"; readonly id?: string }
   | { readonly type: "get_state"; readonly id?: string }
   | { readonly type: "get_available_models"; readonly id?: string }
+  | { readonly type: "get_commands"; readonly id?: string }
   | {
       readonly type: "set_model";
       readonly id?: string;
