@@ -332,6 +332,13 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
   ): Effect.Effect<void> =>
     Effect.gen(function* () {
       if (session.stopped) return;
+      const forcedOptions = mergeUsageRefreshOptions(
+        mergeUsageRefreshOptions(
+          session.usageRefreshPendingOptions,
+          session.usageRefreshQueuedOptions,
+        ),
+        refreshOptions,
+      );
       yield* clearUsageRefreshTimer(session);
       session.usageRefreshQueued = false;
       session.usageRefreshQueuedForce = false;
@@ -339,11 +346,11 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       if (session.usageRefreshInFlight) {
         const waiter = yield* Deferred.make<void>();
         session.usageRefreshWaiters.add(waiter);
-        queueUsageRefresh(session, refreshOptions, true);
+        queueUsageRefresh(session, forcedOptions, true);
         yield* Deferred.await(waiter);
         return;
       }
-      yield* runUsageRefreshNow(session, { ...refreshOptions, force: true });
+      yield* runUsageRefreshNow(session, { ...forcedOptions, force: true });
     });
 
   const currentResumeCursor = (session: PiAdapterSessionContext) =>
@@ -782,24 +789,28 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       } satisfies ProviderRuntimeEvent,
     ]);
     yield* startPiWorkflowCommandMonitor(session, offer, input.input ?? "");
-    const result = yield* session.runtime.prompt({ message: input.input ?? "", images }).pipe(
-      Effect.tap((providerResult) =>
-        Effect.sync(() => {
-          const cursor = parsePiResumeCursor(providerResult.resumeCursor);
-          if (cursor?.sessionFile) session.sessionFile = cursor.sessionFile;
-        }),
-      ),
-      Effect.tapError((cause) =>
-        completeTurn(session, undefined, "failed", {
-          errorMessage: describeError(cause, "Pi prompt failed"),
-        }),
-      ),
-      Effect.mapError((cause) => mapPiRuntimeError(input.threadId, "prompt", cause)),
-    );
-    for (let index = 0; index < 5 && !session.turnCompleted; index += 1) {
-      yield* Effect.yieldNow;
-    }
-    yield* forceUsageRefresh(session);
+    const result = yield* Effect.gen(function* () {
+      const providerResult = yield* session.runtime
+        .prompt({ message: input.input ?? "", images })
+        .pipe(
+          Effect.tap((promptResult) =>
+            Effect.sync(() => {
+              const cursor = parsePiResumeCursor(promptResult.resumeCursor);
+              if (cursor?.sessionFile) session.sessionFile = cursor.sessionFile;
+            }),
+          ),
+          Effect.tapError((cause) =>
+            completeTurn(session, undefined, "failed", {
+              errorMessage: describeError(cause, "Pi prompt failed"),
+            }),
+          ),
+          Effect.mapError((cause) => mapPiRuntimeError(input.threadId, "prompt", cause)),
+        );
+      for (let index = 0; index < 5 && !session.turnCompleted; index += 1) {
+        yield* Effect.yieldNow;
+      }
+      return providerResult;
+    }).pipe(Effect.ensuring(forceUsageRefresh(session)));
     return {
       threadId: result.threadId,
       turnId,

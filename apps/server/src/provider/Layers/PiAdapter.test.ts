@@ -709,6 +709,65 @@ describe("PiAdapter", () => {
     ).pipe(Effect.provide(TestClock.layer())),
   );
 
+  it.effect("preserves pending compaction markers when forcing final Pi usage", () =>
+    withHarness(
+      (fake) => {
+        fake.statsResponses = [piStats(80_000), piStats(1_000)];
+        fake.promptScript = (rt) =>
+          Effect.gen(function* () {
+            yield* rt.emit({ type: "auto_compaction_end" });
+            yield* rt.emit({ type: "prompt_end", success: true });
+          });
+      },
+      ({ adapter, runtime }) =>
+        Effect.gen(function* () {
+          const eventsFiber = yield* collectEvents(adapter, 2, isUsageEvent).pipe(
+            Effect.timeout("5 seconds"),
+            Effect.orDie,
+            Effect.forkChild,
+          );
+
+          yield* runtime.emit({
+            type: "message_end",
+            message: { role: "assistant", content: "seed high usage" },
+          });
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("600 millis");
+          yield* adapter.sendTurn({ threadId, input: "compact" });
+          const events = yield* Fiber.join(eventsFiber);
+
+          assert.deepEqual(events.map(usageUsedTokens), [80_000, 1_000]);
+        }),
+      undefined,
+      { usageDebounceMs: 500 },
+    ).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("forces a final native Pi usage refresh after prompt failure", () =>
+    withHarness(
+      (fake) => {
+        fake.stats = piStats(777);
+        fake.promptImpl.mockRejectedValueOnce(new Error("prompt failed"));
+      },
+      ({ adapter, runtime }) =>
+        Effect.gen(function* () {
+          const eventsFiber = yield* collectEvents(adapter, 1, isUsageEvent).pipe(
+            Effect.timeout("1 second"),
+            Effect.orDie,
+            Effect.forkChild,
+          );
+          const result = yield* adapter
+            .sendTurn({ threadId, input: "fail after usage changes" })
+            .pipe(Effect.result);
+          const events = yield* Fiber.join(eventsFiber);
+
+          assert.equal(result._tag, "Failure");
+          assert.equal(runtime.statsReadCount, 1);
+          assert.equal(usageUsedTokens(events[0]!), 777);
+        }),
+    ),
+  );
+
   it.effect("does not let stale parent stats overwrite richer live workflow usage", () =>
     withHarness(
       (fake) => {
