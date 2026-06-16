@@ -4,6 +4,7 @@ import {
   type UserInputQuestion,
 } from "@t3tools/contracts";
 
+import { stripAnsi } from "./PiRpcProtocol.ts";
 import type {
   PiExtensionUiResponseInput,
   PiRpcEvent,
@@ -163,20 +164,11 @@ export function describeFireAndForgetExtensionUiEvent(event: PiRpcEvent): string
   switch (method) {
     case "notify":
       return readString(event.message) ?? "Pi sent a notification.";
-    case "setStatus": {
-      const status = readString(event.statusText);
-      return status ? `Pi status: ${status}` : "Pi cleared a status indicator.";
-    }
-    case "setWidget": {
-      const key = readString(event.widgetKey);
-      return key ? `Pi updated widget: ${key}` : "Pi updated an extension widget.";
-    }
-    case "setTitle": {
-      const title = readString(event.title);
-      return title ? `Pi title: ${title}` : "Pi updated the extension title.";
-    }
+    case "setStatus":
+    case "setWidget":
+    case "setTitle":
     case "set_editor_text":
-      return "Pi updated extension editor text.";
+      return undefined;
     default:
       return isDialogExtensionUiMethod(method) ? undefined : `Pi extension UI event: ${method}`;
   }
@@ -319,7 +311,9 @@ function coerceId(value: unknown): string | undefined {
 }
 
 function readString(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
+  if (typeof value !== "string") return undefined;
+  const cleaned = stripAnsi(value);
+  return cleaned.trim() ? cleaned : undefined;
 }
 
 function sanitizeId(value: string): string {
