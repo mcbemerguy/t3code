@@ -104,9 +104,6 @@ function dedupeSlashCommands(
 }
 
 function normalizeSkillName(command: PiCommandCandidate): string | undefined {
-  const fromSourceInfo = readTrimmedString(command.sourceInfo?.source);
-  if (fromSourceInfo) return fromSourceInfo;
-
   const withoutPrefix = command.name.startsWith("skill:")
     ? command.name.slice("skill:".length)
     : command.name;

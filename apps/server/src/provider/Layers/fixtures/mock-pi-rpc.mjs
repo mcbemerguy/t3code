@@ -114,7 +114,7 @@ rl.on("line", (line) => {
             source: "skill",
             sourceInfo: {
               path: "/mock/pi/skills/browser-tools/SKILL.md",
-              source: "browser-tools",
+              source: "local",
               scope: "user",
               origin: "top-level",
               baseDir: "/mock/pi/skills/browser-tools",
