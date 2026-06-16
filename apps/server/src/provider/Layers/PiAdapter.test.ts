@@ -421,6 +421,59 @@ describe("PiAdapter", () => {
     ),
   );
 
+  it.effect("does not apply Pi model selection when image attachment materialization fails", () =>
+    withHarness(undefined, ({ adapter, runtime }) =>
+      Effect.gen(function* () {
+        const invalid = yield* adapter
+          .sendTurn({
+            threadId,
+            input: "bad",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("pi"),
+              model: "mock/model-b",
+              options: [{ id: "reasoning", value: "high" }],
+            },
+            attachments: [
+              {
+                type: "image" as const,
+                id: "../bad",
+                name: "bad.png",
+                mimeType: "image/png",
+                sizeBytes: 1,
+              },
+            ],
+          })
+          .pipe(Effect.result);
+        assert.equal(invalid._tag, "Failure");
+
+        const missing = yield* adapter
+          .sendTurn({
+            threadId,
+            input: "missing",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("pi"),
+              model: "mock/model-c",
+              options: [{ id: "reasoning", value: "medium" }],
+            },
+            attachments: [
+              {
+                type: "image" as const,
+                id: "thread-pi-adapter-123e4567-e89b-12d3-a456-426614174003",
+                name: "missing.png",
+                mimeType: "image/png",
+                sizeBytes: 1,
+              },
+            ],
+          })
+          .pipe(Effect.result);
+        assert.equal(missing._tag, "Failure");
+        assert.deepEqual(runtime.modelSelections, []);
+        assert.deepEqual(runtime.thinkingLevels, []);
+        assert.equal(runtime.promptImpl.mock.calls.length, 0);
+      }),
+    ),
+  );
+
   it.effect("maps thought streaming and usage refresh", () =>
     withHarness(
       (fake) => {

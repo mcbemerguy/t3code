@@ -621,8 +621,8 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       };
     }
 
-    yield* applyModelSelection(session, input.modelSelection, "sendTurn");
     const images = yield* resolveImageAttachments("turn/start", input);
+    yield* applyModelSelection(session, input.modelSelection, "sendTurn");
 
     const turnId = TurnId.make(`pi-turn-${++turnCounter}`);
     session.currentTurnId = turnId;
