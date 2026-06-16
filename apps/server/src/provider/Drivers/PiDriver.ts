@@ -1,10 +1,12 @@
 import { PiSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
+import { ServerConfig } from "../../config.ts";
 import { makeUnsupportedPiTextGeneration } from "../../textGeneration/PiTextGeneration.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makePiAdapter } from "../Layers/PiAdapter.ts";
@@ -24,7 +26,10 @@ const decodePiSettings = Schema.decodeSync(PiSettings);
 const DRIVER_KIND = ProviderDriverKind.make("pi");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
 
-export type PiDriverEnv = ChildProcessSpawner.ChildProcessSpawner;
+export type PiDriverEnv =
+  | ChildProcessSpawner.ChildProcessSpawner
+  | FileSystem.FileSystem
+  | ServerConfig;
 
 const withInstanceIdentity =
   (input: {

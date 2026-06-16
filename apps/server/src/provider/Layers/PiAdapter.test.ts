@@ -202,6 +202,12 @@ function withHarness<T, R = never>(
       });
       return yield* use({ adapter, runtime: runtimes[0] as FakePiRuntime });
     }),
+  ).pipe(
+    Effect.provide(
+      ServerConfig.layerTest(process.cwd(), { prefix: "t3-pi-adapter-" }).pipe(
+        Layer.provideMerge(NodeServices.layer),
+      ),
+    ),
   );
 }
 
@@ -321,14 +327,99 @@ describe("PiAdapter", () => {
           },
         ]);
       }),
-    ).pipe(
-      Effect.provide(
-        ServerConfig.layerTest(process.cwd(), { prefix: "t3-pi-attachments-" }).pipe(
-          Layer.provide(NodeServices.layer),
-        ),
-      ),
     );
   });
+
+  it.effect("forwards composer image attachments to Pi steering input", () => {
+    const attachment = {
+      type: "image" as const,
+      id: "thread-pi-adapter-123e4567-e89b-12d3-a456-426614174001",
+      name: "diagram.png",
+      mimeType: "image/png",
+      sizeBytes: 4,
+    };
+
+    return withHarness(undefined, ({ adapter, runtime }) =>
+      Effect.gen(function* () {
+        const serverConfig = yield* ServerConfig;
+        writeFileSync(
+          join(serverConfig.attachmentsDir, attachmentRelativePath(attachment)),
+          Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+        );
+
+        yield* adapter.sendTurn({ threadId, input: "start" });
+        yield* adapter.sendTurn({ threadId, input: "include this", attachments: [attachment] });
+        yield* adapter.sendActiveTurnInput({
+          threadId,
+          input: "direct steer",
+          attachments: [attachment],
+        });
+
+        assert.deepEqual(runtime.steerImpl.mock.calls[0]?.[0].images, [
+          {
+            type: "image",
+            mimeType: "image/png",
+            data: "iVBORw==",
+          },
+        ]);
+        assert.deepEqual(runtime.steerImpl.mock.calls[1]?.[0].images, [
+          {
+            type: "image",
+            mimeType: "image/png",
+            data: "iVBORw==",
+          },
+        ]);
+      }),
+    );
+  });
+
+  it.effect("fails Pi image attachment materialization like other provider adapters", () =>
+    withHarness(undefined, ({ adapter }) =>
+      Effect.gen(function* () {
+        const invalid = yield* adapter
+          .sendTurn({
+            threadId,
+            input: "bad",
+            attachments: [
+              {
+                type: "image" as const,
+                id: "../bad",
+                name: "bad.png",
+                mimeType: "image/png",
+                sizeBytes: 1,
+              },
+            ],
+          })
+          .pipe(Effect.result);
+        assert.equal(invalid._tag, "Failure");
+        if (invalid._tag === "Failure") {
+          assert.equal(invalid.failure._tag, "ProviderAdapterRequestError");
+          assert.equal(invalid.failure.detail, "Invalid attachment id '../bad'.");
+        }
+
+        const missing = yield* adapter
+          .sendTurn({
+            threadId,
+            input: "missing",
+            attachments: [
+              {
+                type: "image" as const,
+                id: "thread-pi-adapter-123e4567-e89b-12d3-a456-426614174002",
+                name: "missing.png",
+                mimeType: "image/png",
+                sizeBytes: 1,
+              },
+            ],
+          })
+          .pipe(Effect.result);
+        assert.equal(missing._tag, "Failure");
+        if (missing._tag === "Failure") {
+          assert.equal(missing.failure._tag, "ProviderAdapterRequestError");
+          assert.equal(missing.failure.detail.startsWith("Failed to read attachment file:"), true);
+        }
+      }),
+    ),
+  );
 
   it.effect("maps thought streaming and usage refresh", () =>
     withHarness(

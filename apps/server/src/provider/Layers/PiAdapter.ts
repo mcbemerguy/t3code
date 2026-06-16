@@ -17,11 +17,14 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { ServerConfig } from "../../config.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -64,6 +67,12 @@ import {
 
 const PROVIDER = ProviderDriverKind.make("pi");
 const DEFAULT_USAGE_DEBOUNCE_MS = 50;
+
+type PiImageContent = {
+  readonly type: "image";
+  readonly data: string;
+  readonly mimeType: string;
+};
 
 export interface PiAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
@@ -117,6 +126,8 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
   options?: PiAdapterLiveOptions,
 ) {
   const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("pi");
+  const fileSystem = yield* FileSystem.FileSystem;
+  const serverConfig = yield* Effect.service(ServerConfig);
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
   const sessions = new Map<ThreadId, PiAdapterSessionContext>();
   let turnCounter = 0;
@@ -229,6 +240,50 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     if (typeof error === "string" && error.trim()) return error;
     return fallback;
   };
+
+  const resolveImageAttachment = Effect.fn("resolvePiImageAttachment")(function* (
+    method: string,
+    attachment: NonNullable<ProviderSendTurnInput["attachments"]>[number],
+  ): Effect.fn.Return<PiImageContent, ProviderAdapterError> {
+    const attachmentPath = resolveAttachmentPath({
+      attachmentsDir: serverConfig.attachmentsDir,
+      attachment,
+    });
+    if (!attachmentPath) {
+      return yield* new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method,
+        detail: `Invalid attachment id '${attachment.id}'.`,
+      });
+    }
+    const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method,
+            detail: `Failed to read attachment file: ${cause.message}.`,
+            cause,
+          }),
+      ),
+    );
+    return {
+      type: "image",
+      mimeType: attachment.mimeType,
+      data: Buffer.from(bytes).toString("base64"),
+    };
+  });
+
+  const resolveImageAttachments = Effect.fn("resolvePiImageAttachments")(function* (
+    method: string,
+    input: ProviderSendTurnInput,
+  ): Effect.fn.Return<ReadonlyArray<PiImageContent>, ProviderAdapterError> {
+    return yield* Effect.forEach(
+      input.attachments ?? [],
+      (attachment) => resolveImageAttachment(method, attachment),
+      { concurrency: 1 },
+    );
+  });
 
   const requireSession = Effect.fn("requirePiSession")(function* (threadId: ThreadId) {
     const session = sessions.get(threadId);
@@ -556,8 +611,9 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     if (controlResult) return controlResult;
 
     if (!session.turnCompleted) {
+      const images = yield* resolveImageAttachments("turn/start", input);
       yield* session.runtime
-        .steer({ message: input.input ?? "", images: [] })
+        .steer({ message: input.input ?? "", images })
         .pipe(Effect.mapError((cause) => mapPiRuntimeError(input.threadId, "steer", cause)));
       return {
         threadId: input.threadId,
@@ -566,6 +622,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     }
 
     yield* applyModelSelection(session, input.modelSelection, "sendTurn");
+    const images = yield* resolveImageAttachments("turn/start", input);
 
     const turnId = TurnId.make(`pi-turn-${++turnCounter}`);
     session.currentTurnId = turnId;
@@ -579,7 +636,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       } satisfies ProviderRuntimeEvent,
     ]);
     yield* startPiWorkflowCommandMonitor(session, offer, input.input ?? "");
-    const result = yield* session.runtime.prompt({ message: input.input ?? "", images: [] }).pipe(
+    const result = yield* session.runtime.prompt({ message: input.input ?? "", images }).pipe(
       Effect.tap((providerResult) =>
         Effect.sync(() => {
           const cursor = parsePiResumeCursor(providerResult.resumeCursor);
@@ -600,17 +657,15 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     };
   });
 
-  const sendActiveTurnInput = (input: ProviderSendTurnInput) =>
-    requireSession(input.threadId).pipe(
-      Effect.flatMap((session) =>
-        session.runtime.steer({ message: input.input ?? "", images: [] }),
-      ),
-      Effect.mapError((cause) =>
-        cause._tag === "ProviderAdapterSessionNotFoundError"
-          ? cause
-          : mapPiRuntimeError(input.threadId, "steer", cause),
-      ),
-    );
+  const sendActiveTurnInput = Effect.fn("sendPiActiveTurnInput")(function* (
+    input: ProviderSendTurnInput,
+  ): Effect.fn.Return<void, ProviderAdapterError> {
+    const session = yield* requireSession(input.threadId);
+    const images = yield* resolveImageAttachments("turn/start", input);
+    yield* session.runtime
+      .steer({ message: input.input ?? "", images })
+      .pipe(Effect.mapError((cause) => mapPiRuntimeError(input.threadId, "steer", cause)));
+  });
 
   const pauseActiveWorkflows = (session: PiAdapterSessionContext) =>
     Effect.gen(function* () {
