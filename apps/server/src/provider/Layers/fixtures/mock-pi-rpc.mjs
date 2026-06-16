@@ -109,7 +109,7 @@ rl.on("line", (line) => {
             },
           },
           {
-            name: "browser-tools",
+            name: "skill:browser-tools",
             description: "Interactive browser automation",
             source: "skill",
             sourceInfo: {
