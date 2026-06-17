@@ -186,6 +186,130 @@ it.layer(TestLayer)("WorkspaceEntriesLive", (it) => {
       }),
     );
 
+    it.effect("searches an explicitly typed ignored directory scope", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-explicit-ignored-", git: true });
+        yield* writeTextFile(cwd, ".gitignore", ".local/\n");
+        yield* writeTextFile(cwd, "src/keep.ts", "export {};");
+        yield* writeTextFile(cwd, ".local/t3code/src/ignored-search-target.ts", "export {};");
+        yield* writeTextFile(cwd, ".local/t3code/.git/config", "[core]\n");
+
+        const defaultResult = yield* searchWorkspaceEntries({
+          cwd,
+          query: "ignored-search-target",
+          limit: 100,
+        });
+        const scopedResult = yield* searchWorkspaceEntries({ cwd, query: ".local/", limit: 100 });
+        const nestedResult = yield* searchWorkspaceEntries({
+          cwd,
+          query: ".local/t3code/ignored-search-target",
+          limit: 100,
+        });
+        const scopedPaths = scopedResult.entries.map((entry) => entry.path);
+        const nestedPaths = nestedResult.entries.map((entry) => entry.path);
+
+        expect(defaultResult.entries).toHaveLength(0);
+        expect(scopedPaths).toContain(".local/t3code");
+        expect(scopedPaths).toContain(".local/t3code/src/ignored-search-target.ts");
+        expect(scopedPaths.some((entryPath) => entryPath.includes("/.git/"))).toBe(false);
+        expect(nestedPaths).toContain(".local/t3code/src/ignored-search-target.ts");
+      }),
+    );
+
+    it.effect("does not follow an explicit scope symlink outside cwd", () =>
+      Effect.gen(function* () {
+        if (process.platform === "win32") {
+          return;
+        }
+
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-symlink-scope-" });
+        const outside = yield* makeTempDir({ prefix: "t3code-workspace-outside-scope-" });
+        yield* writeTextFile(outside, "outside-secret.ts", "export {};");
+        yield* Effect.promise(() => fsPromises.symlink(outside, path.join(cwd, ".local"), "dir"));
+
+        const result = yield* searchWorkspaceEntries({ cwd, query: ".local/", limit: 100 });
+        const paths = result.entries.map((entry) => entry.path);
+
+        expect(paths).not.toContain(".local/outside-secret.ts");
+      }),
+    );
+
+    it.effect("caches explicit scope scans across nested queries", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-explicit-cache-", git: true });
+        yield* writeTextFile(cwd, ".gitignore", ".local/\n");
+        yield* writeTextFile(cwd, ".local/alpha.ts", "export {};");
+        yield* writeTextFile(cwd, ".local/beta.ts", "export {};");
+
+        const explicitScopePath = path.join(cwd, ".local");
+        let explicitScopeReadCount = 0;
+        const originalReaddir = fsPromises.readdir.bind(fsPromises);
+        vi.spyOn(fsPromises, "readdir").mockImplementation((async (
+          ...args: Parameters<typeof fsPromises.readdir>
+        ) => {
+          if (args[0] === explicitScopePath) {
+            explicitScopeReadCount += 1;
+          }
+          return originalReaddir(...args);
+        }) as typeof fsPromises.readdir);
+
+        yield* searchWorkspaceEntries({ cwd, query: ".local/a", limit: 100 });
+        yield* searchWorkspaceEntries({ cwd, query: ".local/b", limit: 100 });
+
+        expect(explicitScopeReadCount).toBe(1);
+      }),
+    );
+
+    it.effect("invalidates explicit scope scans with the workspace index", () =>
+      Effect.gen(function* () {
+        const workspaceEntries = yield* WorkspaceEntries;
+        const cwd = yield* makeTempDir({
+          prefix: "t3code-workspace-explicit-invalidate-",
+          git: true,
+        });
+        yield* writeTextFile(cwd, ".gitignore", ".local/\n");
+        yield* writeTextFile(cwd, ".local/alpha.ts", "export {};");
+
+        const initial = yield* searchWorkspaceEntries({ cwd, query: ".local/", limit: 100 });
+        yield* writeTextFile(cwd, ".local/beta.ts", "export {};");
+        const cached = yield* searchWorkspaceEntries({ cwd, query: ".local/beta", limit: 100 });
+        yield* workspaceEntries.invalidate(cwd);
+        const refreshed = yield* searchWorkspaceEntries({ cwd, query: ".local/beta", limit: 100 });
+
+        expect(initial.entries.map((entry) => entry.path)).toContain(".local/alpha.ts");
+        expect(cached.entries.map((entry) => entry.path)).not.toContain(".local/beta.ts");
+        expect(refreshed.entries.map((entry) => entry.path)).toContain(".local/beta.ts");
+      }),
+    );
+
+    it.effect("keeps normal indexed path scopes on the gitignored workspace index", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-indexed-scope-", git: true });
+        yield* writeTextFile(cwd, ".gitignore", "src/ignored/\n");
+        yield* writeTextFile(cwd, "src/keep.ts", "export {};");
+        yield* writeTextFile(cwd, "src/ignored/secret.ts", "export {};");
+
+        const indexedScopeResult = yield* searchWorkspaceEntries({
+          cwd,
+          query: "src/",
+          limit: 100,
+        });
+        const ignoredScopeResult = yield* searchWorkspaceEntries({
+          cwd,
+          query: "src/ignored/",
+          limit: 100,
+        });
+        const indexedScopePaths = indexedScopeResult.entries.map((entry) => entry.path);
+        const ignoredScopePaths = ignoredScopeResult.entries.map((entry) => entry.path);
+
+        expect(indexedScopePaths).toContain("src/keep.ts");
+        expect(indexedScopePaths).not.toContain("src/ignored/secret.ts");
+        expect(ignoredScopePaths).toContain("src/ignored/secret.ts");
+      }),
+    );
+
     it.effect("excludes tracked paths that match ignore rules", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTempDir({
