@@ -23,6 +23,7 @@ import type { PiWorkflowEventMapper } from "./PiWorkflowMapper.ts";
 export interface PiToolState {
   readonly toolName: string;
   readonly itemId: RuntimeItemId;
+  readonly turnId?: TurnId;
   readonly updates: Array<unknown>;
   readonly presentation: PiToolLifecyclePresentation;
   readonly snapshot?: PiToolSnapshot;
@@ -38,12 +39,14 @@ export interface PiAdapterSessionContext {
   readonly pendingUserInputs: Map<RuntimeRequestId, PiPendingUserInputRequest>;
   readonly workflowRuns: Map<string, PiWorkflowRunCursor>;
   readonly workflowTails: Map<string, PiWorkflowTailCursor>;
+  readonly workflowRunTurnIds: Map<string, TurnId>;
   readonly workflowMonitorDisposers: Set<() => void>;
   readonly workflowMonitorRunIds: Set<string>;
   workflowMapper?: PiWorkflowEventMapper;
   sessionFile?: string;
   stopped: boolean;
   currentTurnId?: TurnId;
+  latestTurnId?: TurnId;
   turnCompleted: boolean;
   assistantItemId?: RuntimeItemId;
   reasoningItemId?: RuntimeItemId;

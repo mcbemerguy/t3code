@@ -9,6 +9,7 @@ import {
   RuntimeTaskId,
   type ProviderRuntimeEvent,
   type RuntimePlanStepStatus,
+  type TurnId,
 } from "@t3tools/contracts";
 
 import type { PiAdapterSessionContext } from "./PiAdapterTypes.ts";
@@ -443,12 +444,13 @@ export function basePiWorkflowEvent(
   source?: PiWorkflowReplayRecord["source"],
   input?: { readonly itemId?: RuntimeItemId },
 ): Omit<ProviderRuntimeEvent, "type" | "payload"> {
+  const turnId = workflowEventTurnId(session, record);
   return {
     eventId: EventId.make(`pi-workflow-${randomUUID()}`),
     provider: PROVIDER,
     threadId: session.threadId,
     createdAt: new Date().toISOString(),
-    ...(session.currentTurnId ? { turnId: session.currentTurnId } : {}),
+    ...(turnId ? { turnId } : {}),
     ...(input?.itemId ? { itemId: input.itemId } : {}),
     raw: {
       source: "pi.workflow.artifact",
@@ -456,6 +458,14 @@ export function basePiWorkflowEvent(
       payload: { ...record, ...(source ? { _source: source } : {}) },
     },
   };
+}
+
+function workflowEventTurnId(
+  session: PiAdapterSessionContext,
+  record: Record<string, unknown>,
+): TurnId | undefined {
+  const runId = stringField(record.runId);
+  return (runId ? session.workflowRunTurnIds.get(runId) : undefined) ?? session.currentTurnId;
 }
 
 function isReplayRecord(value: unknown): value is PiWorkflowReplayRecord {

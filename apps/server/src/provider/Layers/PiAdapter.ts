@@ -183,7 +183,6 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       delete session.currentTurnId;
       delete session.assistantItemId;
       delete session.reasoningItemId;
-      session.tools.clear();
     });
 
   const queueUsageRefresh = (
@@ -586,6 +585,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
             (resumeCursor?.workflows?.activeRuns ?? []).map((run) => [run.runId, run] as const),
           ),
           workflowTails: new Map(),
+          workflowRunTurnIds: new Map(),
           workflowMonitorDisposers: new Set(),
           workflowMonitorRunIds: new Set(),
           ...(resumeCursor?.sessionFile ? { sessionFile: resumeCursor.sessionFile } : {}),
@@ -695,6 +695,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     if (action === "abort" && !previous) {
       session.workflowRuns.delete(target);
       session.workflowTails.delete(target);
+      session.workflowRunTurnIds.delete(target);
     } else {
       session.workflowRuns.set(
         target,
@@ -777,7 +778,9 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     yield* applyModelSelection(session, input.modelSelection, "sendTurn");
 
     const turnId = TurnId.make(`pi-turn-${++turnCounter}`);
+    session.tools.clear();
     session.currentTurnId = turnId;
+    session.latestTurnId = turnId;
     session.turnCompleted = false;
     yield* offer([
       { ...basePiEvent(session), type: "turn.started", payload: {} } satisfies ProviderRuntimeEvent,

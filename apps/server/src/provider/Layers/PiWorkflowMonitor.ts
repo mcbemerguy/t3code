@@ -51,6 +51,7 @@ export function startPiWorkflowCommandMonitor(
 ): Effect.Effect<void> {
   const target = parseWorkflowCommandPrompt(message);
   if (!target) return Effect.void;
+  const launchTurnId = session.currentTurnId ?? session.latestTurnId;
   return Effect.sync(() => {
     const root = options.workflowRunsDir ?? defaultPiWorkflowRunsDir();
     const known = new Set(listPiWorkflowRuns(root).map((run) => run.id));
@@ -77,6 +78,7 @@ export function startPiWorkflowCommandMonitor(
       };
       const cursor = mergeWorkflowRunCursor(session.workflowRuns.get(run.id), discoveredCursor);
       session.workflowRuns.set(run.id, cursor);
+      if (launchTurnId) session.workflowRunTurnIds.set(run.id, launchTurnId);
       Effect.runFork(
         replayRun(session, offer, cursor, { ...options, includeTerminalFallback: false }).pipe(
           Effect.andThen(() =>
@@ -184,8 +186,10 @@ export function replayRun(
           session.workflowTails.delete(cursor.runId);
         } else session.workflowRuns.set(cursor.runId, mergeWorkflowRunCursor(previous, cursor));
       }
+      const terminal = isTerminalWorkflowRecord(replay.record);
       const events = mapper.map(session, replay);
       if (events.length > 0) yield* offer(events);
+      if (cursor && terminal) session.workflowRunTurnIds.delete(cursor.runId);
     }
   });
 }

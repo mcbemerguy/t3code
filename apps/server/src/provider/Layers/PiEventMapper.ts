@@ -8,6 +8,7 @@ import {
   RuntimeItemId,
   RuntimeRequestId,
   type ProviderRuntimeEvent,
+  type TurnId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
@@ -46,6 +47,7 @@ export function basePiEvent(
     readonly raw?: PiRpcRuntimeMessage;
     readonly itemId?: RuntimeItemId;
     readonly requestId?: RuntimeRequestId;
+    readonly turnId?: TurnId;
   },
 ): Omit<ProviderRuntimeEvent, "type" | "payload"> {
   const raw = input?.raw;
@@ -58,12 +60,13 @@ export function basePiEvent(
         : raw?.kind === "prelude"
           ? "prelude"
           : undefined;
+  const turnId = input?.turnId ?? session.currentTurnId;
   return {
     eventId: EventId.make(`pi-${randomUUID()}`),
     provider: PROVIDER,
     threadId: session.threadId,
     createdAt: new Date().toISOString(),
-    ...(session.currentTurnId ? { turnId: session.currentTurnId } : {}),
+    ...(turnId ? { turnId } : {}),
     ...(input?.itemId ? { itemId: input.itemId } : {}),
     ...(input?.requestId ? { requestId: input.requestId } : {}),
     raw: {
@@ -132,11 +135,16 @@ export class PiEventMapper {
 
       if (isWorkflowArtifactEvent(event)) {
         const cursor = runCursorFromWorkflowRecord(event);
+        const terminal = isTerminalWorkflowRecord(event);
         if (cursor) {
           const previous = session.workflowRuns.get(cursor.runId);
           if (previous && cursor.lastSequence > 0 && cursor.lastSequence <= previous.lastSequence)
             return;
-          if (isTerminalWorkflowRecord(event)) {
+          const turnId = session.currentTurnId ?? session.latestTurnId;
+          if (turnId && !session.workflowRunTurnIds.has(cursor.runId)) {
+            session.workflowRunTurnIds.set(cursor.runId, turnId);
+          }
+          if (terminal) {
             session.workflowRuns.delete(cursor.runId);
             session.workflowTails.delete(cursor.runId);
           } else session.workflowRuns.set(cursor.runId, mergeWorkflowRunCursor(previous, cursor));
@@ -145,6 +153,7 @@ export class PiEventMapper {
         session.workflowMapper = workflowMapper;
         const events = workflowMapper.map(session, event);
         if (events.length > 0) yield* self.offer(events);
+        if (cursor && terminal) session.workflowRunTurnIds.delete(cursor.runId);
         if (type === "context_usage_update") yield* self.scheduleUsageRefresh(session);
         return;
       }
@@ -377,16 +386,18 @@ export class PiEventMapper {
       args: event.args,
     });
     const snapshot = captureEditSnapshot(name, event.args, session.cwd);
+    const turnId = latestPiTurnId(session);
     session.tools.set(id, {
       toolName: name,
       itemId,
+      ...(turnId ? { turnId } : {}),
       updates: [],
       presentation,
       ...(snapshot ? { snapshot } : {}),
     });
     return this.offer([
       {
-        ...basePiEvent(session, { raw: message, itemId }),
+        ...basePiEvent(session, toolEventInput(message, itemId, turnId)),
         type: "item.started",
         payload: {
           itemType: presentation.itemType,
@@ -416,13 +427,13 @@ export class PiEventMapper {
       const events: Array<ProviderRuntimeEvent> = [];
       if (updateText) {
         events.push({
-          ...basePiEvent(session, { raw: message, itemId: state.itemId }),
+          ...basePiEvent(session, toolEventInput(message, state.itemId, state.turnId)),
           type: "content.delta",
           payload: { streamKind: "command_output", delta: updateText },
         } satisfies ProviderRuntimeEvent);
       }
       events.push({
-        ...basePiEvent(session, { raw: message, itemId: state.itemId }),
+        ...basePiEvent(session, toolEventInput(message, state.itemId, state.turnId)),
         type: "item.updated",
         payload: {
           itemType: state.presentation.itemType,
@@ -450,9 +461,11 @@ export class PiEventMapper {
       const id = trimText(event.toolCallId) ?? trimText(event.id);
       if (!id) return;
       const fallbackToolName = toolName(event);
+      const fallbackTurnId = latestPiTurnId(session);
       const state = session.tools.get(id) ?? {
         toolName: fallbackToolName,
         itemId: runtimeItemId(`pi-tool-${id}`),
+        ...(fallbackTurnId ? { turnId: fallbackTurnId } : {}),
         updates: [],
         presentation: buildToolLifecyclePresentation({
           toolName: fallbackToolName,
@@ -469,13 +482,13 @@ export class PiEventMapper {
       const events: Array<ProviderRuntimeEvent> = [];
       if (presentation.diagnostic)
         events.push({
-          ...basePiEvent(session, { raw: message, itemId: state.itemId }),
+          ...basePiEvent(session, toolEventInput(message, state.itemId, state.turnId)),
           type: "content.delta",
           payload: { streamKind: "file_change_output", delta: presentation.diagnostic },
         } satisfies ProviderRuntimeEvent);
       if (presentation.outputText)
         events.push({
-          ...basePiEvent(session, { raw: message, itemId: state.itemId }),
+          ...basePiEvent(session, toolEventInput(message, state.itemId, state.turnId)),
           type: "content.delta",
           payload: {
             streamKind:
@@ -487,12 +500,12 @@ export class PiEventMapper {
         } satisfies ProviderRuntimeEvent);
       if (presentation.unifiedDiff)
         events.push({
-          ...basePiEvent(session, { raw: message, itemId: state.itemId }),
+          ...basePiEvent(session, toolEventInput(message, state.itemId, state.turnId)),
           type: "turn.diff.updated",
           payload: { unifiedDiff: presentation.unifiedDiff },
         } satisfies ProviderRuntimeEvent);
       events.push({
-        ...basePiEvent(session, { raw: message, itemId: state.itemId }),
+        ...basePiEvent(session, toolEventInput(message, state.itemId, state.turnId)),
         type: "item.completed",
         payload: {
           itemType: state.presentation.itemType,
@@ -507,6 +520,18 @@ export class PiEventMapper {
       yield* self.scheduleUsageRefresh(session);
     });
   }
+}
+
+function latestPiTurnId(session: PiAdapterSessionContext): TurnId | undefined {
+  return session.currentTurnId ?? session.latestTurnId;
+}
+
+function toolEventInput(
+  raw: PiRpcRuntimeMessage,
+  itemId: RuntimeItemId,
+  turnId: TurnId | undefined,
+): { readonly raw: PiRpcRuntimeMessage; readonly itemId: RuntimeItemId; readonly turnId?: TurnId } {
+  return { raw, itemId, ...(turnId ? { turnId } : {}) };
 }
 
 function mergeToolCompletionData(metadata: object, result: unknown): object {

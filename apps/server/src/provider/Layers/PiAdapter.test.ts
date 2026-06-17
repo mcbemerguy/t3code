@@ -394,6 +394,99 @@ describe("PiAdapter", () => {
     ),
   );
 
+  it.effect("keeps late Pi tool completions attached to the originating turn", () =>
+    withHarness(
+      (fake) => {
+        fake.promptScript = (rt) =>
+          Effect.gen(function* () {
+            yield* rt.emit({
+              type: "tool_execution_start",
+              toolCallId: "tool-1",
+              toolName: "bash",
+              args: { command: "echo done" },
+            });
+            yield* rt.emit({ type: "agent_end" });
+            yield* rt.emit({
+              type: "tool_execution_end",
+              toolCallId: "tool-1",
+              toolName: "bash",
+              result: "done",
+            });
+          });
+      },
+      ({ adapter }) =>
+        Effect.gen(function* () {
+          const eventsFiber = yield* collectEvents(
+            adapter,
+            3,
+            (event) =>
+              (event.type === "item.started" && event.itemId === "pi-tool-tool-1") ||
+              event.type === "turn.completed" ||
+              (event.type === "item.completed" && event.itemId === "pi-tool-tool-1"),
+          ).pipe(Effect.forkChild);
+          const result = yield* adapter.sendTurn({ threadId, input: "run command" });
+          const events = yield* Fiber.join(eventsFiber);
+
+          assert.equal(result.turnId, "pi-turn-1");
+          assert.deepEqual(
+            events.map((event) => [event.type, event.turnId]),
+            [
+              ["item.started", "pi-turn-1"],
+              ["turn.completed", "pi-turn-1"],
+              ["item.completed", "pi-turn-1"],
+            ],
+          );
+        }),
+    ),
+  );
+
+  it.effect("keeps late Pi workflow lifecycle events attached to the originating turn", () =>
+    withHarness(
+      (fake) => {
+        fake.promptScript = (rt) =>
+          Effect.gen(function* () {
+            yield* rt.emit({
+              type: "run_start",
+              runId: "run-turn-1",
+              workflowId: "review-fix",
+              sequence: 1,
+            });
+            yield* rt.emit({ type: "agent_end" });
+            yield* rt.emit({
+              type: "run_end",
+              runId: "run-turn-1",
+              workflowId: "review-fix",
+              status: "completed",
+              sequence: 2,
+            });
+          });
+      },
+      ({ adapter }) =>
+        Effect.gen(function* () {
+          const eventsFiber = yield* collectEvents(
+            adapter,
+            3,
+            (event) =>
+              event.type === "turn.completed" ||
+              (event.raw?.source === "pi.workflow.artifact" &&
+                (event.type === "item.started" || event.type === "item.completed")),
+          ).pipe(Effect.forkChild);
+          const result = yield* adapter.sendTurn({ threadId, input: "/workflow:review-fix" });
+          const events = yield* Fiber.join(eventsFiber);
+
+          assert.equal(result.turnId, "pi-turn-1");
+          assert.deepEqual(
+            events.map((event) => [event.type, event.turnId]),
+            [
+              ["item.started", "pi-turn-1"],
+              ["turn.completed", "pi-turn-1"],
+              ["item.completed", "pi-turn-1"],
+            ],
+          );
+        }),
+    ),
+  );
+
   it.effect("preserves whitespace-only Pi assistant deltas", () =>
     withHarness(
       (fake) => {
