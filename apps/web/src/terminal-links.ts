@@ -104,15 +104,26 @@ function collectMatches(
   return matches;
 }
 
+function isPathCandidateBoundary(value: string | undefined): boolean {
+  return value === undefined || PATH_CANDIDATE_BOUNDARY_PATTERN.test(value);
+}
+
+function isExplicitWindowsPathStartAt(line: string, index: number): boolean {
+  return /^[A-Za-z]:[\\/]/.test(line.slice(index, index + 3)) || line.startsWith("\\\\", index);
+}
+
 function scanPathCandidateEnd(line: string, start: number): number {
   for (let index = start; index < line.length; index += 1) {
     if (PATH_CANDIDATE_HARD_DELIMITERS.has(line[index] ?? "")) return index;
+    if (
+      index > start &&
+      isPathCandidateBoundary(line[index - 1]) &&
+      isExplicitWindowsPathStartAt(line, index)
+    ) {
+      return index;
+    }
   }
   return line.length;
-}
-
-function isPathCandidateBoundary(value: string | undefined): boolean {
-  return value === undefined || PATH_CANDIDATE_BOUNDARY_PATTERN.test(value);
 }
 
 function resolveExplicitPathCandidate(raw: string): string | null {

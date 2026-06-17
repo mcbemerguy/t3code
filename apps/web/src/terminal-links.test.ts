@@ -115,6 +115,24 @@ describe("extractTerminalLinks", () => {
     ]);
   });
 
+  it("does not extend a low-confidence Windows path through a later Windows path", () => {
+    const line = "see C:/tmp/one.log and C:/tmp/two.ts";
+    expect(extractTerminalLinks(line)).toEqual([
+      {
+        kind: "path",
+        text: "C:/tmp/one.log",
+        start: 4,
+        end: 18,
+      },
+      {
+        kind: "path",
+        text: "C:/tmp/two.ts",
+        start: 23,
+        end: 36,
+      },
+    ]);
+  });
+
   it("trims trailing punctuation from Windows forward-slash paths", () => {
     const line = "(C:/tmp/x.ts).";
     expect(extractTerminalLinks(line)).toEqual([
