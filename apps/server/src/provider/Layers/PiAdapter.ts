@@ -1030,7 +1030,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
 
   const runWorkflowControl = Effect.fn("runPiWorkflowControl")(function* (
     session: PiAdapterSessionContext,
-    action: "pause" | "resume" | "abort",
+    action: "interrupt" | "pause" | "resume" | "abort",
     target: string,
     reason: string,
   ) {
@@ -1044,7 +1044,14 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       .pipe(
         Effect.mapError((cause) => mapPiRuntimeError(session.threadId, "workflow_control", cause)),
       );
-    const status = action === "resume" ? "recovering" : action === "pause" ? "paused" : "aborting";
+    const status =
+      action === "resume"
+        ? "recovering"
+        : action === "pause"
+          ? "paused"
+          : action === "interrupt"
+            ? "interrupted"
+            : "aborting";
     const previous = session.workflowRuns.get(target);
     if (action === "abort" && !previous) {
       session.workflowRuns.delete(target);
@@ -1201,23 +1208,47 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       .pipe(Effect.mapError((cause) => mapPiRuntimeError(input.threadId, "steer", cause)));
   });
 
-  const pauseActiveWorkflows = (session: PiAdapterSessionContext) =>
+  const activeWorkflowRuns = (session: PiAdapterSessionContext) =>
+    Array.from(session.workflowRuns.values()).filter(
+      (run) => !isTerminalWorkflowStatus(run.status),
+    );
+
+  const interruptActiveWorkflows = (session: PiAdapterSessionContext) =>
     Effect.gen(function* () {
-      const runs = Array.from(session.workflowRuns.values()).filter(
-        (run) => !isTerminalWorkflowStatus(run.status),
-      );
+      const runs = activeWorkflowRuns(session);
       if (runs.length === 0) return false;
       for (const run of runs) {
-        yield* runWorkflowControl(
-          session,
-          "pause",
+        const previous = session.workflowRuns.get(run.runId);
+        session.workflowRuns.set(
           run.runId,
-          "User requested workflow interruption from t3code.",
+          mergeWorkflowRunCursor(previous, {
+            runId: run.runId,
+            lastSequence: previous?.lastSequence ?? run.lastSequence,
+            ...(run.runDir ? { runDir: run.runDir } : {}),
+            ...(run.auditPath ? { auditPath: run.auditPath } : {}),
+            status: "interrupted",
+          }),
         );
+        yield* startPiWorkflowRunMonitor(session, offer, run, options?.workflowMonitor);
+        const result = yield* runWorkflowControl(
+          session,
+          "interrupt",
+          run.runId,
+          "User interrupted active workflow work from t3code.",
+        ).pipe(
+          Effect.exit,
+          Effect.timeoutOption(Duration.millis(adapterTimeouts.interruptAbortWatchdogMs)),
+        );
+        if (Option.isNone(result)) {
+          yield* discardRuntimeForRecovery(
+            session,
+            `Pi RPC workflow interrupt did not settle within ${adapterTimeouts.interruptAbortWatchdogMs}ms.`,
+          );
+        }
       }
       yield* emitWorkflowControlNotice(
         session,
-        "Workflow pause requested. Use /workflow:resume or /workflow:abort to continue or terminate it explicitly.",
+        "Workflow interrupt requested. Use /workflow:resume to continue or /workflow:abort to terminate it explicitly if artifacts show it is still recoverable.",
         { activeWorkflowRuns: runs.map((run) => run.runId) },
       );
       return true;
@@ -1226,47 +1257,44 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
   const interruptTurn = (threadId: ThreadId, requestedTurnId?: TurnId) =>
     requireSession(threadId).pipe(
       Effect.flatMap((session) =>
-        pauseActiveWorkflows(session).pipe(
-          Effect.flatMap((pausedWorkflow) =>
-            Effect.gen(function* () {
-              yield* cancelPendingUserInputs(session);
-              if (pausedWorkflow) return;
+        Effect.gen(function* () {
+          yield* cancelPendingUserInputs(session);
+          const interruptedTurnId = requestedTurnId ?? session.currentTurnId;
+          const shouldCompleteInterruptedTurn =
+            interruptedTurnId !== undefined &&
+            !session.completedTurnIds.has(interruptedTurnId) &&
+            !session.turnCompleted &&
+            (requestedTurnId === undefined || requestedTurnId === session.currentTurnId);
 
-              const interruptedTurnId = requestedTurnId ?? session.currentTurnId;
-              const shouldCompleteInterruptedTurn =
-                interruptedTurnId !== undefined &&
-                !session.completedTurnIds.has(interruptedTurnId) &&
-                !session.turnCompleted &&
-                (requestedTurnId === undefined || requestedTurnId === session.currentTurnId);
+          if (shouldCompleteInterruptedTurn) {
+            session.cancellingTurnIds.add(interruptedTurnId);
+            session.nextTurnRequiresPromptStart = true;
+            yield* offer([
+              {
+                ...basePiEvent(session, { turnId: interruptedTurnId }),
+                type: "turn.aborted",
+                payload: { reason: "Interrupted by user" },
+              } satisfies ProviderRuntimeEvent,
+            ]);
+            yield* completeTurn(session, undefined, "interrupted");
+          }
 
-              if (shouldCompleteInterruptedTurn) {
-                session.cancellingTurnIds.add(interruptedTurnId);
-                session.nextTurnRequiresPromptStart = true;
-                yield* offer([
-                  {
-                    ...basePiEvent(session, { turnId: interruptedTurnId }),
-                    type: "turn.aborted",
-                    payload: { reason: "Interrupted by user" },
-                  } satisfies ProviderRuntimeEvent,
-                ]);
-                yield* completeTurn(session, undefined, "interrupted");
-              }
+          const interruptedWorkflow = yield* interruptActiveWorkflows(session);
+          if (!shouldCompleteInterruptedTurn && interruptedWorkflow) return;
 
-              const abortResult = yield* session.runtime
-                .abort()
-                .pipe(
-                  Effect.exit,
-                  Effect.timeoutOption(Duration.millis(adapterTimeouts.interruptAbortWatchdogMs)),
-                );
-              if (Option.isNone(abortResult)) {
-                yield* discardRuntimeForRecovery(
-                  session,
-                  `Pi RPC abort did not settle within ${adapterTimeouts.interruptAbortWatchdogMs}ms.`,
-                );
-              }
-            }),
-          ),
-        ),
+          const abortResult = yield* session.runtime
+            .abort()
+            .pipe(
+              Effect.exit,
+              Effect.timeoutOption(Duration.millis(adapterTimeouts.interruptAbortWatchdogMs)),
+            );
+          if (Option.isNone(abortResult)) {
+            yield* discardRuntimeForRecovery(
+              session,
+              `Pi RPC abort did not settle within ${adapterTimeouts.interruptAbortWatchdogMs}ms.`,
+            );
+          }
+        }),
       ),
       Effect.mapError((cause): ProviderAdapterError => cause),
     );

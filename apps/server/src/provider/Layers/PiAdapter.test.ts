@@ -79,6 +79,7 @@ class FakePiRuntime implements PiSessionRuntimeShape {
       Promise.resolve(undefined),
   );
   abortImpl = vi.fn(() => Promise.resolve(undefined));
+  workflowControlImpl = vi.fn((_input: PiWorkflowControlInput) => Promise.resolve({}));
   closeImpl = vi.fn(() => Promise.resolve(undefined));
 
   readonly options: PiSessionRuntimeOptions;
@@ -154,9 +155,18 @@ class FakePiRuntime implements PiSessionRuntimeShape {
   });
   getMessages = Effect.sync(() => this.messages);
   workflowControl = (input: PiWorkflowControlInput) =>
-    Effect.sync(() => {
-      this.workflowControls.push(input);
-      return {};
+    Effect.tryPromise({
+      try: async () => {
+        this.workflowControls.push(input);
+        return await this.workflowControlImpl(input);
+      },
+      catch: (error) =>
+        error instanceof PiRpcLifecycleError
+          ? error
+          : new PiRpcLifecycleError(
+              error instanceof Error ? error.message : "workflow control failed",
+              error,
+            ),
     });
   respondExtensionUi = (input: PiExtensionUiResponseInput) =>
     Effect.sync(() => {
@@ -2666,7 +2676,7 @@ describe("PiAdapter", () => {
   );
 
   it.effect(
-    "attaches restored active workflow runs and pauses them before aborting Pi turns",
+    "attaches restored active workflow runs and interrupts them without passive pause",
     () => {
       const fixture = createWorkflowRunFixture({
         status: "running",
@@ -2681,9 +2691,9 @@ describe("PiAdapter", () => {
 
             assert.equal(runtime.abortImpl.mock.calls.length, 0);
             assert.deepEqual(runtime.workflowControls[0], {
-              action: "pause",
+              action: "interrupt",
               target: fixture.runId,
-              reason: "User requested workflow interruption from t3code.",
+              reason: "User interrupted active workflow work from t3code.",
             });
             assert.deepEqual(sessions[0]?.resumeCursor, {
               schemaVersion: 1,
@@ -2697,7 +2707,7 @@ describe("PiAdapter", () => {
                     lastSequence: 1,
                     runDir: fixture.runDir,
                     auditPath: fixture.auditPath,
-                    status: "paused",
+                    status: "interrupted",
                   },
                 ],
               },
@@ -2714,6 +2724,148 @@ describe("PiAdapter", () => {
       );
     },
   );
+
+  it.effect(
+    "locally completes an active workflow turn even when workflow interrupt control wedges",
+    () => {
+      const fixture = createWorkflowRunFixture({
+        status: "running",
+        events: [{ type: "run_start", sequence: 1 }],
+      });
+      return withHarness(
+        (fake) => {
+          fake.workflowControlImpl = vi.fn(() => new Promise<{}>(() => {}));
+          fake.promptScript = (rt) => rt.emit({ type: "assistant_delta", text: "partial" });
+        },
+        ({ adapter, runtime }) =>
+          Effect.gen(function* () {
+            const completedFiber = yield* collectEvents(
+              adapter,
+              1,
+              (event) => event.type === "turn.completed",
+            ).pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
+
+            yield* adapter.sendTurn({ threadId, input: "run workflow" });
+            const interruptFiber = yield* adapter
+              .interruptTurn(threadId)
+              .pipe(Effect.result, Effect.timeoutOption("4 seconds"), Effect.forkChild);
+            yield* Effect.yieldNow;
+            yield* TestClock.adjust("1 second");
+            const completed = yield* Fiber.join(completedFiber);
+            yield* TestClock.adjust("3 seconds");
+            const interruptResult = yield* Fiber.join(interruptFiber);
+            const sessions = yield* adapter.listSessions();
+
+            assert.equal(Option.isSome(completed), true);
+            if (Option.isSome(completed) && completed.value[0]?.type === "turn.completed") {
+              assert.equal(completed.value[0].turnId, "pi-turn-1");
+              assert.equal(completed.value[0].payload.state, "interrupted");
+            }
+            assert.equal(Option.isSome(interruptResult), true);
+            if (Option.isSome(interruptResult)) assert.equal(interruptResult.value._tag, "Success");
+            assert.equal(runtime.workflowControls[0]?.action, "interrupt");
+            assert.equal(runtime.workflowControls[0]?.target, fixture.runId);
+            assert.equal(runtime.abortImpl.mock.calls.length, 1);
+            assert.deepEqual(sessions[0]?.resumeCursor, {
+              schemaVersion: 1,
+              provider: "pi",
+              providerInstanceId: "pi",
+              sessionFile: "/tmp/pi-session.json",
+              workflows: {
+                activeRuns: [
+                  {
+                    runId: fixture.runId,
+                    lastSequence: 1,
+                    runDir: fixture.runDir,
+                    auditPath: fixture.auditPath,
+                    status: "interrupted",
+                  },
+                ],
+              },
+            });
+          }),
+        {
+          resumeCursor: makePiResumeCursor({
+            sessionFile: "/tmp/pi-session.json",
+            activeWorkflowRuns: [
+              { runId: fixture.runId, lastSequence: 0, runDir: fixture.runDir, status: "running" },
+            ],
+          }),
+        },
+        { timeouts: { interruptAbortWatchdogMs: 2_500 } },
+      ).pipe(Effect.provide(TestClock.layer()));
+    },
+  );
+
+  it.effect("replays interrupted workflow artifacts after runtime restart", () => {
+    const fixture = createWorkflowRunFixture({
+      status: "running",
+      events: [{ type: "run_start", sequence: 1 }],
+    });
+    let created = 0;
+    return withHarness(
+      (fake) => {
+        const index = created;
+        created += 1;
+        if (index === 0) {
+          fake.abortImpl = vi.fn(() => new Promise<undefined>(() => {}));
+          fake.promptScript = (rt) => rt.emit({ type: "assistant_delta", text: "partial" });
+        } else {
+          fake.promptScript = (rt) => rt.emit({ type: "agent_end", success: true });
+        }
+      },
+      ({ adapter, runtimes }) =>
+        Effect.gen(function* () {
+          yield* adapter.sendTurn({ threadId, input: "run workflow" });
+          const interruptFiber = yield* adapter.interruptTurn(threadId).pipe(Effect.forkChild);
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("4 seconds");
+          yield* Fiber.join(interruptFiber);
+
+          appendWorkflowFixtureEvents(fixture, [
+            { type: "run_end", sequence: 2, status: "aborted" },
+          ]);
+          writeWorkflowFixtureStatus(fixture, "aborted");
+          const artifactFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) =>
+              event.type === "task.completed" && event.raw?.source === "pi.workflow.artifact",
+          ).pipe(Effect.timeout("2 seconds"), Effect.orDie, Effect.forkChild);
+          const next = yield* adapter.sendTurn({ threadId, input: "after restart" });
+          const artifactEvents = yield* Fiber.join(artifactFiber);
+          const sessions = yield* adapter.listSessions();
+
+          assert.equal(runtimes.length, 2);
+          assert.equal(runtimes[0]?.closeImpl.mock.calls.length, 1);
+          assert.deepEqual(runtimes[1]?.options.resumeCursor?.workflows?.activeRuns, [
+            {
+              runId: fixture.runId,
+              lastSequence: 1,
+              runDir: fixture.runDir,
+              auditPath: fixture.auditPath,
+              status: "interrupted",
+            },
+          ]);
+          assert.equal(next.turnId, "pi-turn-2");
+          assert.equal(artifactEvents[0]?.type, "task.completed");
+          assert.deepEqual(sessions[0]?.resumeCursor, {
+            schemaVersion: 1,
+            provider: "pi",
+            providerInstanceId: "pi",
+            sessionFile: "/tmp/pi-session.json",
+          });
+        }),
+      {
+        resumeCursor: makePiResumeCursor({
+          sessionFile: "/tmp/pi-session.json",
+          activeWorkflowRuns: [
+            { runId: fixture.runId, lastSequence: 0, runDir: fixture.runDir, status: "running" },
+          ],
+        }),
+      },
+    ).pipe(Effect.provide(TestClock.layer()));
+  });
 
   it.effect("keeps workflow monitors alive long enough to emit usage after abort controls", () => {
     const fixture = createWorkflowRunFixture({
@@ -2845,51 +2997,57 @@ describe("PiAdapter", () => {
     });
   });
 
-  it.effect("maps workflow resume and abort prompts to Pi workflow_control", () => {
-    const fixture = createWorkflowRunFixture({
-      status: "paused",
-      events: [{ type: "run_paused", sequence: 1, status: "paused" }],
-    });
-    return withHarness(
-      undefined,
-      ({ adapter, runtime }) =>
-        Effect.gen(function* () {
-          yield* adapter.sendTurn({ threadId, input: `/workflow:resume ${fixture.runId}` });
-          yield* adapter.sendTurn({ threadId, input: `/workflow:abort ${fixture.runId}` });
-          const sessions = yield* adapter.listSessions();
+  it.effect(
+    "maps explicit workflow pause, resume, and abort prompts to Pi workflow_control",
+    () => {
+      const fixture = createWorkflowRunFixture({
+        status: "running",
+        events: [{ type: "run_start", sequence: 1, status: "running" }],
+      });
+      return withHarness(
+        undefined,
+        ({ adapter, runtime }) =>
+          Effect.gen(function* () {
+            yield* adapter.sendTurn({ threadId, input: `/workflow:pause ${fixture.runId}` });
+            yield* adapter.sendTurn({ threadId, input: `/workflow:resume ${fixture.runId}` });
+            yield* adapter.sendTurn({ threadId, input: `/workflow:abort ${fixture.runId}` });
+            const sessions = yield* adapter.listSessions();
 
-          assert.equal(runtime.workflowControls[0]?.action, "resume");
-          assert.equal(runtime.workflowControls[0]?.target, fixture.runId);
-          assert.equal(runtime.workflowControls[0]?.policy, "continue-existing-session");
-          assert.equal(runtime.workflowControls[1]?.action, "abort");
-          assert.equal(runtime.workflowControls[1]?.target, fixture.runId);
-          assert.deepEqual(sessions[0]?.resumeCursor, {
-            schemaVersion: 1,
-            provider: "pi",
-            providerInstanceId: "pi",
+            assert.equal(runtime.workflowControls[0]?.action, "pause");
+            assert.equal(runtime.workflowControls[0]?.target, fixture.runId);
+            assert.equal(runtime.workflowControls[1]?.action, "resume");
+            assert.equal(runtime.workflowControls[1]?.target, fixture.runId);
+            assert.equal(runtime.workflowControls[1]?.policy, "continue-existing-session");
+            assert.equal(runtime.workflowControls[2]?.action, "abort");
+            assert.equal(runtime.workflowControls[2]?.target, fixture.runId);
+            assert.deepEqual(sessions[0]?.resumeCursor, {
+              schemaVersion: 1,
+              provider: "pi",
+              providerInstanceId: "pi",
+              sessionFile: "/tmp/pi-session.json",
+              workflows: {
+                activeRuns: [
+                  {
+                    runId: fixture.runId,
+                    lastSequence: 1,
+                    runDir: fixture.runDir,
+                    status: "aborting",
+                  },
+                ],
+              },
+            });
+          }),
+        {
+          resumeCursor: makePiResumeCursor({
             sessionFile: "/tmp/pi-session.json",
-            workflows: {
-              activeRuns: [
-                {
-                  runId: fixture.runId,
-                  lastSequence: 1,
-                  runDir: fixture.runDir,
-                  status: "aborting",
-                },
-              ],
-            },
-          });
-        }),
-      {
-        resumeCursor: makePiResumeCursor({
-          sessionFile: "/tmp/pi-session.json",
-          activeWorkflowRuns: [
-            { runId: fixture.runId, lastSequence: 1, runDir: fixture.runDir, status: "paused" },
-          ],
-        }),
-      },
-    );
-  });
+            activeWorkflowRuns: [
+              { runId: fixture.runId, lastSequence: 1, runDir: fixture.runDir, status: "running" },
+            ],
+          }),
+        },
+      );
+    },
+  );
 
   it.effect("rejects rollback explicitly as unsupported", () =>
     withHarness(undefined, ({ adapter }) =>
