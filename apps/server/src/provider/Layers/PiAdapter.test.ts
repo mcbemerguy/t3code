@@ -262,6 +262,12 @@ function usageMaxTokens(event: ProviderRuntimeEvent): number | undefined {
   return event.type === "thread.token-usage.updated" ? event.payload.usage.maxTokens : undefined;
 }
 
+function usageTotalProcessedTokens(event: ProviderRuntimeEvent): number | undefined {
+  return event.type === "thread.token-usage.updated"
+    ? event.payload.usage.totalProcessedTokens
+    : undefined;
+}
+
 function piStats(usedTokens: number, maxTokens = 272_000) {
   return {
     tokens: { input: Math.max(usedTokens - 10, 0), output: 10, total: usedTokens },
@@ -762,6 +768,38 @@ describe("PiAdapter", () => {
     ).pipe(Effect.provide(TestClock.layer())),
   );
 
+  it.effect("uses native Pi context occupancy when processed totals are cumulative", () =>
+    withHarness(
+      (fake) => {
+        fake.stats = {
+          tokens: {
+            input: 56_383,
+            cacheRead: 253_696,
+            output: 1_986,
+            total: 312_065,
+          },
+          contextUsage: { tokens: 37_612, contextWindow: 272_000 },
+        };
+        fake.promptScript = (rt) => rt.emit({ type: "agent_end", success: true });
+      },
+      ({ adapter }) =>
+        Effect.gen(function* () {
+          const eventsFiber = yield* collectEvents(adapter, 1, isUsageEvent).pipe(
+            Effect.timeout("1 second"),
+            Effect.orDie,
+            Effect.forkChild,
+          );
+          yield* adapter.sendTurn({ threadId, input: "native cumulative usage" });
+          const events = yield* Fiber.join(eventsFiber);
+          const latest = events.at(-1)!;
+
+          assert.equal(usageUsedTokens(latest), 37_612);
+          assert.equal(usageTotalProcessedTokens(latest), 312_065);
+          assert.equal(usageMaxTokens(latest), 272_000);
+        }),
+    ),
+  );
+
   it.effect("preserves pending compaction markers when forcing final Pi usage", () =>
     withHarness(
       (fake) => {
@@ -821,7 +859,7 @@ describe("PiAdapter", () => {
     ),
   );
 
-  it.effect("does not let stale parent stats overwrite richer live workflow usage", () =>
+  it.effect("emits parent usage separately after workflow context usage", () =>
     withHarness(
       (fake) => {
         fake.stats = piStats(613);
@@ -850,14 +888,11 @@ describe("PiAdapter", () => {
           const workflowUsageIndex = events.findIndex(
             (event) => event.raw?.source === "pi.workflow.artifact",
           );
-          const laterUsages = events.slice(workflowUsageIndex + 1).map(usageUsedTokens);
 
           assert.notEqual(workflowUsageIndex, -1);
-          assert.equal(usageUsedTokens(events.at(-1)!), 80_000);
-          assert.equal(
-            laterUsages.some((usedTokens) => usedTokens !== undefined && usedTokens < 80_000),
-            false,
-          );
+          assert.equal(usageUsedTokens(events[workflowUsageIndex]!), 80_000);
+          assert.equal(usageUsedTokens(events.at(-1)!), 613);
+          assert.equal(usageTotalProcessedTokens(events.at(-1)!), 613);
         }),
     ),
   );

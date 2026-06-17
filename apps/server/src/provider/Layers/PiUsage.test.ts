@@ -44,7 +44,31 @@ describe("PiUsage", () => {
     });
   });
 
-  it("prefers actual Pi token totals over tiny context estimates when stats disagree", () => {
+  it("keeps native context occupancy separate from cumulative processed totals", () => {
+    const usage = normalizePiTokenUsage({
+      tokens: {
+        input: 56_383,
+        cacheRead: 253_696,
+        output: 1_986,
+        total: 312_065,
+      },
+      contextUsage: {
+        tokens: 37_612,
+        contextWindow: 272_000,
+      },
+    });
+
+    assert.deepStrictEqual(usage, {
+      usedTokens: 37_612,
+      totalProcessedTokens: 312_065,
+      maxTokens: 272_000,
+      inputTokens: 56_383,
+      cachedInputTokens: 253_696,
+      outputTokens: 1_986,
+    });
+  });
+
+  it("uses processed token totals as a fallback when no context usage is reported", () => {
     const usage = normalizePiTokenUsage({
       tokens: {
         input: 31_000,
@@ -52,16 +76,11 @@ describe("PiUsage", () => {
         output: 1_200,
         total: 41_200,
       },
-      contextUsage: {
-        tokens: 613,
-        contextWindow: 272_000,
-      },
     });
 
     assert.deepStrictEqual(usage, {
       usedTokens: 41_200,
       totalProcessedTokens: 41_200,
-      maxTokens: 272_000,
       inputTokens: 31_000,
       cachedInputTokens: 9_000,
       outputTokens: 1_200,
@@ -141,7 +160,37 @@ describe("PiUsage", () => {
     );
   });
 
-  it("suppresses stale smaller parent stats after richer workflow usage", () => {
+  it("merges accounting-only updates without replacing known context occupancy", () => {
+    const state = new PiUsageState();
+    state.update({
+      source: "parent",
+      stats: { contextUsage: { tokens: 37_612, contextWindow: 272_000 } },
+    });
+
+    assert.deepStrictEqual(
+      state.update({
+        source: "parent",
+        stats: {
+          tokens: {
+            input: 56_383,
+            cacheRead: 253_696,
+            output: 1_986,
+            total: 312_065,
+          },
+        },
+      }),
+      {
+        usedTokens: 37_612,
+        totalProcessedTokens: 312_065,
+        maxTokens: 272_000,
+        inputTokens: 56_383,
+        cachedInputTokens: 253_696,
+        outputTokens: 1_986,
+      },
+    );
+  });
+
+  it("replaces usage when the context source changes", () => {
     const state = new PiUsageState();
     state.update({
       source: "workflow",
@@ -152,7 +201,7 @@ describe("PiUsage", () => {
       },
     });
 
-    assert.equal(
+    assert.deepStrictEqual(
       state.update({
         source: "parent",
         stats: {
@@ -160,14 +209,14 @@ describe("PiUsage", () => {
           contextUsage: { tokens: 613, contextWindow: 272_000 },
         },
       }),
-      undefined,
+      {
+        usedTokens: 613,
+        totalProcessedTokens: 613,
+        maxTokens: 272_000,
+        inputTokens: 603,
+        outputTokens: 10,
+      },
     );
-    assert.deepStrictEqual(state.snapshot(), {
-      usedTokens: 80_000,
-      maxTokens: 272_000,
-      inputTokens: 74_000,
-      outputTokens: 6_000,
-    });
   });
 
   it("allows explicit compaction to lower the current usage", () => {

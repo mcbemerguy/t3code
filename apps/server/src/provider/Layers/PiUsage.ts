@@ -13,12 +13,16 @@ export interface PiUsageUpdateInput {
   readonly contextChange?: PiUsageContextChange;
 }
 
-interface PiUsageUpdate {
+interface ParsedPiTokenUsage {
   readonly usage: ThreadTokenUsageSnapshot;
+  readonly hasContextUsage: boolean;
+  readonly hasRequestAccounting: boolean;
+}
+
+interface PiUsageUpdate extends ParsedPiTokenUsage {
   readonly source: PiUsageSourceKind;
   readonly contextKey?: string;
   readonly contextChange?: PiUsageContextChange;
-  readonly richness: number;
 }
 
 export interface NormalizePiTokenUsageOptions {
@@ -27,9 +31,7 @@ export interface NormalizePiTokenUsageOptions {
 
 interface PiUsageEntry {
   readonly usage: ThreadTokenUsageSnapshot;
-  readonly source: PiUsageSourceKind;
   readonly contextKey?: string;
-  readonly richness: number;
 }
 
 const USAGE_KEYS: ReadonlyArray<keyof ThreadTokenUsageSnapshot> = [
@@ -50,9 +52,20 @@ const USAGE_KEYS: ReadonlyArray<keyof ThreadTokenUsageSnapshot> = [
   "compactsAutomatically",
 ];
 
-const PRESERVED_PARTIAL_KEYS: ReadonlyArray<keyof ThreadTokenUsageSnapshot> = USAGE_KEYS.filter(
-  (key) => key !== "usedTokens",
-);
+const REQUEST_ACCOUNTING_KEYS: ReadonlyArray<keyof ThreadTokenUsageSnapshot> = [
+  "totalProcessedTokens",
+  "inputTokens",
+  "cachedInputTokens",
+  "outputTokens",
+  "reasoningOutputTokens",
+  "lastUsedTokens",
+  "lastInputTokens",
+  "lastCachedInputTokens",
+  "lastOutputTokens",
+  "lastReasoningOutputTokens",
+  "toolUses",
+  "durationMs",
+];
 
 const PRESERVED_CONTEXT_RESET_KEYS: ReadonlyArray<keyof ThreadTokenUsageSnapshot> = [
   "maxTokens",
@@ -107,8 +120,12 @@ function firstString(...values: ReadonlyArray<unknown>): string | undefined {
   return undefined;
 }
 
-function usageRichness(usage: ThreadTokenUsageSnapshot): number {
-  return USAGE_KEYS.reduce((score, key) => score + (usage[key] !== undefined ? 1 : 0), 0);
+function hasRequestAccounting(usage: ThreadTokenUsageSnapshot): boolean {
+  return REQUEST_ACCOUNTING_KEYS.some((key) => usage[key] !== undefined);
+}
+
+function contextSourceKey(value: { readonly contextKey?: string }): string {
+  return value.contextKey ?? "";
 }
 
 export function arePiTokenUsageSnapshotsEqual(
@@ -135,17 +152,6 @@ function preserveKnownFields(
   return merged as ThreadTokenUsageSnapshot;
 }
 
-function mergePartialUsage(
-  previous: ThreadTokenUsageSnapshot,
-  next: ThreadTokenUsageSnapshot,
-  usedTokens: number,
-): ThreadTokenUsageSnapshot {
-  return {
-    ...preserveKnownFields(previous, next, PRESERVED_PARTIAL_KEYS),
-    usedTokens,
-  };
-}
-
 function mergeResetUsage(
   previous: ThreadTokenUsageSnapshot,
   next: ThreadTokenUsageSnapshot,
@@ -153,29 +159,36 @@ function mergeResetUsage(
   return preserveKnownFields(previous, next, PRESERVED_CONTEXT_RESET_KEYS);
 }
 
-function mergeStaleRegressionUsage(
+function mergeSameContextUsage(
   previous: ThreadTokenUsageSnapshot,
-  next: ThreadTokenUsageSnapshot,
+  next: PiUsageUpdate,
 ): ThreadTokenUsageSnapshot {
-  const merged: Record<string, unknown> = { ...previous };
-  for (const key of PRESERVED_CONTEXT_RESET_KEYS) {
-    if (merged[key] === undefined && next[key] !== undefined) merged[key] = next[key];
-  }
-  return merged as ThreadTokenUsageSnapshot;
+  const shouldPreserveContextWindow =
+    previous.maxTokens !== undefined &&
+    next.usage.maxTokens === undefined &&
+    !next.hasContextUsage &&
+    next.hasRequestAccounting;
+
+  return {
+    ...previous,
+    ...next.usage,
+    ...(shouldPreserveContextWindow
+      ? { usedTokens: previous.usedTokens, maxTokens: previous.maxTokens }
+      : {}),
+  };
 }
 
 function normalizePiUsageUpdate(input: PiUsageUpdateInput): PiUsageUpdate | undefined {
   const contextChange = input.contextChange ?? inferPiUsageContextChange(input.stats);
-  const usage = normalizePiTokenUsage(input.stats, {
+  const parsed = parsePiTokenUsage(input.stats, {
     allowZeroUsedTokens: contextChange !== undefined,
   });
-  if (!usage) return undefined;
+  if (!parsed) return undefined;
   return {
-    usage,
+    ...parsed,
     source: input.source,
     ...(input.contextKey ? { contextKey: input.contextKey } : {}),
     ...(contextChange ? { contextChange } : {}),
-    richness: usageRichness(usage),
   };
 }
 
@@ -192,63 +205,26 @@ export class PiUsageState {
     }
 
     const previous = this.current;
-    const merged = this.merge(previous, next);
-    const nextEntry = usageEntry(
-      next,
-      merged.usage,
-      merged.keepPreviousSource ? previous : undefined,
-    );
-    this.current = nextEntry;
-    return arePiTokenUsageSnapshotsEqual(previous.usage, merged.usage) ? undefined : merged.usage;
+    const usage = this.merge(previous, next);
+    this.current = usageEntry(next, usage);
+    return arePiTokenUsageSnapshotsEqual(previous.usage, usage) ? undefined : usage;
   }
 
   snapshot(): ThreadTokenUsageSnapshot | undefined {
     return this.current?.usage;
   }
 
-  private merge(
-    previous: PiUsageEntry,
-    next: PiUsageUpdate,
-  ): { readonly usage: ThreadTokenUsageSnapshot; readonly keepPreviousSource?: true } {
-    if (next.contextChange) return { usage: mergeResetUsage(previous.usage, next.usage) };
-
-    if (this.isStaleRegression(previous, next)) {
-      return {
-        usage: mergeStaleRegressionUsage(previous.usage, next.usage),
-        keepPreviousSource: true,
-      };
-    }
-
-    return {
-      usage: mergePartialUsage(previous.usage, next.usage, next.usage.usedTokens),
-    };
-  }
-
-  private isStaleRegression(previous: PiUsageEntry, next: PiUsageUpdate): boolean {
-    if (next.usage.usedTokens >= previous.usage.usedTokens) return false;
-    if (next.source === "parent") return true;
-    if (
-      previous.source === "workflow" &&
-      next.contextKey &&
-      next.contextKey !== previous.contextKey
-    )
-      return false;
-    return next.richness <= previous.richness;
+  private merge(previous: PiUsageEntry, next: PiUsageUpdate): ThreadTokenUsageSnapshot {
+    if (contextSourceKey(previous) !== contextSourceKey(next)) return next.usage;
+    if (next.contextChange) return mergeResetUsage(previous.usage, next.usage);
+    return mergeSameContextUsage(previous.usage, next);
   }
 }
 
-function usageEntry(
-  update: PiUsageUpdate,
-  usage: ThreadTokenUsageSnapshot,
-  previous?: PiUsageEntry,
-): PiUsageEntry {
+function usageEntry(update: PiUsageUpdate, usage: ThreadTokenUsageSnapshot): PiUsageEntry {
   return {
     usage,
-    source: previous?.source ?? update.source,
-    ...((previous?.contextKey ?? update.contextKey)
-      ? { contextKey: previous?.contextKey ?? update.contextKey }
-      : {}),
-    richness: usageRichness(usage),
+    ...(update.contextKey ? { contextKey: update.contextKey } : {}),
   };
 }
 
@@ -292,6 +268,13 @@ export function normalizePiTokenUsage(
   stats: unknown,
   options?: NormalizePiTokenUsageOptions,
 ): ThreadTokenUsageSnapshot | undefined {
+  return parsePiTokenUsage(stats, options)?.usage;
+}
+
+function parsePiTokenUsage(
+  stats: unknown,
+  options?: NormalizePiTokenUsageOptions,
+): ParsedPiTokenUsage | undefined {
   if (!isRecord(stats)) return undefined;
 
   const usage = nestedRecord(stats, "usage");
@@ -336,10 +319,7 @@ export function normalizePiTokenUsage(
     (cachedInputTokens ?? 0) +
     (reasoningOutputTokens ?? 0);
   const processedUsedTokens = totalProcessedTokens ?? (derivedUsed > 0 ? derivedUsed : undefined);
-  const usedTokens =
-    contextUsedTokens !== undefined && processedUsedTokens !== undefined
-      ? Math.max(contextUsedTokens, processedUsedTokens)
-      : (contextUsedTokens ?? processedUsedTokens);
+  const usedTokens = contextUsedTokens ?? processedUsedTokens;
 
   if (usedTokens === undefined || (!options?.allowZeroUsedTokens && usedTokens <= 0))
     return undefined;
@@ -395,7 +375,7 @@ export function normalizePiTokenUsage(
     root.autoCompaction,
   );
 
-  return {
+  const normalizedUsage: ThreadTokenUsageSnapshot = {
     usedTokens,
     ...(totalProcessedTokens !== undefined ? { totalProcessedTokens } : {}),
     ...(maxTokens !== undefined ? { maxTokens } : {}),
@@ -409,5 +389,11 @@ export function normalizePiTokenUsage(
     ...(lastOutputTokens !== undefined ? { lastOutputTokens } : {}),
     ...(lastReasoningOutputTokens !== undefined ? { lastReasoningOutputTokens } : {}),
     ...(compactsAutomatically !== undefined ? { compactsAutomatically } : {}),
+  };
+
+  return {
+    usage: normalizedUsage,
+    hasContextUsage: contextUsedTokens !== undefined,
+    hasRequestAccounting: hasRequestAccounting(normalizedUsage),
   };
 }
