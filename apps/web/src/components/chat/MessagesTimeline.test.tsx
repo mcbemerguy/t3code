@@ -293,6 +293,39 @@ describe("MessagesTimeline", () => {
     );
     expect(settledMarkup).toContain("chat-markdown-file-link");
     expect(settledMarkup).toContain("/repo/t3code/apps/web/src/session-logic.ts:12");
+    expect(settledMarkup).not.toMatch(
+      /<button\b[^>]*data-slot="tooltip-trigger"[\s\S]*chat-markdown-file-link[\s\S]*<\/button>/,
+    );
+  });
+
+  it("renders structured changed-file preview links outside button tooltip triggers", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Updated files",
+              tone: "tool",
+              changedFiles: ["/repo/t3code/apps/web/src/session-logic.ts"],
+            },
+          },
+        ]}
+        workspaceRoot="/repo/t3code"
+      />,
+    );
+
+    expect(markup).toContain("chat-markdown-file-link");
+    expect(markup).toMatch(/<div\b[^>]*data-slot="tooltip-trigger"[\s\S]*chat-markdown-file-link/);
+    expect(markup).not.toMatch(
+      /<button\b[^>]*data-slot="tooltip-trigger"[\s\S]*chat-markdown-file-link[\s\S]*<\/button>/,
+    );
   });
 
   it("renders review comment contexts as structured cards instead of raw tags", async () => {

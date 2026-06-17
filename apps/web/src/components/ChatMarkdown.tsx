@@ -413,8 +413,7 @@ function ChatMarkdown({
       code({ node: _node, className, children, ...props }) {
         const codeText = nodeToPlainText(children);
         const trimmedCodeText = codeText.trim();
-        const isInlineCodeSpan =
-          !className && !trimmedCodeText.includes("\n") && !trimmedCodeText.includes("\r");
+        const isInlineCodeSpan = !className && !codeText.includes("\n") && !codeText.includes("\r");
         const fileLinkMeta =
           !isStreaming && isInlineCodeSpan
             ? resolveMarkdownCodeSpanPathLinkMeta(trimmedCodeText, cwd)

@@ -174,4 +174,18 @@ describe("ChatMarkdown", () => {
       await settled.unmount();
     }
   });
+
+  it("does not autolink no-language code blocks that contain path-looking text", async () => {
+    const pathText = "src/components/ChatMarkdown.tsx";
+    const screen = await render(
+      <ChatMarkdown text={`\`\`\`\n${pathText}\n\`\`\``} cwd="/repo/project" isStreaming={false} />,
+    );
+
+    try {
+      expect(document.querySelector(".chat-markdown-file-link")).toBeNull();
+      expect(document.querySelector("pre code")?.textContent).toBe(`${pathText}\n`);
+    } finally {
+      await screen.unmount();
+    }
+  });
 });

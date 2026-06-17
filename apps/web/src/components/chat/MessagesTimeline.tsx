@@ -1302,43 +1302,47 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           ) : (
             <Tooltip>
               <TooltipTrigger
-                className="block min-w-0 w-full text-left"
-                title={displayText}
-                aria-label={displayText}
-              >
-                <p
-                  className={cn(
-                    "truncate text-[11px] leading-5",
-                    workToneClass(workEntry.tone),
-                    preview ? "text-muted-foreground/70" : "",
-                  )}
-                >
-                  <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
-                    {heading}
-                  </span>
-                  {preview && (
-                    <span className="text-muted-foreground/55">
-                      {" "}
-                      -{" "}
-                      {previewIsChangedFiles ? (
-                        <ChangedFilesPreviewText
-                          changedFiles={workEntry.changedFiles}
-                          workspaceRoot={workspaceRoot}
-                          resolvedTheme={resolvedTheme}
-                        />
-                      ) : canResolveInlinePaths ? (
-                        <InlineFilePathText
-                          text={preview}
-                          cwd={workspaceRoot}
-                          theme={resolvedTheme}
-                        />
-                      ) : (
-                        preview
+                render={
+                  <div
+                    className="block min-w-0 w-full cursor-default text-left"
+                    title={displayText}
+                    aria-label={displayText}
+                  >
+                    <p
+                      className={cn(
+                        "truncate text-[11px] leading-5",
+                        workToneClass(workEntry.tone),
+                        preview ? "text-muted-foreground/70" : "",
                       )}
-                    </span>
-                  )}
-                </p>
-              </TooltipTrigger>
+                    >
+                      <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
+                        {heading}
+                      </span>
+                      {preview && (
+                        <span className="text-muted-foreground/55">
+                          {" "}
+                          -{" "}
+                          {previewIsChangedFiles ? (
+                            <ChangedFilesPreviewText
+                              changedFiles={workEntry.changedFiles}
+                              workspaceRoot={workspaceRoot}
+                              resolvedTheme={resolvedTheme}
+                            />
+                          ) : canResolveInlinePaths ? (
+                            <InlineFilePathText
+                              text={preview}
+                              cwd={workspaceRoot}
+                              theme={resolvedTheme}
+                            />
+                          ) : (
+                            preview
+                          )}
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                }
+              />
               <TooltipPopup className="max-w-[min(720px,calc(100vw-2rem))]">
                 <p className="whitespace-pre-wrap wrap-break-word text-xs leading-5">
                   {previewIsChangedFiles ? (
