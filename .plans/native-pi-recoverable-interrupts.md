@@ -52,7 +52,9 @@ Existing tests/gaps:
   - missing prompt preflight timeout and abort timeout/failure behavior at adapter level.
 - Provider-service restart/resume coverage exists, but native Pi adapter recovery should have direct tests around local runtime discard/restart decisions.
 
-## Phase 1 — Lock down failure modes with tests
+## Phase 1 — Lock down failure modes with tests — done
+
+Status: Added/committed focused native Pi recovery tests in `PiAdapter.test.ts` and strict ingestion coverage in `ProviderRuntimeIngestion.test.ts`; current Pi adapter implementation intentionally fails the new recovery cases.
 
 Goal: create failing coverage that captures the unrecoverable T3 freeze without changing behavior broadly.
 
