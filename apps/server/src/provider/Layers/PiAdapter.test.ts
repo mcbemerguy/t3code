@@ -1012,7 +1012,6 @@ describe("PiAdapter", () => {
               toolCallId: "read-1",
               rawInput: { path: "src/index.ts" },
               args: { path: "src/index.ts" },
-              path: "src/index.ts",
               primaryPath: "src/index.ts",
             });
           }
@@ -1039,7 +1038,8 @@ describe("PiAdapter", () => {
             assert.equal(data.kind, "search");
             assert.equal(data.toolCallId, "grep-1");
             assert.equal(data.query, "needle");
-            assert.equal(data.path, "src");
+            assert.equal(data.primaryPath, "src");
+            assert.equal(data.path, undefined);
             assert.deepEqual(data.matches, []);
             assert.deepEqual(data.result, { matches: [] });
           }

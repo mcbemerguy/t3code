@@ -962,6 +962,47 @@ describe("deriveWorkLogEntries", () => {
     ]);
   });
 
+  it("does not treat read or search tool paths as changed files", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "read-tool",
+        kind: "tool.completed",
+        summary: "Read file",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "read",
+          detail: "src/index.ts",
+          data: {
+            kind: "read",
+            toolCallId: "read-1",
+            path: "src/index.ts",
+          },
+        },
+      }),
+      makeActivity({
+        id: "grep-tool",
+        kind: "tool.completed",
+        summary: "Searched files",
+        payload: {
+          itemType: "web_search",
+          title: "grep",
+          detail: "needle",
+          data: {
+            kind: "search",
+            toolCallId: "grep-1",
+            path: "src",
+            query: "needle",
+          },
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined);
+    expect(entries).toHaveLength(2);
+    expect(entries[0]?.changedFiles).toBeUndefined();
+    expect(entries[1]?.changedFiles).toBeUndefined();
+  });
+
   it("drops duplicated tool detail when it only repeats the title", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

@@ -76,7 +76,8 @@ export function buildToolLifecyclePresentation(input: {
     toolCallId: input.toolCallId,
     ...(input.args !== undefined ? { rawInput: input.args, args: input.args } : {}),
     ...(command ? { command } : {}),
-    ...(path ? { path, primaryPath: path } : {}),
+    ...(path && isFileMutationKind(kind) ? { path } : {}),
+    ...(path ? { primaryPath: path } : {}),
     ...(query ? { query } : {}),
   };
   return {
@@ -225,6 +226,10 @@ function toPiToolKind(toolName: string | undefined): PiToolKind {
   if (normalized.includes("web")) return "web";
   if (normalized.includes("image")) return "image";
   return "other";
+}
+
+function isFileMutationKind(kind: PiToolKind): boolean {
+  return kind === "write" || kind === "edit" || kind === "apply_patch";
 }
 
 function extractCommandPreview(args: unknown): string | undefined {

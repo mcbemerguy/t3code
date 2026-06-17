@@ -516,7 +516,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       ? (activity.payload as Record<string, unknown>)
       : null;
   const commandPreview = extractToolCommand(payload);
-  const changedFiles = extractChangedFiles(payload);
+  const changedFiles = extractChangedFiles(payload, activity.summary);
   const title = extractToolTitle(payload);
   const isTaskActivity = activity.kind === "task.progress" || activity.kind === "task.completed";
   const taskSummary =
@@ -1114,7 +1114,47 @@ function collectChangedFiles(value: unknown, target: string[], seen: Set<string>
   }
 }
 
-function extractChangedFiles(payload: Record<string, unknown> | null): string[] {
+function isFileChangePayload(
+  payload: Record<string, unknown> | null,
+  activitySummary: string,
+): boolean {
+  const itemType = extractWorkLogItemType(payload);
+  if (itemType === "file_change") {
+    return true;
+  }
+  const requestKind = extractWorkLogRequestKind(payload);
+  if (requestKind === "file-change") {
+    return true;
+  }
+  const data = asRecord(payload?.data);
+  const kind = asTrimmedString(data?.kind)?.toLowerCase();
+  if (
+    kind === "edit" ||
+    kind === "write" ||
+    kind === "apply_patch" ||
+    kind === "apply-patch" ||
+    kind === "move" ||
+    kind === "delete"
+  ) {
+    return true;
+  }
+  const title = asTrimmedString(payload?.title)?.toLowerCase();
+  const summary = activitySummary.trim().toLowerCase();
+  return (
+    title === "file change" ||
+    title === "changed files" ||
+    summary === "file change" ||
+    summary === "changed files"
+  );
+}
+
+function extractChangedFiles(
+  payload: Record<string, unknown> | null,
+  activitySummary: string,
+): string[] {
+  if (!isFileChangePayload(payload, activitySummary)) {
+    return [];
+  }
   const changedFiles: string[] = [];
   const seen = new Set<string>();
   collectChangedFiles(asRecord(payload?.data), changedFiles, seen, 0);
