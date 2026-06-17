@@ -40,6 +40,7 @@ import type {
 } from "./PiAdapterTypes.ts";
 
 const PROVIDER = ProviderDriverKind.make("pi");
+const MAX_RETAINED_COMPLETED_PROMPTS = 1024;
 
 export function basePiEvent(
   session: PiAdapterSessionContext,
@@ -164,11 +165,19 @@ export class PiEventMapper {
 
       if (type === "prompt_start" || type === "agent_start") {
         if (session.turnCompleted || !session.currentTurnId) return;
+        if (
+          session.requirePromptStartBeforeCompletion &&
+          (!session.promptAccepted || session.quarantinePromptEventsUntilAcceptedDrain)
+        ) {
+          retainCompletedPromptEventId(session, event);
+          return;
+        }
         const lifecycleId = lifecycleEventId(event);
         if (lifecycleId) {
           if (session.completedPromptEventIds.has(lifecycleId)) return;
           session.activePromptEventId = lifecycleId;
         }
+        session.requirePromptStartBeforeCompletion = false;
         return yield* self.offer([
           {
             ...basePiEvent(session, { raw: message }),
@@ -176,6 +185,11 @@ export class PiEventMapper {
             payload: { state: "running" },
           } satisfies ProviderRuntimeEvent,
         ]);
+      }
+
+      if (session.requirePromptStartBeforeCompletion) {
+        retainCompletedPromptEventId(session, event);
+        return;
       }
 
       const textDelta = assistantDelta(event);
@@ -252,6 +266,13 @@ export class PiEventMapper {
     const self = this;
     return Effect.gen(function* () {
       const request = parsePiExtensionUiDialogRequest(event, message);
+      if (session.nextTurnRequiresPromptStart || session.requirePromptStartBeforeCompletion) {
+        const response = request
+          ? cancellationResponse(request)
+          : cancellationResponseForUnsupportedExtensionUiRequest(event);
+        if (response) yield* session.runtime.respondExtensionUi(response).pipe(Effect.ignore);
+        return;
+      }
       const pending = request ? questionFromPiExtensionUiDialog(request) : undefined;
       if (!pending) {
         const response = request
@@ -582,6 +603,17 @@ function readPiEventType(event: PiRpcEvent): string {
 
 function lifecycleEventId(event: PiRpcEvent): string | undefined {
   return trimText(event.id) ?? trimText(event.promptId) ?? trimText(event.requestId);
+}
+
+function retainCompletedPromptEventId(session: PiAdapterSessionContext, event: PiRpcEvent): void {
+  const id = lifecycleEventId(event);
+  if (!id) return;
+  session.completedPromptEventIds.add(id);
+  while (session.completedPromptEventIds.size > MAX_RETAINED_COMPLETED_PROMPTS) {
+    const oldest = session.completedPromptEventIds.keys().next();
+    if (oldest.done) return;
+    session.completedPromptEventIds.delete(oldest.value);
+  }
 }
 
 function toolCallId(event: PiRpcEvent): string {

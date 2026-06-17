@@ -72,6 +72,7 @@ const DEFAULT_USAGE_DEBOUNCE_MS = 50;
 const MAX_RETAINED_PENDING_TOOLS = 1024;
 const PI_INTERRUPT_ABORT_WATCHDOG_MS = 2_500;
 const MAX_RETAINED_COMPLETED_PROMPTS = 1024;
+const MAX_RETAINED_COMPLETED_TURNS = 1024;
 
 function mergeUsageRefreshOptions(
   previous: PiUsageRefreshOptions | undefined,
@@ -99,6 +100,14 @@ function pruneRetainedCompletedPrompts(session: PiAdapterSessionContext): void {
     const oldest = session.completedPromptEventIds.keys().next();
     if (oldest.done) return;
     session.completedPromptEventIds.delete(oldest.value);
+  }
+}
+
+function pruneRetainedCompletedTurns(session: PiAdapterSessionContext): void {
+  while (session.completedTurnIds.size > MAX_RETAINED_COMPLETED_TURNS) {
+    const oldest = session.completedTurnIds.keys().next();
+    if (oldest.done) return;
+    session.completedTurnIds.delete(oldest.value);
   }
 }
 
@@ -183,8 +192,12 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       session.turnCompleted = true;
       if (turnId) {
         session.completedTurnIds.add(turnId);
+        pruneRetainedCompletedTurns(session);
         session.cancellingTurnIds.delete(turnId);
       }
+      session.promptAccepted = false;
+      session.quarantinePromptEventsUntilAcceptedDrain = false;
+      session.requirePromptStartBeforeCompletion = false;
       if (session.activePromptEventId) {
         session.completedPromptEventIds.add(session.activePromptEventId);
         pruneRetainedCompletedPrompts(session);
@@ -626,6 +639,10 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           turnCompleted: true,
           completedTurnIds: new Set(),
           cancellingTurnIds: new Set(),
+          promptAccepted: false,
+          quarantinePromptEventsUntilAcceptedDrain: false,
+          requirePromptStartBeforeCompletion: false,
+          nextTurnRequiresPromptStart: false,
           completedPromptEventIds: new Set(),
           usageRefreshInFlight: false,
           usageRefreshQueued: false,
@@ -818,6 +835,10 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     session.currentTurnId = turnId;
     session.latestTurnId = turnId;
     session.turnCompleted = false;
+    session.promptAccepted = false;
+    session.quarantinePromptEventsUntilAcceptedDrain = session.nextTurnRequiresPromptStart;
+    session.requirePromptStartBeforeCompletion = session.nextTurnRequiresPromptStart;
+    session.nextTurnRequiresPromptStart = false;
     session.cancellingTurnIds.delete(turnId);
     delete session.activePromptEventId;
     yield* offer([
@@ -840,6 +861,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         .pipe(
           Effect.tap((promptResult) =>
             Effect.sync(() => {
+              session.promptAccepted = true;
               const cursor = parsePiResumeCursor(promptResult.resumeCursor);
               if (cursor?.sessionFile) session.sessionFile = cursor.sessionFile;
             }),
@@ -851,6 +873,12 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           ),
           Effect.mapError((cause) => mapPiRuntimeError(input.threadId, "prompt", cause)),
         );
+      if (session.quarantinePromptEventsUntilAcceptedDrain) {
+        for (let index = 0; index < 5; index += 1) {
+          yield* Effect.yieldNow;
+        }
+        session.quarantinePromptEventsUntilAcceptedDrain = false;
+      }
       for (let index = 0; index < 5 && !session.turnCompleted; index += 1) {
         yield* Effect.yieldNow;
       }
@@ -913,6 +941,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
 
               if (shouldCompleteInterruptedTurn) {
                 session.cancellingTurnIds.add(interruptedTurnId);
+                session.nextTurnRequiresPromptStart = true;
                 yield* offer([
                   {
                     ...basePiEvent(session, { turnId: interruptedTurnId }),

@@ -51,6 +51,10 @@ export interface PiAdapterSessionContext {
   readonly completedTurnIds: Set<TurnId>;
   readonly cancellingTurnIds: Set<TurnId>;
   activePromptEventId?: string;
+  promptAccepted: boolean;
+  quarantinePromptEventsUntilAcceptedDrain: boolean;
+  requirePromptStartBeforeCompletion: boolean;
+  nextTurnRequiresPromptStart: boolean;
   readonly completedPromptEventIds: Set<string>;
   assistantItemId?: RuntimeItemId;
   reasoningItemId?: RuntimeItemId;

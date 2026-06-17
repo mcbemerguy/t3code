@@ -1523,6 +1523,142 @@ describe("PiAdapter", () => {
     ).pipe(Effect.provide(TestClock.layer())),
   );
 
+  it.effect("does not let stale id-less lifecycle events complete the next Pi turn", () =>
+    withHarness(
+      (fake) => {
+        fake.abortImpl.mockRejectedValueOnce(new Error("abort failed"));
+        fake.promptScript = (rt) =>
+          rt.promptInputs.length === 1
+            ? rt.emit({ type: "assistant_delta", text: "partial" })
+            : Effect.void;
+      },
+      ({ adapter, runtime }) =>
+        Effect.gen(function* () {
+          const firstCompletionFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.type === "turn.completed",
+          ).pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
+
+          yield* adapter.sendTurn({ threadId, input: "start" });
+          yield* adapter.interruptTurn(threadId);
+          yield* TestClock.adjust("1 second");
+          const firstCompletion = yield* Fiber.join(firstCompletionFiber);
+          assert.equal(Option.isSome(firstCompletion), true);
+
+          yield* adapter.sendTurn({ threadId, input: "after interrupt" });
+          const nextCompletionFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.type === "turn.completed",
+          ).pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
+          yield* runtime.emit({ type: "prompt_end", success: true });
+          yield* runtime.emit({ type: "agent_end", success: true });
+          yield* TestClock.adjust("1 second");
+          const nextCompletion = yield* Fiber.join(nextCompletionFiber);
+
+          assert.equal(Option.isNone(nextCompletion), true);
+        }),
+    ).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("quarantines stale lifecycle ids observed before the next Pi prompt is accepted", () =>
+    withHarness(
+      (fake) => {
+        fake.abortImpl.mockRejectedValueOnce(new Error("abort failed"));
+        fake.promptScript = (rt) =>
+          rt.promptInputs.length === 1
+            ? rt.emit({ type: "assistant_delta", text: "partial" })
+            : Effect.gen(function* () {
+                yield* rt.emit({ type: "agent_start", id: "old-prompt" });
+                yield* rt.emit({ type: "agent_end", id: "old-prompt", success: true });
+              });
+      },
+      ({ adapter, runtime }) =>
+        Effect.gen(function* () {
+          const firstCompletionFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.type === "turn.completed",
+          ).pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
+
+          yield* adapter.sendTurn({ threadId, input: "start" });
+          yield* adapter.interruptTurn(threadId);
+          yield* TestClock.adjust("1 second");
+          const firstCompletion = yield* Fiber.join(firstCompletionFiber);
+          assert.equal(Option.isSome(firstCompletion), true);
+
+          const nextCompletionFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.type === "turn.completed",
+          ).pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
+          yield* adapter.sendTurn({ threadId, input: "after interrupt" });
+          yield* runtime.emit({ type: "agent_start", id: "new-prompt" });
+          yield* runtime.emit({ type: "agent_end", id: "new-prompt", success: true });
+          yield* TestClock.adjust("1 second");
+          const nextCompletion = yield* Fiber.join(nextCompletionFiber);
+
+          assert.equal(Option.isSome(nextCompletion), true);
+          if (Option.isSome(nextCompletion)) {
+            const completed = nextCompletion.value[0];
+            assert.equal(completed?.turnId, "pi-turn-2");
+            assert.equal(
+              (completed?.raw?.payload as { id?: string } | undefined)?.id,
+              "new-prompt",
+            );
+          }
+        }),
+    ).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("cancels late extension UI requests from an interrupted Pi turn", () =>
+    withHarness(
+      (fake) => {
+        fake.abortImpl.mockRejectedValueOnce(new Error("abort failed"));
+        fake.promptScript = (rt) =>
+          rt.promptInputs.length === 1
+            ? rt.emit({ type: "assistant_delta", text: "partial" })
+            : Effect.void;
+      },
+      ({ adapter, runtime }) =>
+        Effect.gen(function* () {
+          const firstCompletionFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.type === "turn.completed",
+          ).pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
+
+          yield* adapter.sendTurn({ threadId, input: "start" });
+          yield* adapter.interruptTurn(threadId);
+          yield* TestClock.adjust("1 second");
+          const firstCompletion = yield* Fiber.join(firstCompletionFiber);
+          assert.equal(Option.isSome(firstCompletion), true);
+
+          yield* adapter.sendTurn({ threadId, input: "after interrupt" });
+          const requestedFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.type === "user-input.requested",
+          ).pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
+          yield* runtime.emit({
+            type: "extension_ui_request",
+            id: "late-question",
+            method: "input",
+            prompt: "stale question",
+          });
+          yield* TestClock.adjust("1 second");
+          const requested = yield* Fiber.join(requestedFiber);
+
+          assert.equal(Option.isNone(requested), true);
+          assert.deepEqual(runtime.extensionUiResponses.at(-1), {
+            id: "late-question",
+            cancelled: true,
+          });
+        }),
+    ).pipe(Effect.provide(TestClock.layer())),
+  );
+
   it.effect("applies selected Pi models through set_model", () =>
     withHarness(
       undefined,
