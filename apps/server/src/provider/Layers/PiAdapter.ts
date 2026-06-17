@@ -70,6 +70,8 @@ import {
 const PROVIDER = ProviderDriverKind.make("pi");
 const DEFAULT_USAGE_DEBOUNCE_MS = 50;
 const MAX_RETAINED_PENDING_TOOLS = 1024;
+const PI_INTERRUPT_ABORT_WATCHDOG_MS = 2_500;
+const MAX_RETAINED_COMPLETED_PROMPTS = 1024;
 
 function mergeUsageRefreshOptions(
   previous: PiUsageRefreshOptions | undefined,
@@ -89,6 +91,14 @@ function pruneRetainedPendingTools(session: PiAdapterSessionContext): void {
     const oldest = session.tools.keys().next();
     if (oldest.done) return;
     session.tools.delete(oldest.value);
+  }
+}
+
+function pruneRetainedCompletedPrompts(session: PiAdapterSessionContext): void {
+  while (session.completedPromptEventIds.size > MAX_RETAINED_COMPLETED_PROMPTS) {
+    const oldest = session.completedPromptEventIds.keys().next();
+    if (oldest.done) return;
+    session.completedPromptEventIds.delete(oldest.value);
   }
 }
 
@@ -167,9 +177,23 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     detail?: { readonly errorMessage?: string; readonly stopReason?: string },
   ) =>
     Effect.gen(function* () {
+      const turnId = session.currentTurnId ?? session.latestTurnId;
+      if (turnId && session.completedTurnIds.has(turnId)) return;
       if (session.turnCompleted) return;
       session.turnCompleted = true;
-      const rawInput = raw ? { raw } : undefined;
+      if (turnId) {
+        session.completedTurnIds.add(turnId);
+        session.cancellingTurnIds.delete(turnId);
+      }
+      if (session.activePromptEventId) {
+        session.completedPromptEventIds.add(session.activePromptEventId);
+        pruneRetainedCompletedPrompts(session);
+        delete session.activePromptEventId;
+      }
+      const rawInput = {
+        ...(raw ? { raw } : {}),
+        ...(turnId ? { turnId } : {}),
+      };
       yield* offer([
         {
           ...basePiEvent(session, rawInput),
@@ -600,6 +624,9 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           ...(resumeCursor?.sessionFile ? { sessionFile: resumeCursor.sessionFile } : {}),
           stopped: false,
           turnCompleted: true,
+          completedTurnIds: new Set(),
+          cancellingTurnIds: new Set(),
+          completedPromptEventIds: new Set(),
           usageRefreshInFlight: false,
           usageRefreshQueued: false,
           usageRefreshQueuedForce: false,
@@ -791,6 +818,8 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     session.currentTurnId = turnId;
     session.latestTurnId = turnId;
     session.turnCompleted = false;
+    session.cancellingTurnIds.delete(turnId);
+    delete session.activePromptEventId;
     yield* offer([
       { ...basePiEvent(session), type: "turn.started", payload: {} } satisfies ProviderRuntimeEvent,
       {
@@ -866,32 +895,46 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       return true;
     });
 
-  const interruptTurn = (threadId: ThreadId, _turnId?: TurnId) =>
+  const interruptTurn = (threadId: ThreadId, requestedTurnId?: TurnId) =>
     requireSession(threadId).pipe(
       Effect.flatMap((session) =>
         pauseActiveWorkflows(session).pipe(
-          Effect.flatMap((pausedWorkflow) => {
-            if (pausedWorkflow) return cancelPendingUserInputs(session);
-            return cancelPendingUserInputs(session).pipe(
-              Effect.andThen(session.runtime.abort()),
-              Effect.tap(() =>
-                offer([
+          Effect.flatMap((pausedWorkflow) =>
+            Effect.gen(function* () {
+              yield* cancelPendingUserInputs(session);
+              if (pausedWorkflow) return;
+
+              const interruptedTurnId = requestedTurnId ?? session.currentTurnId;
+              const shouldCompleteInterruptedTurn =
+                interruptedTurnId !== undefined &&
+                !session.completedTurnIds.has(interruptedTurnId) &&
+                !session.turnCompleted &&
+                (requestedTurnId === undefined || requestedTurnId === session.currentTurnId);
+
+              if (shouldCompleteInterruptedTurn) {
+                session.cancellingTurnIds.add(interruptedTurnId);
+                yield* offer([
                   {
-                    ...basePiEvent(session),
+                    ...basePiEvent(session, { turnId: interruptedTurnId }),
                     type: "turn.aborted",
                     payload: { reason: "Interrupted by user" },
                   } satisfies ProviderRuntimeEvent,
-                ]),
-              ),
-              Effect.andThen(completeTurn(session, undefined, "interrupted")),
-            );
-          }),
+                ]);
+                yield* completeTurn(session, undefined, "interrupted");
+              }
+
+              yield* session.runtime
+                .abort()
+                .pipe(
+                  Effect.exit,
+                  Effect.timeoutOption(Duration.millis(PI_INTERRUPT_ABORT_WATCHDOG_MS)),
+                  Effect.asVoid,
+                );
+            }),
+          ),
         ),
       ),
-      Effect.mapError((cause): ProviderAdapterError => {
-        if (cause._tag.startsWith("ProviderAdapter")) return cause as ProviderAdapterError;
-        return mapPiRuntimeError(threadId, "abort", cause as PiSessionRuntimeError);
-      }),
+      Effect.mapError((cause): ProviderAdapterError => cause),
     );
 
   const readThread = (threadId: ThreadId) =>

@@ -163,6 +163,12 @@ export class PiEventMapper {
       }
 
       if (type === "prompt_start" || type === "agent_start") {
+        if (session.turnCompleted || !session.currentTurnId) return;
+        const lifecycleId = lifecycleEventId(event);
+        if (lifecycleId) {
+          if (session.completedPromptEventIds.has(lifecycleId)) return;
+          session.activePromptEventId = lifecycleId;
+        }
         return yield* self.offer([
           {
             ...basePiEvent(session, { raw: message }),
@@ -215,6 +221,15 @@ export class PiEventMapper {
 
       if (type === "prompt_end" || type === "agent_end") {
         if (event.willRetry === true) return;
+        const lifecycleId = lifecycleEventId(event);
+        if (lifecycleId && session.completedPromptEventIds.has(lifecycleId)) return;
+        if (
+          lifecycleId &&
+          session.activePromptEventId &&
+          lifecycleId !== session.activePromptEventId
+        )
+          return;
+        if (session.turnCompleted || !session.currentTurnId) return;
         const state =
           event.success === false || trimText(event.stopReason) === "error"
             ? "failed"
@@ -563,6 +578,10 @@ function readRecord(value: unknown): Record<string, unknown> | undefined {
 
 function readPiEventType(event: PiRpcEvent): string {
   return trimText(event.type) ?? "event";
+}
+
+function lifecycleEventId(event: PiRpcEvent): string | undefined {
+  return trimText(event.id) ?? trimText(event.promptId) ?? trimText(event.requestId);
 }
 
 function toolCallId(event: PiRpcEvent): string {

@@ -48,6 +48,10 @@ export interface PiAdapterSessionContext {
   currentTurnId?: TurnId;
   latestTurnId?: TurnId;
   turnCompleted: boolean;
+  readonly completedTurnIds: Set<TurnId>;
+  readonly cancellingTurnIds: Set<TurnId>;
+  activePromptEventId?: string;
+  readonly completedPromptEventIds: Set<string>;
   assistantItemId?: RuntimeItemId;
   reasoningItemId?: RuntimeItemId;
   usageRefreshTimerFiber?: Fiber.Fiber<void, never>;
