@@ -942,6 +942,111 @@ describe("PiAdapter", () => {
     ),
   );
 
+  it.effect("emits native Pi tool presentation metadata across lifecycle events", () =>
+    withHarness(
+      (fake) => {
+        fake.promptScript = (rt) =>
+          Effect.gen(function* () {
+            yield* rt.emit({
+              type: "tool_execution_start",
+              toolCallId: "read-1",
+              toolName: "read",
+              args: { path: "src/index.ts" },
+            });
+            yield* rt.emit({
+              type: "tool_execution_end",
+              toolCallId: "read-1",
+              result: { content: [{ type: "text", text: "file text" }] },
+            });
+            yield* rt.emit({
+              type: "tool_execution_start",
+              toolCallId: "bash-1",
+              toolName: "bash",
+              args: { command: "pnpm test" },
+            });
+            yield* rt.emit({
+              type: "tool_execution_update",
+              toolCallId: "bash-1",
+              partialResult: { stdout: "running" },
+            });
+            yield* rt.emit({
+              type: "tool_execution_end",
+              toolCallId: "bash-1",
+              result: { stdout: "ok" },
+            });
+            yield* rt.emit({
+              type: "tool_execution_start",
+              toolCallId: "grep-1",
+              toolName: "grep",
+              args: { query: "needle", path: "src" },
+            });
+            yield* rt.emit({
+              type: "tool_execution_end",
+              toolCallId: "grep-1",
+              result: { matches: [] },
+            });
+          });
+      },
+      ({ adapter }) =>
+        Effect.gen(function* () {
+          const eventsFiber = yield* collectEvents(
+            adapter,
+            7,
+            (event) =>
+              event.type === "item.started" ||
+              event.type === "item.updated" ||
+              event.type === "item.completed",
+          ).pipe(Effect.forkChild);
+          yield* adapter.sendTurn({ threadId, input: "tools" });
+          const events = yield* Fiber.join(eventsFiber);
+
+          const readStarted = events.find(
+            (event) => event.type === "item.started" && event.itemId === "pi-tool-read-1",
+          );
+          assert.equal(readStarted?.type, "item.started");
+          if (readStarted?.type === "item.started") {
+            assert.equal(readStarted.payload.detail, "src/index.ts");
+            assert.deepEqual(readStarted.payload.data, {
+              kind: "read",
+              toolName: "read",
+              toolCallId: "read-1",
+              rawInput: { path: "src/index.ts" },
+              args: { path: "src/index.ts" },
+              path: "src/index.ts",
+              primaryPath: "src/index.ts",
+            });
+          }
+
+          const bashUpdated = events.find(
+            (event) => event.type === "item.updated" && event.itemId === "pi-tool-bash-1",
+          );
+          assert.equal(bashUpdated?.type, "item.updated");
+          if (bashUpdated?.type === "item.updated") {
+            const data = bashUpdated.payload.data as Record<string, unknown>;
+            assert.equal(data.kind, "execute");
+            assert.equal(data.toolCallId, "bash-1");
+            assert.equal(data.command, "pnpm test");
+            assert.deepEqual(data.rawInput, { command: "pnpm test" });
+            assert.deepEqual(data.partialResult, { stdout: "running" });
+          }
+
+          const grepCompleted = events.find(
+            (event) => event.type === "item.completed" && event.itemId === "pi-tool-grep-1",
+          );
+          assert.equal(grepCompleted?.type, "item.completed");
+          if (grepCompleted?.type === "item.completed") {
+            const data = grepCompleted.payload.data as Record<string, unknown>;
+            assert.equal(data.kind, "search");
+            assert.equal(data.toolCallId, "grep-1");
+            assert.equal(data.query, "needle");
+            assert.equal(data.path, "src");
+            assert.deepEqual(data.matches, []);
+            assert.deepEqual(data.result, { matches: [] });
+          }
+        }),
+    ),
+  );
+
   it.effect("maps Pi edit tool file changes to structured diffs", () => {
     const root = mkdtempSync(join(tmpdir(), "t3-pi-edit-"));
     writeFileSync(join(root, "note.txt"), "old\n", "utf8");

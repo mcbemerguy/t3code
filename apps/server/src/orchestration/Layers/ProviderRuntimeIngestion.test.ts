@@ -2445,6 +2445,89 @@ describe("ProviderRuntimeIngestion", () => {
     ).toBe(true);
   });
 
+  it("preserves native Pi tool presentation metadata in lifecycle activities", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const data = {
+      kind: "execute",
+      toolName: "bash",
+      toolCallId: "tool-1",
+      rawInput: { command: "pnpm test" },
+      args: { command: "pnpm test" },
+      command: "pnpm test",
+    };
+
+    harness.emit({
+      type: "item.started",
+      eventId: asEventId("evt-pi-tool-started"),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-pi-tool"),
+      itemId: asItemId("pi-tool-tool-1"),
+      payload: {
+        itemType: "command_execution",
+        status: "inProgress",
+        title: "bash",
+        detail: "pnpm test",
+        data,
+      },
+    });
+    harness.emit({
+      type: "item.updated",
+      eventId: asEventId("evt-pi-tool-updated"),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-pi-tool"),
+      itemId: asItemId("pi-tool-tool-1"),
+      payload: {
+        itemType: "command_execution",
+        status: "inProgress",
+        title: "bash",
+        detail: "pnpm test",
+        data: { ...data, partialResult: { stdout: "running" } },
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-pi-tool-completed"),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-pi-tool"),
+      itemId: asItemId("pi-tool-tool-1"),
+      payload: {
+        itemType: "command_execution",
+        status: "completed",
+        title: "bash",
+        detail: "pnpm test",
+        data: { ...data, result: { stdout: "ok" } },
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-pi-tool-completed",
+      ),
+    );
+
+    for (const id of ["evt-pi-tool-started", "evt-pi-tool-updated", "evt-pi-tool-completed"]) {
+      const activity = thread.activities.find(
+        (entry: ProviderRuntimeTestActivity) => entry.id === id,
+      );
+      const payload = activity?.payload as Record<string, unknown> | undefined;
+      const payloadData = payload?.data as Record<string, unknown> | undefined;
+
+      expect(activity?.summary).toBe("Ran command");
+      expect(payload?.itemId).toBe("pi-tool-tool-1");
+      expect(payload?.detail).toBe("pnpm test");
+      expect(payloadData?.toolCallId).toBe("tool-1");
+      expect(payloadData?.command).toBe("pnpm test");
+      expect(payloadData?.rawInput).toEqual({ command: "pnpm test" });
+    }
+  });
+
   it("consumes P1 runtime events into thread metadata, diff checkpoints, and activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

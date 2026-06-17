@@ -19,16 +19,72 @@ export interface PiToolEndPresentation {
   readonly diagnostic?: string;
 }
 
+export type PiToolKind =
+  | "execute"
+  | "read"
+  | "write"
+  | "edit"
+  | "apply_patch"
+  | "search"
+  | "mcp"
+  | "web"
+  | "image"
+  | "other";
+
+export interface PiToolLifecycleMetadata {
+  readonly kind: PiToolKind;
+  readonly toolName: string;
+  readonly toolCallId: string;
+  readonly rawInput?: unknown;
+  readonly args?: unknown;
+  readonly command?: string;
+  readonly path?: string;
+  readonly query?: string;
+  readonly primaryPath?: string;
+}
+
+export interface PiToolLifecyclePresentation {
+  readonly itemType: CanonicalItemType;
+  readonly title: string;
+  readonly detail?: string;
+  readonly data: PiToolLifecycleMetadata;
+}
+
 export function toPiToolItemType(toolName: string | undefined): CanonicalItemType {
-  const normalized = (toolName ?? "").toLowerCase();
-  if (normalized === "bash" || normalized === "shell" || normalized === "run")
-    return "command_execution";
-  if (normalized === "edit" || normalized === "write" || normalized === "apply_patch")
-    return "file_change";
-  if (normalized.includes("mcp")) return "mcp_tool_call";
-  if (normalized.includes("web")) return "web_search";
-  if (normalized.includes("image")) return "image_view";
+  const kind = toPiToolKind(toolName);
+  if (kind === "execute") return "command_execution";
+  if (kind === "edit" || kind === "write" || kind === "apply_patch") return "file_change";
+  if (kind === "mcp") return "mcp_tool_call";
+  if (kind === "web") return "web_search";
+  if (kind === "image") return "image_view";
   return "dynamic_tool_call";
+}
+
+export function buildToolLifecyclePresentation(input: {
+  readonly toolName: string;
+  readonly toolCallId: string;
+  readonly args: unknown;
+}): PiToolLifecyclePresentation {
+  const kind = toPiToolKind(input.toolName);
+  const command = extractCommandPreview(input.args);
+  const path = extractPath(input.args);
+  const query = extractQuery(input.args);
+  const detail = command ?? path ?? query;
+  const data: PiToolLifecycleMetadata = {
+    kind,
+    toolName: input.toolName,
+    toolCallId: input.toolCallId,
+    ...(input.args !== undefined ? { rawInput: input.args, args: input.args } : {}),
+    ...(command ? { command } : {}),
+    ...(path ? { path, primaryPath: path } : {}),
+    ...(query ? { query } : {}),
+  };
+  return {
+    itemType: toPiToolItemType(input.toolName),
+    title: input.toolName,
+    ...(detail ? { detail } : {}),
+    data,
+  };
 }
 
 export function toolResultToText(result: unknown): string | undefined {
@@ -136,7 +192,83 @@ export function buildToolEndPresentation(input: {
 export function readStringField(value: unknown, key: string): string | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const field = (value as Record<string, unknown>)[key];
-  return typeof field === "string" && field.trim() ? field : undefined;
+  return typeof field === "string" && field.trim() ? field.trim() : undefined;
+}
+
+function toPiToolKind(toolName: string | undefined): PiToolKind {
+  const normalized = (toolName ?? "").toLowerCase();
+  if (
+    normalized === "bash" ||
+    normalized === "shell" ||
+    normalized === "run" ||
+    normalized === "execute" ||
+    normalized === "exec"
+  ) {
+    return "execute";
+  }
+  if (normalized === "read" || normalized === "view") return "read";
+  if (normalized === "write" || normalized === "create") return "write";
+  if (normalized === "edit" || normalized === "replace") return "edit";
+  if (normalized === "apply_patch" || normalized === "apply-patch" || normalized === "patch") {
+    return "apply_patch";
+  }
+  if (
+    normalized === "find" ||
+    normalized === "grep" ||
+    normalized === "search" ||
+    normalized === "rg" ||
+    normalized.includes("search")
+  ) {
+    return "search";
+  }
+  if (normalized.includes("mcp")) return "mcp";
+  if (normalized.includes("web")) return "web";
+  if (normalized.includes("image")) return "image";
+  return "other";
+}
+
+function extractCommandPreview(args: unknown): string | undefined {
+  const command = normalizeCommandValue(readField(args, "command") ?? readField(args, "cmd"));
+  if (command) return command;
+  const executable = readStringField(args, "executable");
+  const executableArgs = normalizeCommandValue(readField(args, "args"));
+  if (executable && executableArgs) return `${executable} ${executableArgs}`;
+  return executable;
+}
+
+function extractPath(args: unknown): string | undefined {
+  return firstString(
+    readStringField(args, "path"),
+    readStringField(args, "filePath"),
+    readStringField(args, "relativePath"),
+    readStringField(args, "filename"),
+    readStringField(args, "newPath"),
+    readStringField(args, "oldPath"),
+  );
+}
+
+function extractQuery(args: unknown): string | undefined {
+  return firstString(
+    readStringField(args, "query"),
+    readStringField(args, "pattern"),
+    readStringField(args, "searchTerm"),
+    readStringField(args, "regex"),
+  );
+}
+
+function readField(value: unknown, key: string): unknown {
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)[key]
+    : undefined;
+}
+
+function normalizeCommandValue(value: unknown): string | undefined {
+  if (typeof value === "string") return value.trim() || undefined;
+  if (!Array.isArray(value)) return undefined;
+  const parts = value
+    .map((entry) => (typeof entry === "string" ? entry.trim() : undefined))
+    .filter((entry): entry is string => entry !== undefined && entry.length > 0);
+  return parts.length > 0 ? parts.join(" ") : undefined;
 }
 
 function mergedUpdateText(updates: ReadonlyArray<unknown>): string | undefined {

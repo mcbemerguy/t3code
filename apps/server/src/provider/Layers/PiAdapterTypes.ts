@@ -15,7 +15,7 @@ import type {
   PiSessionRuntimeShape,
   PiWorkflowRunCursor,
 } from "./PiSessionRuntime.ts";
-import type { PiToolSnapshot } from "./PiToolPresentation.ts";
+import type { PiToolLifecyclePresentation, PiToolSnapshot } from "./PiToolPresentation.ts";
 import type { PiPendingUserInputRequest } from "./PiExtensionUi.ts";
 import type { PiUsageState, PiUsageContextChange } from "./PiUsage.ts";
 import type { PiWorkflowEventMapper } from "./PiWorkflowMapper.ts";
@@ -24,6 +24,7 @@ export interface PiToolState {
   readonly toolName: string;
   readonly itemId: RuntimeItemId;
   readonly updates: Array<unknown>;
+  readonly presentation: PiToolLifecyclePresentation;
   readonly snapshot?: PiToolSnapshot;
 }
 

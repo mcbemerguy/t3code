@@ -23,6 +23,7 @@ import {
 } from "./PiExtensionUi.ts";
 import {
   buildToolEndPresentation,
+  buildToolLifecyclePresentation,
   captureEditSnapshot,
   toPiToolItemType,
   toolResultToText,
@@ -370,11 +371,17 @@ export class PiEventMapper {
     const id = toolCallId(event);
     const name = toolName(event);
     const itemId = runtimeItemId(`pi-tool-${id}`);
+    const presentation = buildToolLifecyclePresentation({
+      toolName: name,
+      toolCallId: id,
+      args: event.args,
+    });
     const snapshot = captureEditSnapshot(name, event.args, session.cwd);
     session.tools.set(id, {
       toolName: name,
       itemId,
       updates: [],
+      presentation,
       ...(snapshot ? { snapshot } : {}),
     });
     return this.offer([
@@ -382,10 +389,11 @@ export class PiEventMapper {
         ...basePiEvent(session, { raw: message, itemId }),
         type: "item.started",
         payload: {
-          itemType: toPiToolItemType(name),
+          itemType: presentation.itemType,
           status: "inProgress",
-          title: name,
-          ...(event.args !== undefined ? { data: { args: event.args } } : {}),
+          title: presentation.title,
+          ...(presentation.detail ? { detail: presentation.detail } : {}),
+          data: presentation.data,
         },
       } satisfies ProviderRuntimeEvent,
     ]);
@@ -405,14 +413,30 @@ export class PiEventMapper {
       if (event.partialResult !== undefined) state.updates.push(event.partialResult);
       if (event.update !== undefined) state.updates.push(event.update);
       const updateText = toolResultToText(event.partialResult ?? event.update);
-      if (!updateText) return;
-      yield* self.offer([
-        {
+      const events: Array<ProviderRuntimeEvent> = [];
+      if (updateText) {
+        events.push({
           ...basePiEvent(session, { raw: message, itemId: state.itemId }),
           type: "content.delta",
           payload: { streamKind: "command_output", delta: updateText },
-        } satisfies ProviderRuntimeEvent,
-      ]);
+        } satisfies ProviderRuntimeEvent);
+      }
+      events.push({
+        ...basePiEvent(session, { raw: message, itemId: state.itemId }),
+        type: "item.updated",
+        payload: {
+          itemType: state.presentation.itemType,
+          status: "inProgress",
+          title: state.presentation.title,
+          ...(state.presentation.detail ? { detail: state.presentation.detail } : {}),
+          data: {
+            ...state.presentation.data,
+            ...(event.partialResult !== undefined ? { partialResult: event.partialResult } : {}),
+            ...(event.update !== undefined ? { update: event.update } : {}),
+          },
+        },
+      } satisfies ProviderRuntimeEvent);
+      yield* self.offer(events);
     });
   }
 
@@ -425,10 +449,16 @@ export class PiEventMapper {
     return Effect.gen(function* () {
       const id = trimText(event.toolCallId) ?? trimText(event.id);
       if (!id) return;
+      const fallbackToolName = toolName(event);
       const state = session.tools.get(id) ?? {
-        toolName: toolName(event),
+        toolName: fallbackToolName,
         itemId: runtimeItemId(`pi-tool-${id}`),
         updates: [],
+        presentation: buildToolLifecyclePresentation({
+          toolName: fallbackToolName,
+          toolCallId: id,
+          args: event.args,
+        }),
       };
       const presentation = buildToolEndPresentation({
         cwd: session.cwd,
@@ -465,10 +495,11 @@ export class PiEventMapper {
         ...basePiEvent(session, { raw: message, itemId: state.itemId }),
         type: "item.completed",
         payload: {
-          itemType: toPiToolItemType(state.toolName),
+          itemType: state.presentation.itemType,
           status: event.isError === true ? "failed" : "completed",
-          title: state.toolName,
-          ...(event.result !== undefined ? { data: event.result } : {}),
+          title: state.presentation.title,
+          ...(state.presentation.detail ? { detail: state.presentation.detail } : {}),
+          data: mergeToolCompletionData(state.presentation.data, event.result),
         },
       } satisfies ProviderRuntimeEvent);
       session.tools.delete(id);
@@ -476,6 +507,15 @@ export class PiEventMapper {
       yield* self.scheduleUsageRefresh(session);
     });
   }
+}
+
+function mergeToolCompletionData(metadata: object, result: unknown): object {
+  if (result === undefined) return metadata;
+  const resultFields =
+    typeof result === "object" && result !== null && !Array.isArray(result)
+      ? (result as Record<string, unknown>)
+      : undefined;
+  return { ...resultFields, ...metadata, result };
 }
 
 function runtimeItemId(value: string): RuntimeItemId {

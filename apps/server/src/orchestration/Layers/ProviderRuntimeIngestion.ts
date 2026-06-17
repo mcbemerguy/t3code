@@ -10,6 +10,7 @@ import {
   isToolLifecycleItemType,
   ThreadId,
   type ThreadTokenUsageSnapshot,
+  type ToolLifecycleItemType,
   TurnId,
   type OrchestrationCheckpointSummary,
   type OrchestrationProposedPlan,
@@ -26,6 +27,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { deriveToolActivityPresentation } from "@t3tools/shared/toolActivity";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
@@ -260,6 +262,35 @@ function requestKindFromCanonicalRequestType(
     default:
       return undefined;
   }
+}
+
+function toolLifecycleActivityProjection(
+  event: Extract<
+    ProviderRuntimeEvent,
+    { type: "item.started" | "item.updated" | "item.completed" }
+  >,
+  fallbackSummary: string,
+): { readonly summary: string; readonly payload: Record<string, unknown> } {
+  const itemType = event.payload.itemType as ToolLifecycleItemType;
+  const presentation = deriveToolActivityPresentation({
+    itemType,
+    title: event.payload.title,
+    detail: event.payload.detail,
+    data: event.payload.data,
+    fallbackSummary,
+  });
+  const detail = presentation.detail ?? event.payload.detail;
+  return {
+    summary: presentation.summary,
+    payload: {
+      itemType: event.payload.itemType,
+      ...(event.itemId ? { itemId: event.itemId } : {}),
+      ...(event.payload.status ? { status: event.payload.status } : {}),
+      ...(event.payload.title ? { title: event.payload.title } : {}),
+      ...(detail ? { detail: truncateDetail(detail) } : {}),
+      ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+    },
+  };
 }
 
 function runtimeEventToActivities(
@@ -558,19 +589,15 @@ function runtimeEventToActivities(
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
+      const toolActivity = toolLifecycleActivityProjection(event, "Tool updated");
       return [
         {
           id: event.eventId,
           createdAt: event.createdAt,
           tone: "tool",
           kind: "tool.updated",
-          summary: event.payload.title ?? "Tool updated",
-          payload: {
-            itemType: event.payload.itemType,
-            ...(event.payload.status ? { status: event.payload.status } : {}),
-            ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
-          },
+          summary: toolActivity.summary,
+          payload: toolActivity.payload,
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
         },
@@ -581,18 +608,15 @@ function runtimeEventToActivities(
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
+      const toolActivity = toolLifecycleActivityProjection(event, "Tool");
       return [
         {
           id: event.eventId,
           createdAt: event.createdAt,
           tone: "tool",
           kind: "tool.completed",
-          summary: event.payload.title ?? "Tool",
-          payload: {
-            itemType: event.payload.itemType,
-            ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
-          },
+          summary: toolActivity.summary,
+          payload: toolActivity.payload,
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
         },
@@ -603,17 +627,15 @@ function runtimeEventToActivities(
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
+      const toolActivity = toolLifecycleActivityProjection(event, "Tool started");
       return [
         {
           id: event.eventId,
           createdAt: event.createdAt,
           tone: "tool",
           kind: "tool.started",
-          summary: `${event.payload.title ?? "Tool"} started`,
-          payload: {
-            itemType: event.payload.itemType,
-            ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-          },
+          summary: toolActivity.summary,
+          payload: toolActivity.payload,
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
         },
