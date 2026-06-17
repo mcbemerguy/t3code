@@ -168,6 +168,10 @@ class FakePiRuntime implements PiSessionRuntimeShape {
     return Queue.offer(this.eventQueue, { kind: "event", payload });
   }
 
+  readySession(): ProviderSession {
+    return this.session("ready");
+  }
+
   private session(status: ProviderSession["status"]): ProviderSession {
     return {
       provider: PROVIDER,
@@ -1481,6 +1485,68 @@ describe("PiAdapter", () => {
           assert.equal(runtimes[0]?.steerImpl.mock.calls.length, 0);
           assert.match(warningMessages[0] ?? "", /will restart from the saved Pi session/);
           assert.match(warningMessages[1] ?? "", /Restarted Pi RPC/);
+        }),
+    ).pipe(Effect.provide(TestClock.layer()));
+  });
+
+  it.effect("serializes concurrent recovery of a discarded Pi runtime", () => {
+    let created = 0;
+    let resolveRestartEntered!: () => void;
+    let releaseRestart!: () => void;
+    const restartEntered = new Promise<void>((resolve) => {
+      resolveRestartEntered = resolve;
+    });
+    const releaseRestartPromise = new Promise<void>((resolve) => {
+      releaseRestart = resolve;
+    });
+
+    return withHarness(
+      (fake) => {
+        const index = created;
+        created += 1;
+        if (index === 0) {
+          fake.abortImpl = vi.fn(() => new Promise<undefined>(() => {}));
+          fake.promptScript = (rt) => rt.emit({ type: "assistant_delta", text: "partial" });
+        } else if (index === 1) {
+          fake.startImpl = vi.fn(async () => {
+            resolveRestartEntered();
+            await releaseRestartPromise;
+            return fake.readySession();
+          });
+          fake.promptScript = (rt) => rt.emit({ type: "agent_end", success: true });
+        }
+      },
+      ({ adapter, runtimes }) =>
+        Effect.gen(function* () {
+          yield* adapter.sendTurn({ threadId, input: "start" });
+          const interruptFiber = yield* adapter.interruptTurn(threadId).pipe(Effect.forkChild);
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("4 seconds");
+          yield* Fiber.join(interruptFiber);
+
+          const sendFiber = yield* adapter
+            .sendTurn({ threadId, input: "after restart" })
+            .pipe(Effect.forkChild);
+          yield* Effect.promise(() => restartEntered).pipe(
+            Effect.timeout("1 second"),
+            Effect.orDie,
+          );
+          const readFiber = yield* adapter.readThread(threadId).pipe(Effect.forkChild);
+          yield* Effect.yieldNow;
+          yield* Effect.yieldNow;
+
+          assert.equal(runtimes.length, 2);
+          releaseRestart();
+          const resumed = yield* Fiber.join(sendFiber);
+          yield* Fiber.join(readFiber);
+
+          assert.equal(resumed.turnId, "pi-turn-2");
+          assert.equal(runtimes.length, 2);
+          assert.equal(runtimes[1]?.startImpl.mock.calls.length, 1);
+          assert.deepEqual(
+            runtimes[1]?.promptInputs.map((input) => input.message),
+            ["after restart"],
+          );
         }),
     ).pipe(Effect.provide(TestClock.layer()));
   });

@@ -9,6 +9,7 @@ import type * as Deferred from "effect/Deferred";
 import type * as Effect from "effect/Effect";
 import type * as Fiber from "effect/Fiber";
 import type * as Scope from "effect/Scope";
+import type * as Semaphore from "effect/Semaphore";
 
 import type {
   PiResumeCursor,
@@ -37,6 +38,7 @@ export interface PiAdapterSessionContext {
   readonly scope: Scope.Closeable;
   runtime: PiSessionRuntimeShape;
   runtimeOptions: PiSessionRuntimeOptions;
+  readonly runtimeRecoveryLock: Semaphore.Semaphore;
   runtimeRecovery?: PiRuntimeRecoveryState;
   eventFiber?: Fiber.Fiber<void, never>;
   readonly tools: Map<string, PiToolState>;
