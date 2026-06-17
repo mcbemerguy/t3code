@@ -156,7 +156,9 @@ Ensure the web UI receives durable thread activity for:
 
 Avoid latest-turn-only presentation causing important recovery/workflow notices to disappear immediately after the next user message. If a recovery event changes session usability, it must remain inspectable in thread history or session diagnostics.
 
-## Phase 7 — Validation and regression pass
+## Phase 7 — Validation and regression pass — done
+
+Status: Completed targeted Pi/provider/UI regression suite plus required `vp run typecheck` and `vp check`; no critical regressions found and manual smoke scenarios are covered by automated tests.
 
 Run the native Pi-relevant validation after implementation:
 
