@@ -94,7 +94,9 @@ Remote `abort()` should become best-effort cleanup, not the gate for T3 becoming
 
 After this phase, the exact user-reported scenario should recover without requiring a full runtime restart if the only issue is failed/late abort acknowledgement.
 
-## Phase 3 — Runtime discard/restart for poisoned Pi RPC sessions
+## Phase 3 — Runtime discard/restart for poisoned Pi RPC sessions — done
+
+Status: Implemented/committed wedged runtime discard, serialized lazy restart from preserved Pi resume/session metadata, missing-resume visible failure, and recovery diagnostics/session-state events with adapter tests.
 
 Goal: recover when the Pi RPC subprocess or upstream provider is wedged beyond local turn completion.
 
