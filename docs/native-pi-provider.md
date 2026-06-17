@@ -30,13 +30,26 @@ Reasoning-capable Pi models expose T3's generic Reasoning selector and apply cho
 
 OpenAI Fast remains intentionally deferred for native Pi. T3 does not expose a writable Pi `fastMode` descriptor and ignores incoming Pi `fastMode` selections instead of sending `/fast` prompts. The exact reason is that T3's generic `fastMode` descriptor is writable in composer traits, while Pi currently exposes Fast only through Pi-owned extension commands/provider-request rewriting and no clean Pi RPC/core control path. Future Fast work should add a real Pi RPC/core session control first, then wire the generic descriptor to that protocol.
 
+## Custom ACP UX port promotion note
+
+The native Pi rendering and `@` autocomplete port selectively brought forward behavior from Custom ACP commits `f074237f`, `2da43c78`, `1410c0b3`, `58572e68`, `a9b3c842`, `38af23b8`, and `929b0cbc`: explicit ignored-scope workspace search, work-log path linking, deferred file-link rendering, compact tool rows, Pi tool starts, and semantic tool labels/icons. Stale Custom ACP provider wiring, `pi-acp` launch paths, and broad provider-driver reshuffles from that branch were intentionally ignored; native Pi must continue to use `driver: "pi"` and `pi --mode rpc` directly.
+
+File-link extraction has a completion-gating invariant: streaming assistant text and active tool rows must not run fuzzy/enhanced path scans on every token or update. During streaming, render plain text or structured provider data only. Run expensive path candidate extraction only after the specific message or tool row is settled, then memoize by stable row/message identity and content.
+
+The current explicit-scope search is an enhancement over ordinary ignored-path filtering, not a Custom ACP provider dependency: once a user types an explicit ignored scope such as `@.local/` or `@src/ignored/`, T3 can descend safely into that scope while normal unscoped search continues to hide gitignored paths. It still rejects `.git` descent, path traversal, and symlink escapes outside the workspace.
+
 ## Manual validation checklist
+
+Status for this promotion pass: manual GUI smoke was not run in the headless coding environment. Run this checklist before promoting a build:
 
 1. Start T3 with a native Pi provider instance (`driver: "pi"`, `binaryPath: "pi"`) and open a new thread.
 2. Select a reasoning-capable Pi model discovered from `get_available_models`; confirm the composer traits show a Reasoning selector with only supported Pi levels.
 3. Select a non-default reasoning level, send a turn, and verify Pi RPC state/events show the selected level, for example `thinking_level_changed` or `get_state.thinkingLevel` matching the choice.
 4. Select a non-reasoning Pi model; confirm no Reasoning selector is shown.
 5. Confirm OpenAI Codex Pi models do not show a writable Fast/Normal traits control. Fast must stay controlled by Pi until Pi exposes a non-prompt RPC/core API.
+6. Type `@.local/` or another gitignored exact scope and confirm completion descends only after explicit scope typing; unscoped searches must not leak ignored paths.
+7. Run Pi tools that read, search, edit/write, and execute shell commands; confirm completed rows show semantic icons, compact arguments, clickable paths, and no live-update jank while streaming.
+8. Confirm file links open through the configured editor and right-click copy actions still work.
 
 The `default` fallback model path is covered by adapter tests rather than the manual UI checklist: fallback `default` has no advertised model capabilities, so the UI should not show a Reasoning selector for it. If a caller supplies a `default` model selection with a reasoning option, T3 still sends `set_thinking_level` without `set_model`.
 
