@@ -11,7 +11,9 @@ import type * as Fiber from "effect/Fiber";
 import type * as Scope from "effect/Scope";
 
 import type {
+  PiResumeCursor,
   PiRpcRuntimeMessage,
+  PiSessionRuntimeOptions,
   PiSessionRuntimeShape,
   PiWorkflowRunCursor,
 } from "./PiSessionRuntime.ts";
@@ -33,7 +35,9 @@ export interface PiAdapterSessionContext {
   readonly threadId: ThreadId;
   readonly cwd: string;
   readonly scope: Scope.Closeable;
-  readonly runtime: PiSessionRuntimeShape;
+  runtime: PiSessionRuntimeShape;
+  runtimeOptions: PiSessionRuntimeOptions;
+  runtimeRecovery?: PiRuntimeRecoveryState;
   eventFiber?: Fiber.Fiber<void, never>;
   readonly tools: Map<string, PiToolState>;
   readonly pendingUserInputs: Map<RuntimeRequestId, PiPendingUserInputRequest>;
@@ -74,6 +78,13 @@ export interface PiAdapterSessionContext {
 export interface PiWorkflowTailCursor {
   readonly offset: number;
   readonly line: number;
+}
+
+export interface PiRuntimeRecoveryState {
+  readonly reason: string;
+  readonly discardedAt: string;
+  readonly resumeCursor?: PiResumeCursor;
+  readonly missingResumeErrorEmitted?: boolean;
 }
 
 export type PiRuntimeEventOffer = (

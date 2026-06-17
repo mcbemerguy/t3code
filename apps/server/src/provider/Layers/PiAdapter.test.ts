@@ -63,6 +63,7 @@ class FakePiRuntime implements PiSessionRuntimeShape {
   thinkingLevels: Array<string> = [];
   modelOptionOperations: Array<string> = [];
   currentModel: string | undefined;
+  sessionResumeCursor: ProviderSession["resumeCursor"] | null | undefined;
 
   startImpl = vi.fn(() => Promise.resolve(this.session("ready")));
   promptImpl = vi.fn(
@@ -176,7 +177,12 @@ class FakePiRuntime implements PiSessionRuntimeShape {
       cwd: this.options.cwd,
       threadId: this.options.threadId,
       ...(this.currentModel ? { model: this.currentModel } : {}),
-      resumeCursor: this.options.resumeCursor ?? { sessionFile: "/tmp/pi-session.json" },
+      ...(this.sessionResumeCursor === null
+        ? {}
+        : {
+            resumeCursor: this.sessionResumeCursor ??
+              this.options.resumeCursor ?? { sessionFile: "/tmp/pi-session.json" },
+          }),
       createdAt: this.now,
       updatedAt: this.now,
     };
@@ -188,6 +194,7 @@ function withHarness<T, R = never>(
   use: (harness: {
     adapter: PiAdapterShape;
     runtime: FakePiRuntime;
+    runtimes: ReadonlyArray<FakePiRuntime>;
   }) => Effect.Effect<T, ProviderAdapterError, R>,
   startInput?: Partial<ProviderSessionStartInput>,
   adapterOptions?: {
@@ -224,7 +231,7 @@ function withHarness<T, R = never>(
         runtimeMode: "full-access",
         ...startInput,
       });
-      return yield* use({ adapter, runtime: runtimes[0] as FakePiRuntime });
+      return yield* use({ adapter, runtime: runtimes[0] as FakePiRuntime, runtimes });
     }),
   ).pipe(
     Effect.provide(
@@ -1420,6 +1427,105 @@ describe("PiAdapter", () => {
         }),
     ).pipe(Effect.provide(TestClock.layer())),
   );
+
+  it.effect("discards and restarts a wedged Pi runtime from the saved session on next use", () => {
+    let created = 0;
+    return withHarness(
+      (fake) => {
+        const index = created;
+        created += 1;
+        if (index === 0) {
+          fake.abortImpl = vi.fn(() => new Promise<undefined>(() => {}));
+          fake.promptScript = (rt) => rt.emit({ type: "assistant_delta", text: "partial" });
+        } else {
+          fake.promptScript = (rt) => rt.emit({ type: "agent_end", success: true });
+        }
+      },
+      ({ adapter, runtimes }) =>
+        Effect.gen(function* () {
+          const warningsFiber = yield* collectEvents(
+            adapter,
+            2,
+            (event) => event.type === "runtime.warning",
+          ).pipe(Effect.forkChild);
+
+          yield* adapter.sendTurn({ threadId, input: "start" });
+          const interruptFiber = yield* adapter.interruptTurn(threadId).pipe(Effect.forkChild);
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("4 seconds");
+          yield* Fiber.join(interruptFiber);
+
+          assert.equal(runtimes.length, 1);
+          assert.equal(runtimes[0]?.closeImpl.mock.calls.length, 1);
+
+          const resumed = yield* adapter.sendTurn({ threadId, input: "after restart" });
+          const warnings = yield* Fiber.join(warningsFiber);
+
+          const resumedCursor = resumed.resumeCursor as { sessionFile?: string } | undefined;
+          const runtimeCursor = runtimes[1]?.options.resumeCursor;
+          assert.equal(resumed.turnId, "pi-turn-2");
+          assert.equal(resumedCursor?.sessionFile, "/tmp/pi-session.json");
+          assert.equal(runtimes.length, 2);
+          assert.equal(runtimeCursor?.sessionFile, "/tmp/pi-session.json");
+          assert.deepEqual(
+            runtimes[0]?.promptInputs.map((input) => input.message),
+            ["start"],
+          );
+          assert.deepEqual(
+            runtimes[1]?.promptInputs.map((input) => input.message),
+            ["after restart"],
+          );
+          const warningMessages = warnings.flatMap((event) =>
+            event.type === "runtime.warning" ? [event.payload.message ?? ""] : [],
+          );
+          assert.equal(runtimes[0]?.steerImpl.mock.calls.length, 0);
+          assert.match(warningMessages[0] ?? "", /will restart from the saved Pi session/);
+          assert.match(warningMessages[1] ?? "", /Restarted Pi RPC/);
+        }),
+    ).pipe(Effect.provide(TestClock.layer()));
+  });
+
+  it.effect("fails visibly instead of restarting a wedged Pi runtime without resume state", () => {
+    let created = 0;
+    return withHarness(
+      (fake) => {
+        const index = created;
+        created += 1;
+        if (index === 0) {
+          fake.sessionResumeCursor = null;
+          fake.abortImpl = vi.fn(() => new Promise<undefined>(() => {}));
+          fake.promptScript = (rt) => rt.emit({ type: "assistant_delta", text: "partial" });
+        }
+      },
+      ({ adapter, runtimes }) =>
+        Effect.gen(function* () {
+          const errorFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.type === "runtime.error",
+          ).pipe(Effect.forkChild);
+
+          yield* adapter.sendTurn({ threadId, input: "start" });
+          const interruptFiber = yield* adapter.interruptTurn(threadId).pipe(Effect.forkChild);
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("4 seconds");
+          yield* Fiber.join(interruptFiber);
+          const errors = yield* Fiber.join(errorFiber);
+
+          const next = yield* adapter
+            .sendTurn({ threadId, input: "after missing resume" })
+            .pipe(Effect.flip, Effect.orDie);
+
+          assert.equal(runtimes.length, 1);
+          const errorMessages = errors.flatMap((event) =>
+            event.type === "runtime.error" ? [event.payload.message] : [],
+          );
+          assert.equal(runtimes[0]?.closeImpl.mock.calls.length, 1);
+          assert.match(next.message, /durable session file/);
+          assert.match(errorMessages[0] ?? "", /no saved Pi session file is available/);
+        }),
+    ).pipe(Effect.provide(TestClock.layer()));
+  });
 
   it.effect(
     "interrupts a turn after partial output even when Pi never sends a terminal lifecycle event",
