@@ -125,7 +125,9 @@ The prompt acknowledgement timeout is safe because Pi RPC prompt response is onl
 
 Keep timeout values configurable or centrally defined with clear defaults. Avoid per-call inline timeout constants scattered across adapter code.
 
-## Phase 5 — Workflow interruption parity
+## Phase 5 — Workflow interruption parity — done
+
+Status: Implemented/committed workflow Stop-as-interrupt semantics, explicit pause preservation, bounded local turn completion/recovery for wedged workflow controls, workflow cursor replay/discoverability coverage, and rejected-interrupt failure handling.
 
 Goal: make workflow-related interruptions compatible with the general recovery model without reintroducing frozen sessions.
 
