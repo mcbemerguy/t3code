@@ -190,6 +190,62 @@ describe("PiUsage", () => {
     );
   });
 
+  it("tracks processed fallback usage even when a model context window is known", () => {
+    const state = new PiUsageState();
+    state.update({
+      source: "parent",
+      stats: {
+        tokens: { input: 90, output: 10, total: 100 },
+        model: { contextWindow: 1_000 },
+      },
+    });
+
+    assert.deepStrictEqual(
+      state.update({
+        source: "parent",
+        stats: { tokens: { input: 180, output: 20, total: 200 } },
+      }),
+      {
+        usedTokens: 200,
+        totalProcessedTokens: 200,
+        maxTokens: 1_000,
+        inputTokens: 180,
+        outputTokens: 20,
+      },
+    );
+  });
+
+  it("remembers context occupancy even when it arrived without a context window", () => {
+    const state = new PiUsageState();
+    state.update({
+      source: "parent",
+      stats: { contextUsage: { tokens: 37_612 } },
+    });
+
+    assert.deepStrictEqual(
+      state.update({
+        source: "parent",
+        stats: {
+          tokens: {
+            input: 56_383,
+            cacheRead: 253_696,
+            output: 1_986,
+            total: 312_065,
+          },
+          model: { contextWindow: 272_000 },
+        },
+      }),
+      {
+        usedTokens: 37_612,
+        totalProcessedTokens: 312_065,
+        maxTokens: 272_000,
+        inputTokens: 56_383,
+        cachedInputTokens: 253_696,
+        outputTokens: 1_986,
+      },
+    );
+  });
+
   it("replaces usage when the context source changes", () => {
     const state = new PiUsageState();
     state.update({

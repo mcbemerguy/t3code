@@ -13,9 +13,11 @@ export interface PiUsageUpdateInput {
   readonly contextChange?: PiUsageContextChange;
 }
 
+type PiUsageUsedTokensSource = "context" | "processed";
+
 interface ParsedPiTokenUsage {
   readonly usage: ThreadTokenUsageSnapshot;
-  readonly hasContextUsage: boolean;
+  readonly usedTokensSource: PiUsageUsedTokensSource;
   readonly hasRequestAccounting: boolean;
 }
 
@@ -31,6 +33,7 @@ export interface NormalizePiTokenUsageOptions {
 
 interface PiUsageEntry {
   readonly usage: ThreadTokenUsageSnapshot;
+  readonly usedTokensSource: PiUsageUsedTokensSource;
   readonly contextKey?: string;
 }
 
@@ -159,22 +162,29 @@ function mergeResetUsage(
   return preserveKnownFields(previous, next, PRESERVED_CONTEXT_RESET_KEYS);
 }
 
-function mergeSameContextUsage(
-  previous: ThreadTokenUsageSnapshot,
-  next: PiUsageUpdate,
-): ThreadTokenUsageSnapshot {
-  const shouldPreserveContextWindow =
-    previous.maxTokens !== undefined &&
-    next.usage.maxTokens === undefined &&
-    !next.hasContextUsage &&
-    next.hasRequestAccounting;
+interface PiUsageMergeResult {
+  readonly usage: ThreadTokenUsageSnapshot;
+  readonly usedTokensSource: PiUsageUsedTokensSource;
+}
+
+function shouldPreserveContextUsedTokens(previous: PiUsageEntry, next: PiUsageUpdate): boolean {
+  return (
+    previous.usedTokensSource === "context" &&
+    next.usedTokensSource === "processed" &&
+    next.hasRequestAccounting
+  );
+}
+
+function mergeSameContextUsage(previous: PiUsageEntry, next: PiUsageUpdate): PiUsageMergeResult {
+  const preserveContextUsedTokens = shouldPreserveContextUsedTokens(previous, next);
 
   return {
-    ...previous,
-    ...next.usage,
-    ...(shouldPreserveContextWindow
-      ? { usedTokens: previous.usedTokens, maxTokens: previous.maxTokens }
-      : {}),
+    usage: {
+      ...previous.usage,
+      ...next.usage,
+      ...(preserveContextUsedTokens ? { usedTokens: previous.usage.usedTokens } : {}),
+    },
+    usedTokensSource: preserveContextUsedTokens ? previous.usedTokensSource : next.usedTokensSource,
   };
 }
 
@@ -205,25 +215,31 @@ export class PiUsageState {
     }
 
     const previous = this.current;
-    const usage = this.merge(previous, next);
-    this.current = usageEntry(next, usage);
-    return arePiTokenUsageSnapshotsEqual(previous.usage, usage) ? undefined : usage;
+    const current = this.merge(previous, next);
+    this.current = current;
+    return arePiTokenUsageSnapshotsEqual(previous.usage, current.usage) ? undefined : current.usage;
   }
 
   snapshot(): ThreadTokenUsageSnapshot | undefined {
     return this.current?.usage;
   }
 
-  private merge(previous: PiUsageEntry, next: PiUsageUpdate): ThreadTokenUsageSnapshot {
-    if (contextSourceKey(previous) !== contextSourceKey(next)) return next.usage;
-    if (next.contextChange) return mergeResetUsage(previous.usage, next.usage);
-    return mergeSameContextUsage(previous.usage, next);
+  private merge(previous: PiUsageEntry, next: PiUsageUpdate): PiUsageEntry {
+    if (contextSourceKey(previous) !== contextSourceKey(next)) return usageEntry(next, next.usage);
+    if (next.contextChange) return usageEntry(next, mergeResetUsage(previous.usage, next.usage));
+    const merged = mergeSameContextUsage(previous, next);
+    return usageEntry(next, merged.usage, merged.usedTokensSource);
   }
 }
 
-function usageEntry(update: PiUsageUpdate, usage: ThreadTokenUsageSnapshot): PiUsageEntry {
+function usageEntry(
+  update: PiUsageUpdate,
+  usage: ThreadTokenUsageSnapshot,
+  usedTokensSource: PiUsageUsedTokensSource = update.usedTokensSource,
+): PiUsageEntry {
   return {
     usage,
+    usedTokensSource,
     ...(update.contextKey ? { contextKey: update.contextKey } : {}),
   };
 }
@@ -393,7 +409,7 @@ function parsePiTokenUsage(
 
   return {
     usage: normalizedUsage,
-    hasContextUsage: contextUsedTokens !== undefined,
+    usedTokensSource: contextUsedTokens !== undefined ? "context" : "processed",
     hasRequestAccounting: hasRequestAccounting(normalizedUsage),
   };
 }
