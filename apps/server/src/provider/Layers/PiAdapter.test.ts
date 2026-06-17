@@ -21,6 +21,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -118,7 +119,13 @@ class FakePiRuntime implements PiSessionRuntimeShape {
   }
 
   abort() {
-    return Effect.promise(() => this.abortImpl());
+    return Effect.tryPromise({
+      try: () => this.abortImpl(),
+      catch: (error) =>
+        error instanceof PiRpcLifecycleError
+          ? error
+          : new PiRpcLifecycleError(error instanceof Error ? error.message : "abort failed", error),
+    });
   }
 
   getState = Effect.succeed({ sessionFile: "/tmp/pi-session.json" });
@@ -1348,6 +1355,164 @@ describe("PiAdapter", () => {
     ),
   );
 
+  it.effect("locally completes an interrupted Pi turn even when abort rejects", () =>
+    withHarness(
+      (fake) => {
+        fake.abortImpl.mockRejectedValueOnce(new Error("abort failed"));
+        fake.promptScript = (rt) => rt.emit({ type: "assistant_delta", text: "partial" });
+      },
+      ({ adapter }) =>
+        Effect.gen(function* () {
+          const completedFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.type === "turn.completed",
+          ).pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
+
+          yield* adapter.sendTurn({ threadId, input: "start" });
+          const interruptResult = yield* adapter.interruptTurn(threadId).pipe(Effect.result);
+          yield* TestClock.adjust("1 second");
+          const completed = yield* Fiber.join(completedFiber);
+
+          assert.equal(interruptResult._tag, "Success");
+          assert.equal(Option.isSome(completed), true);
+          if (Option.isSome(completed)) {
+            assert.equal(completed.value[0]?.type, "turn.completed");
+            if (completed.value[0]?.type === "turn.completed") {
+              assert.equal(completed.value[0].turnId, "pi-turn-1");
+              assert.equal(completed.value[0].payload.state, "interrupted");
+            }
+          }
+        }),
+    ).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("times out wedged Pi aborts and locally completes the active turn", () =>
+    withHarness(
+      (fake) => {
+        fake.abortImpl = vi.fn(() => new Promise<undefined>(() => {}));
+        fake.promptScript = (rt) => rt.emit({ type: "assistant_delta", text: "partial" });
+      },
+      ({ adapter }) =>
+        Effect.gen(function* () {
+          const completedFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.type === "turn.completed",
+          ).pipe(Effect.timeoutOption("4 seconds"), Effect.forkChild);
+
+          yield* adapter.sendTurn({ threadId, input: "start" });
+          const interruptFiber = yield* adapter
+            .interruptTurn(threadId)
+            .pipe(Effect.result, Effect.timeoutOption("4 seconds"), Effect.forkChild);
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("4 seconds");
+          const interruptResult = yield* Fiber.join(interruptFiber);
+          const completed = yield* Fiber.join(completedFiber);
+
+          assert.equal(Option.isSome(interruptResult), true);
+          if (Option.isSome(interruptResult)) assert.equal(interruptResult.value._tag, "Success");
+          assert.equal(Option.isSome(completed), true);
+          if (Option.isSome(completed) && completed.value[0]?.type === "turn.completed") {
+            assert.equal(completed.value[0].turnId, "pi-turn-1");
+            assert.equal(completed.value[0].payload.state, "interrupted");
+          }
+        }),
+    ).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect(
+    "interrupts a turn after partial output even when Pi never sends a terminal lifecycle event",
+    () =>
+      withHarness(
+        (fake) => {
+          fake.promptScript = (rt) => rt.emit({ type: "assistant_delta", text: "partial" });
+        },
+        ({ adapter }) =>
+          Effect.gen(function* () {
+            const eventsFiber = yield* collectEvents(
+              adapter,
+              2,
+              (event) => event.type === "content.delta" || event.type === "turn.completed",
+            ).pipe(Effect.forkChild);
+
+            yield* adapter.sendTurn({ threadId, input: "start" });
+            yield* adapter.interruptTurn(threadId);
+            const events = yield* Fiber.join(eventsFiber);
+
+            assert.deepEqual(
+              events.map((event) => event.type),
+              ["content.delta", "turn.completed"],
+            );
+            const completed = events.at(-1);
+            assert.equal(completed?.type, "turn.completed");
+            if (completed?.type === "turn.completed") {
+              assert.equal(completed.turnId, "pi-turn-1");
+              assert.equal(completed.payload.state, "interrupted");
+            }
+          }),
+      ),
+  );
+
+  it.effect("starts a new Pi prompt after a locally interrupted abort failure", () =>
+    withHarness(
+      (fake) => {
+        fake.abortImpl.mockRejectedValueOnce(new Error("abort failed"));
+        fake.promptScript = (rt) =>
+          rt.promptInputs.length === 1
+            ? rt.emit({ type: "assistant_delta", text: "partial" })
+            : rt.emit({ type: "agent_end", success: true });
+      },
+      ({ adapter, runtime }) =>
+        Effect.gen(function* () {
+          yield* adapter.sendTurn({ threadId, input: "start" });
+          const interruptResult = yield* adapter.interruptTurn(threadId).pipe(Effect.result);
+          assert.equal(interruptResult._tag, "Success");
+
+          const second = yield* adapter.sendTurn({ threadId, input: "after interrupt" });
+
+          assert.equal(second.turnId, "pi-turn-2");
+          assert.deepEqual(
+            runtime.promptInputs.map((input) => input.message),
+            ["start", "after interrupt"],
+          );
+          assert.equal(runtime.steerImpl.mock.calls.length, 0);
+        }),
+    ),
+  );
+
+  it.effect("ignores late Pi lifecycle events after locally interrupted turn completion", () =>
+    withHarness(
+      (fake) => {
+        fake.abortImpl.mockRejectedValueOnce(new Error("abort failed"));
+        fake.promptScript = (rt) => rt.emit({ type: "assistant_delta", text: "partial" });
+      },
+      ({ adapter, runtime }) =>
+        Effect.gen(function* () {
+          const completions: Array<ProviderRuntimeEvent> = [];
+          const collector = yield* adapter.streamEvents.pipe(
+            Stream.filter((event) => event.type === "turn.completed"),
+            Stream.runForEach((event) => Effect.sync(() => completions.push(event))),
+            Effect.forkChild,
+          );
+
+          yield* adapter.sendTurn({ threadId, input: "start" });
+          const interruptResult = yield* adapter.interruptTurn(threadId).pipe(Effect.result);
+          yield* runtime.emit({ type: "prompt_end", success: true });
+          yield* runtime.emit({ type: "agent_end", success: true });
+          yield* Effect.yieldNow;
+          yield* Fiber.interrupt(collector);
+
+          assert.equal(interruptResult._tag, "Success");
+          assert.equal(completions.length, 1);
+          assert.equal(completions[0]?.turnId, "pi-turn-1");
+          if (completions[0]?.type === "turn.completed") {
+            assert.equal(completions[0].payload.state, "interrupted");
+          }
+        }),
+    ),
+  );
+
   it.effect("applies selected Pi models through set_model", () =>
     withHarness(
       undefined,
@@ -1726,6 +1891,54 @@ describe("PiAdapter", () => {
         if (resolved?.type === "user-input.resolved")
           assert.deepEqual(resolved.payload.answers, { id: "blocked-input", cancelled: true });
       }),
+    ),
+  );
+
+  it.effect("cancels pending extension UI requests even when Pi abort fails", () =>
+    withHarness(
+      (fake) => {
+        fake.abortImpl.mockRejectedValueOnce(new Error("abort failed"));
+      },
+      ({ adapter, runtime }) =>
+        Effect.gen(function* () {
+          runtime.promptScript = (rt) =>
+            rt.emit({
+              type: "extension_ui_request",
+              id: "blocked-input-abort-fails",
+              method: "input",
+              title: "Need input",
+              message: "Provide value",
+            });
+          const requestedFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.type === "user-input.requested",
+          ).pipe(Effect.forkChild);
+
+          yield* adapter.sendTurn({ threadId, input: "ask" });
+          const [requested] = yield* Fiber.join(requestedFiber);
+          assert.equal(requested?.type, "user-input.requested");
+
+          const resolvedFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.type === "user-input.resolved",
+          ).pipe(Effect.forkChild);
+          const interruptResult = yield* adapter.interruptTurn(threadId).pipe(Effect.result);
+          const [resolved] = yield* Fiber.join(resolvedFiber);
+
+          assert.equal(interruptResult._tag, "Success");
+          assert.deepEqual(runtime.extensionUiResponses.at(-1), {
+            id: "blocked-input-abort-fails",
+            cancelled: true,
+          });
+          assert.equal(resolved?.type, "user-input.resolved");
+          if (resolved?.type === "user-input.resolved")
+            assert.deepEqual(resolved.payload.answers, {
+              id: "blocked-input-abort-fails",
+              cancelled: true,
+            });
+        }),
     ),
   );
 
