@@ -5,7 +5,9 @@ import { isHighConfidenceAutolinkPath } from "./fileLinkCandidate";
 describe("isHighConfidenceAutolinkPath", () => {
   it("accepts high-confidence absolute and workspace-relative file paths", () => {
     expect(isHighConfidenceAutolinkPath(String.raw`C:\Users\me\repo\src\main.py`)).toBe(true);
+    expect(isHighConfidenceAutolinkPath(String.raw`C:\Users\Jane Doe\repo\src\main.py`)).toBe(true);
     expect(isHighConfidenceAutolinkPath("C:/Users/me/repo/src/main.py:10")).toBe(true);
+    expect(isHighConfidenceAutolinkPath("C:/Program Files/repo/src/main.py:10")).toBe(true);
     expect(isHighConfidenceAutolinkPath("/Users/me/repo/src/main.ts")).toBe(true);
     expect(isHighConfidenceAutolinkPath("./src/main.ts")).toBe(true);
     expect(isHighConfidenceAutolinkPath("../lib/file.ts:12:3")).toBe(true);

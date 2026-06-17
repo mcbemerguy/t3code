@@ -24,6 +24,21 @@ describe("resolveMarkdownCodeSpanPathLinkMeta", () => {
     });
   });
 
+  it("resolves Windows code-span paths with spaces", () => {
+    expect(
+      resolveMarkdownCodeSpanPathLinkMeta(
+        "C:/Program Files/t3 code/src/main.ts:12",
+        "C:/Program Files/t3 code",
+      ),
+    ).toMatchObject({
+      filePath: "C:/Program Files/t3 code/src/main.ts",
+      targetPath: "C:/Program Files/t3 code/src/main.ts:12",
+      displayPath: "t3 code/src/main.ts:12",
+      basename: "main.ts",
+      line: 12,
+    });
+  });
+
   it("requires a directory signal for ordinary source file names", () => {
     expect(resolveMarkdownCodeSpanPathLinkMeta("ChatMarkdown.tsx", "/repo/project")).toBeNull();
     expect(

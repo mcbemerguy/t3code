@@ -69,6 +69,52 @@ describe("extractTerminalLinks", () => {
     ]);
   });
 
+  it("finds Windows absolute paths with spaces", () => {
+    const line = String.raw`see C:\Users\Jane Doe\t3 code\src\main.ts:42 for details`;
+    const path = String.raw`C:\Users\Jane Doe\t3 code\src\main.ts:42`;
+    const start = line.indexOf(path);
+    expect(extractTerminalLinks(line)).toEqual([
+      {
+        kind: "path",
+        text: path,
+        start,
+        end: start + path.length,
+      },
+    ]);
+  });
+
+  it("finds Windows forward-slash paths with spaces", () => {
+    const line = "see C:/Program Files/t3 code/src/main.ts:12 for details";
+    const path = "C:/Program Files/t3 code/src/main.ts:12";
+    const start = line.indexOf(path);
+    expect(extractTerminalLinks(line)).toEqual([
+      {
+        kind: "path",
+        text: path,
+        start,
+        end: start + path.length,
+      },
+    ]);
+  });
+
+  it("does not swallow prose between Windows paths", () => {
+    const line = "see C:/tmp/one.ts and C:/tmp/two.ts";
+    expect(extractTerminalLinks(line)).toEqual([
+      {
+        kind: "path",
+        text: "C:/tmp/one.ts",
+        start: 4,
+        end: 17,
+      },
+      {
+        kind: "path",
+        text: "C:/tmp/two.ts",
+        start: 22,
+        end: 35,
+      },
+    ]);
+  });
+
   it("trims trailing punctuation from Windows forward-slash paths", () => {
     const line = "(C:/tmp/x.ts).";
     expect(extractTerminalLinks(line)).toEqual([

@@ -1,6 +1,6 @@
 import { normalizeMarkdownLinkDestination, rewriteMarkdownFileUriHref } from "../../markdown-links";
 
-const MARKDOWN_LINK_HREF_PATTERN = /\[[^\]]*]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g;
+const MARKDOWN_LINK_HREF_PATTERN = /\[[^\]]*]\(\s*(<[^>]+>|[^)\s]+)(?:\s+["'][^"']*["'])?\s*\)/g;
 
 function pathParentSegments(path: string): string[] {
   const normalized = path.replaceAll("\\", "/");

@@ -1,3 +1,4 @@
+import { isHighConfidenceAutolinkPath } from "./fileLinkCandidate";
 import { isMacPlatform } from "./lib/utils";
 
 export type TerminalLinkKind = "url" | "path";
@@ -39,7 +40,12 @@ export interface WrappedTerminalLinkLine {
 const URL_PATTERN = /https?:\/\/[^\s"'`<>]+/g;
 const FILE_PATH_PATTERN =
   /(?:~\/|\.{1,2}\/|\/|[A-Za-z]:[\\/]|\\\\)[^\s"'`<>]+|[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+(?::\d+){0,2}/g;
+const EXPLICIT_WINDOWS_PATH_START_PATTERN = /[A-Za-z]:[\\/]|\\\\/g;
 const TRAILING_PUNCTUATION_PATTERN = /[.,;!?]+$/;
+const MAX_EXPLICIT_PATH_SCAN_LENGTH = 400;
+const PATH_CANDIDATE_HARD_DELIMITERS = new Set(['"', "'", "`", "<", ">", "\n", "\r", "\0"]);
+const POSITION_SUFFIX_AT_START_PATTERN = /^:\d+(?::\d+)?/;
+const PATH_CANDIDATE_BOUNDARY_PATTERN = /[\s),.;!?\]}]/;
 
 function trimClosingDelimiters(value: string): string {
   let output = value.replace(TRAILING_PUNCTUATION_PATTERN, "");
@@ -96,6 +102,85 @@ function collectMatches(
   }
 
   return matches;
+}
+
+function scanPathCandidateEnd(line: string, start: number): number {
+  for (let index = start; index < line.length; index += 1) {
+    if (PATH_CANDIDATE_HARD_DELIMITERS.has(line[index] ?? "")) return index;
+  }
+  return line.length;
+}
+
+function isPathCandidateBoundary(value: string | undefined): boolean {
+  return value === undefined || PATH_CANDIDATE_BOUNDARY_PATTERN.test(value);
+}
+
+function resolveExplicitPathCandidate(raw: string): string | null {
+  const value = raw.slice(0, MAX_EXPLICIT_PATH_SCAN_LENGTH);
+
+  for (let end = 1; end <= value.length; end += 1) {
+    const prefix = trimClosingDelimiters(value.slice(0, end).trimEnd());
+    if (prefix.length === 0 || !isHighConfidenceAutolinkPath(prefix)) continue;
+
+    const remaining = value.slice(end);
+    const positionMatch = remaining.match(POSITION_SUFFIX_AT_START_PATTERN);
+    if (positionMatch?.[0]) {
+      const candidateWithPosition = `${prefix}${positionMatch[0]}`;
+      const afterPosition = value[end + positionMatch[0].length];
+      if (
+        isPathCandidateBoundary(afterPosition) &&
+        isHighConfidenceAutolinkPath(candidateWithPosition)
+      ) {
+        return candidateWithPosition;
+      }
+      continue;
+    }
+
+    if (isPathCandidateBoundary(value[end])) return prefix;
+  }
+
+  return null;
+}
+
+function collectExplicitWindowsPathMatches(
+  line: string,
+  existing: TerminalLinkMatch[],
+): TerminalLinkMatch[] {
+  const matches: TerminalLinkMatch[] = [];
+  EXPLICIT_WINDOWS_PATH_START_PATTERN.lastIndex = 0;
+
+  for (const rawMatch of line.matchAll(EXPLICIT_WINDOWS_PATH_START_PATTERN)) {
+    const start = rawMatch.index ?? -1;
+    if (start < 0) continue;
+
+    const scanEnd = scanPathCandidateEnd(line, start);
+    const raw = line.slice(start, scanEnd);
+    const text = resolveExplicitPathCandidate(raw);
+    if (!text) continue;
+
+    const candidate: TerminalLinkMatch = {
+      kind: "path",
+      text,
+      start,
+      end: start + text.length,
+    };
+
+    const collides = [...existing, ...matches].some((other) => overlaps(candidate, other));
+    if (collides) continue;
+
+    matches.push(candidate);
+  }
+
+  return matches;
+}
+
+function collectPathMatches(line: string, existing: TerminalLinkMatch[]): TerminalLinkMatch[] {
+  const explicitWindowsMatches = collectExplicitWindowsPathMatches(line, existing);
+  const genericMatches = collectMatches(line, "path", FILE_PATH_PATTERN, [
+    ...existing,
+    ...explicitWindowsMatches,
+  ]);
+  return [...explicitWindowsMatches, ...genericMatches];
 }
 
 function isWindowsAbsolutePath(value: string): boolean {
@@ -168,7 +253,7 @@ export function splitPathAndPosition(value: string): {
 
 export function extractTerminalLinks(line: string): TerminalLinkMatch[] {
   const urlMatches = collectMatches(line, "url", URL_PATTERN, []);
-  const pathMatches = collectMatches(line, "path", FILE_PATH_PATTERN, urlMatches);
+  const pathMatches = collectPathMatches(line, urlMatches);
   return [...urlMatches, ...pathMatches].toSorted((a, b) => a.start - b.start);
 }
 

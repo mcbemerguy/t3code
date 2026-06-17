@@ -106,6 +106,12 @@ describe("resolveMarkdownFileLinkTarget", () => {
     ).toBe("D:/Programme/t3code/apps/web/src/components/chat/OpenInPicker.tsx:69");
   });
 
+  it("resolves windows drive paths with spaces", () => {
+    expect(resolveMarkdownFileLinkTarget("C:/Program Files/t3 code/src/main.ts:12")).toBe(
+      "C:/Program Files/t3 code/src/main.ts:12",
+    );
+  });
+
   it("resolves angle-bracketed windows drive paths", () => {
     expect(
       resolveMarkdownFileLinkTarget(
