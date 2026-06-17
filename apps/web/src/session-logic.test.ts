@@ -737,6 +737,104 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.map((entry) => entry.id)).toEqual(["turn-2"]);
   });
 
+  it("keeps durable Pi recovery notices outside the latest turn", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "old-tool",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        turnId: "turn-1",
+        summary: "Old tool complete",
+        kind: "tool.completed",
+      }),
+      makeActivity({
+        id: "old-local-cancel",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        turnId: "turn-1",
+        summary: "T3 interrupted locally after Pi abort failed.",
+        kind: "runtime.warning",
+        tone: "info",
+        payload: {
+          message: "T3 interrupted locally after Pi abort failed.",
+          detail: { diagnosticKind: "pi.localCancellationAfterAbortFailure" },
+        },
+      }),
+      makeActivity({
+        id: "old-discard",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        turnId: "turn-1",
+        summary: "Pi RPC became unresponsive; T3 will restart it.",
+        kind: "runtime.warning",
+        tone: "info",
+        payload: {
+          message: "Pi RPC became unresponsive; T3 will restart it.",
+          detail: { diagnosticKind: "pi.rpcDiscardedForRecovery" },
+        },
+      }),
+      makeActivity({
+        id: "old-restarted",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        turnId: "turn-1",
+        summary: "Restarted Pi RPC from the saved Pi session.",
+        kind: "runtime.warning",
+        tone: "info",
+        payload: {
+          message: "Restarted Pi RPC from the saved Pi session.",
+          detail: { diagnosticKind: "pi.rpcRestartedFromResumeCursor" },
+        },
+      }),
+      makeActivity({
+        id: "old-no-event-warning",
+        createdAt: "2026-02-23T00:00:05.000Z",
+        turnId: "turn-1",
+        summary: "Pi accepted the prompt but has not produced any events yet.",
+        kind: "runtime.warning",
+        tone: "info",
+        payload: {
+          message: "Pi accepted the prompt but has not produced any events yet.",
+          detail: { diagnosticKind: "pi.noEventWarning" },
+        },
+      }),
+      makeActivity({
+        id: "old-recovery-error",
+        createdAt: "2026-02-23T00:00:06.000Z",
+        turnId: "turn-1",
+        summary: "Cannot continue this Pi thread without a durable session file.",
+        kind: "runtime.error",
+        tone: "error",
+        payload: {
+          message: "Cannot continue this Pi thread without a durable session file.",
+          detail: { diagnosticKind: "pi.missingResumeCursor" },
+        },
+      }),
+      makeActivity({
+        id: "old-generic-warning",
+        createdAt: "2026-02-23T00:00:07.000Z",
+        turnId: "turn-1",
+        summary: "Generic provider warning",
+        kind: "runtime.warning",
+        tone: "info",
+        payload: { message: "Generic provider warning" },
+      }),
+      makeActivity({
+        id: "current-tool",
+        createdAt: "2026-02-23T00:00:08.000Z",
+        turnId: "turn-2",
+        summary: "Current tool complete",
+        kind: "tool.completed",
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, TurnId.make("turn-2"));
+    expect(entries.map((entry) => entry.id)).toEqual([
+      "old-local-cancel",
+      "old-discard",
+      "old-restarted",
+      "old-no-event-warning",
+      "old-recovery-error",
+      "current-tool",
+    ]);
+  });
+
   it("omits checkpoint captured info entries", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

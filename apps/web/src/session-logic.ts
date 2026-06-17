@@ -482,6 +482,24 @@ export function hasActionableProposedPlan(
   return proposedPlan !== null && proposedPlan.implementedAt === null;
 }
 
+const DURABLE_RUNTIME_DIAGNOSTIC_KINDS = new Set([
+  "pi.localCancellationAfterAbortFailure",
+  "pi.rpcDiscardedForRecovery",
+  "pi.rpcRestartedFromResumeCursor",
+  "pi.missingResumeCursor",
+  "pi.noEventWarning",
+]);
+
+function isDurableThreadNotice(activity: OrchestrationThreadActivity): boolean {
+  if (activity.kind !== "runtime.warning" && activity.kind !== "runtime.error") {
+    return false;
+  }
+  const payload = asRecord(activity.payload);
+  const detail = asRecord(payload?.detail);
+  const diagnosticKind = asTrimmedString(detail?.diagnosticKind);
+  return diagnosticKind !== null && DURABLE_RUNTIME_DIAGNOSTIC_KINDS.has(diagnosticKind);
+}
+
 export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   latestTurnId: TurnId | undefined,
@@ -489,7 +507,8 @@ export function deriveWorkLogEntries(
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of ordered) {
-    if (latestTurnId && activity.turnId !== latestTurnId) continue;
+    if (latestTurnId && activity.turnId !== latestTurnId && !isDurableThreadNotice(activity))
+      continue;
     if (activity.kind === "tool.started") continue;
     if (activity.kind === "task.started") continue;
     if (activity.kind === "context-window.updated") continue;

@@ -2398,6 +2398,7 @@ describe("ProviderRuntimeIngestion", () => {
       turnId: asTurnId("turn-runtime-error-activity"),
       payload: {
         message: "runtime activity exploded",
+        detail: { diagnosticKind: "pi.missingResumeCursor", reason: "missing session file" },
       },
     });
 
@@ -2413,7 +2414,12 @@ describe("ProviderRuntimeIngestion", () => {
         : undefined;
 
     expect(activity?.kind).toBe("runtime.error");
+    expect(activity?.summary).toBe("runtime activity exploded");
     expect(activityPayload?.message).toBe("runtime activity exploded");
+    expect(activityPayload?.detail).toEqual({
+      diagnosticKind: "pi.missingResumeCursor",
+      reason: "missing session file",
+    });
   });
 
   it("keeps the session running when a runtime.warning arrives during an active turn", async () => {

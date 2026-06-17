@@ -13,6 +13,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -472,7 +473,11 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       {
         ...basePiEvent(session),
         type: "runtime.error",
-        payload: { message, class: "provider_error", ...(detail ? { detail } : {}) },
+        payload: {
+          message,
+          class: "provider_error",
+          detail: { diagnosticKind: "pi.missingResumeCursor", ...detail },
+        },
       } satisfies ProviderRuntimeEvent,
       {
         ...basePiEvent(session),
@@ -518,7 +523,12 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
               payload: {
                 message:
                   "Pi RPC became unresponsive; T3 closed it and will restart from the saved Pi session before the next request.",
-                detail: { reason, sessionFile: resumeCursor.sessionFile, discardedAt },
+                detail: {
+                  diagnosticKind: "pi.rpcDiscardedForRecovery",
+                  reason,
+                  sessionFile: resumeCursor.sessionFile,
+                  discardedAt,
+                },
               },
             } satisfies ProviderRuntimeEvent,
           ]);
@@ -568,7 +578,11 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
               payload: {
                 message:
                   "Pi accepted the prompt but has not produced any events yet. The turn is still running; Stop remains available if you want T3 to interrupt or recover it.",
-                detail: { timeoutMs: warningMs, hardRecoveryMs },
+                detail: {
+                  diagnosticKind: "pi.noEventWarning",
+                  timeoutMs: warningMs,
+                  hardRecoveryMs,
+                },
               },
             } satisfies ProviderRuntimeEvent,
           ]);
@@ -673,6 +687,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
             payload: {
               message: "Restarted Pi RPC from the saved Pi session after it became unresponsive.",
               detail: {
+                diagnosticKind: "pi.rpcRestartedFromResumeCursor",
                 operation,
                 reason: recovery.reason,
                 sessionFile: resumeCursor.sessionFile,
@@ -700,6 +715,27 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     if (typeof error === "string" && error.trim()) return error;
     return fallback;
   };
+
+  const emitLocalInterruptAbortWarning = (
+    session: PiAdapterSessionContext,
+    interruptedTurnId: TurnId | undefined,
+    reason: string,
+  ) =>
+    offer([
+      {
+        ...basePiEvent(session, interruptedTurnId ? { turnId: interruptedTurnId } : undefined),
+        type: "runtime.warning",
+        payload: {
+          message:
+            "T3 interrupted the turn locally, but Pi RPC did not acknowledge abort. The thread remains usable and late Pi events from the interrupted turn will be ignored.",
+          detail: {
+            diagnosticKind: "pi.localCancellationAfterAbortFailure",
+            reason,
+            timeoutMs: adapterTimeouts.interruptAbortWatchdogMs,
+          },
+        },
+      } satisfies ProviderRuntimeEvent,
+    ]);
 
   const handlePromptStartFailure = Effect.fn("handlePiPromptStartFailure")(function* (
     session: PiAdapterSessionContext,
@@ -1316,9 +1352,15 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
               Effect.timeoutOption(Duration.millis(adapterTimeouts.interruptAbortWatchdogMs)),
             );
           if (Option.isNone(abortResult)) {
-            yield* discardRuntimeForRecovery(
+            const reason = `Pi RPC abort did not settle within ${adapterTimeouts.interruptAbortWatchdogMs}ms.`;
+            yield* emitLocalInterruptAbortWarning(session, interruptedTurnId, reason);
+            yield* discardRuntimeForRecovery(session, reason);
+          } else if (Exit.isFailure(abortResult.value)) {
+            const abortCause = Cause.squash(abortResult.value.cause);
+            yield* emitLocalInterruptAbortWarning(
               session,
-              `Pi RPC abort did not settle within ${adapterTimeouts.interruptAbortWatchdogMs}ms.`,
+              interruptedTurnId,
+              describeError(abortCause, "Pi RPC abort failed"),
             );
           }
           if (workflowInterruptFailure) return yield* workflowInterruptFailure;

@@ -1463,7 +1463,7 @@ describe("PiAdapter", () => {
         Effect.gen(function* () {
           const warningsFiber = yield* collectEvents(
             adapter,
-            2,
+            3,
             (event) => event.type === "runtime.warning",
           ).pipe(Effect.forkChild);
 
@@ -1497,8 +1497,9 @@ describe("PiAdapter", () => {
             event.type === "runtime.warning" ? [event.payload.message ?? ""] : [],
           );
           assert.equal(runtimes[0]?.steerImpl.mock.calls.length, 0);
-          assert.match(warningMessages[0] ?? "", /will restart from the saved Pi session/);
-          assert.match(warningMessages[1] ?? "", /Restarted Pi RPC/);
+          assert.match(warningMessages[0] ?? "", /interrupted the turn locally/);
+          assert.match(warningMessages[1] ?? "", /will restart from the saved Pi session/);
+          assert.match(warningMessages[2] ?? "", /Restarted Pi RPC/);
         }),
     ).pipe(Effect.provide(TestClock.layer()));
   });
@@ -1651,11 +1652,24 @@ describe("PiAdapter", () => {
       },
       ({ adapter, runtime }) =>
         Effect.gen(function* () {
+          const warningFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.type === "runtime.warning",
+          ).pipe(Effect.forkChild);
+
           yield* adapter.sendTurn({ threadId, input: "start" });
           const interruptResult = yield* adapter.interruptTurn(threadId).pipe(Effect.result);
           assert.equal(interruptResult._tag, "Success");
 
           const second = yield* adapter.sendTurn({ threadId, input: "after interrupt" });
+          const [warning] = yield* Fiber.join(warningFiber);
+          const detail =
+            warning?.type === "runtime.warning" &&
+            warning.payload.detail &&
+            typeof warning.payload.detail === "object"
+              ? (warning.payload.detail as Record<string, unknown>)
+              : undefined;
 
           assert.equal(second.turnId, "pi-turn-2");
           assert.deepEqual(
@@ -1663,6 +1677,11 @@ describe("PiAdapter", () => {
             ["start", "after interrupt"],
           );
           assert.equal(runtime.steerImpl.mock.calls.length, 0);
+          assert.match(
+            warning?.type === "runtime.warning" ? warning.payload.message : "",
+            /interrupted the turn locally/,
+          );
+          assert.equal(detail?.diagnosticKind, "pi.localCancellationAfterAbortFailure");
         }),
     ),
   );
