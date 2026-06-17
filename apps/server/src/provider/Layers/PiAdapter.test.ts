@@ -23,6 +23,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -2708,6 +2709,56 @@ describe("PiAdapter", () => {
                     runDir: fixture.runDir,
                     auditPath: fixture.auditPath,
                     status: "interrupted",
+                  },
+                ],
+              },
+            });
+          }),
+        {
+          resumeCursor: makePiResumeCursor({
+            sessionFile: "/tmp/pi-session.json",
+            activeWorkflowRuns: [
+              { runId: fixture.runId, lastSequence: 0, runDir: fixture.runDir, status: "running" },
+            ],
+          }),
+        },
+      );
+    },
+  );
+
+  it.effect(
+    "leaves restored workflow running and reports failure when interrupt control rejects",
+    () => {
+      const fixture = createWorkflowRunFixture({
+        status: "running",
+        events: [{ type: "run_start", sequence: 1 }],
+      });
+      return withHarness(
+        (fake) => {
+          fake.workflowControlImpl.mockRejectedValueOnce(new Error("control rejected"));
+        },
+        ({ adapter, runtime }) =>
+          Effect.gen(function* () {
+            const result = yield* adapter.interruptTurn(threadId).pipe(Effect.result);
+            const sessions = yield* adapter.listSessions();
+
+            assert.equal(Result.isFailure(result), true);
+            if (Result.isFailure(result)) assert.match(result.failure.message, /control rejected/);
+            assert.equal(runtime.abortImpl.mock.calls.length, 0);
+            assert.equal(runtime.workflowControls[0]?.action, "interrupt");
+            assert.deepEqual(sessions[0]?.resumeCursor, {
+              schemaVersion: 1,
+              provider: "pi",
+              providerInstanceId: "pi",
+              sessionFile: "/tmp/pi-session.json",
+              workflows: {
+                activeRuns: [
+                  {
+                    runId: fixture.runId,
+                    lastSequence: 1,
+                    runDir: fixture.runDir,
+                    auditPath: fixture.auditPath,
+                    status: "running",
                   },
                 ],
               },

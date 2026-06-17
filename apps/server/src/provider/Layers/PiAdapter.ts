@@ -1217,6 +1217,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     Effect.gen(function* () {
       const runs = activeWorkflowRuns(session);
       if (runs.length === 0) return false;
+      let firstFailure: ProviderAdapterError | undefined;
       for (const run of runs) {
         const previous = session.workflowRuns.get(run.runId);
         session.workflowRuns.set(
@@ -1236,7 +1237,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           run.runId,
           "User interrupted active workflow work from t3code.",
         ).pipe(
-          Effect.exit,
+          Effect.result,
           Effect.timeoutOption(Duration.millis(adapterTimeouts.interruptAbortWatchdogMs)),
         );
         if (Option.isNone(result)) {
@@ -1244,8 +1245,24 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
             session,
             `Pi RPC workflow interrupt did not settle within ${adapterTimeouts.interruptAbortWatchdogMs}ms.`,
           );
+          continue;
+        }
+        if (Result.isFailure(result.value)) {
+          if (previous) session.workflowRuns.set(run.runId, previous);
+          else {
+            session.workflowRuns.delete(run.runId);
+            session.workflowTails.delete(run.runId);
+            session.workflowRunTurnIds.delete(run.runId);
+          }
+          firstFailure ??= result.value.failure;
+          yield* emitWorkflowControlNotice(
+            session,
+            `Workflow ${run.runId} interrupt failed: ${describeError(result.value.failure, "Pi workflow interrupt failed")}`,
+            { action: "interrupt", target: run.runId, status: previous?.status, failed: true },
+          );
         }
       }
+      if (firstFailure) return yield* firstFailure;
       yield* emitWorkflowControlNotice(
         session,
         "Workflow interrupt requested. Use /workflow:resume to continue or /workflow:abort to terminate it explicitly if artifacts show it is still recoverable.",
@@ -1279,7 +1296,17 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
             yield* completeTurn(session, undefined, "interrupted");
           }
 
-          const interruptedWorkflow = yield* interruptActiveWorkflows(session);
+          const workflowInterruptResult = yield* interruptActiveWorkflows(session).pipe(
+            Effect.result,
+          );
+          const workflowInterruptFailure = Result.isFailure(workflowInterruptResult)
+            ? workflowInterruptResult.failure
+            : undefined;
+          const interruptedWorkflow = Result.isSuccess(workflowInterruptResult)
+            ? workflowInterruptResult.success
+            : false;
+          if (!shouldCompleteInterruptedTurn && workflowInterruptFailure)
+            return yield* workflowInterruptFailure;
           if (!shouldCompleteInterruptedTurn && interruptedWorkflow) return;
 
           const abortResult = yield* session.runtime
@@ -1294,6 +1321,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
               `Pi RPC abort did not settle within ${adapterTimeouts.interruptAbortWatchdogMs}ms.`,
             );
           }
+          if (workflowInterruptFailure) return yield* workflowInterruptFailure;
         }),
       ),
       Effect.mapError((cause): ProviderAdapterError => cause),
