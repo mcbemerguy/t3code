@@ -394,6 +394,49 @@ describe("PiAdapter", () => {
     ),
   );
 
+  it.effect("preserves whitespace-only Pi assistant deltas", () =>
+    withHarness(
+      (fake) => {
+        fake.promptScript = (rt) =>
+          Effect.gen(function* () {
+            yield* rt.emit({
+              type: "message_update",
+              assistantMessageEvent: { type: "text_delta", delta: "Example:\n" },
+            });
+            yield* rt.emit({ type: "assistant_delta", text: "\n" });
+            yield* rt.emit({ type: "assistant_delta", text: "```" });
+            yield* rt.emit({ type: "assistant_delta", text: "\n" });
+            yield* rt.emit({
+              type: "assistant_delta",
+              text: '(http.request.uri.path eq "/wp-comments-post.php")',
+            });
+            yield* rt.emit({ type: "assistant_delta", text: "\n" });
+            yield* rt.emit({ type: "assistant_delta", text: "```" });
+            yield* rt.emit({ type: "assistant_delta", text: "\n" });
+            yield* rt.emit({ type: "agent_end" });
+          });
+      },
+      ({ adapter }) =>
+        Effect.gen(function* () {
+          const eventsFiber = yield* collectEventsThroughTurnCompleted(
+            adapter,
+            (event) => event.type === "content.delta",
+          ).pipe(Effect.forkChild);
+          yield* adapter.sendTurn({ threadId, input: "show markdown fence" });
+          const events = yield* Fiber.join(eventsFiber);
+          const text = events
+            .filter((event) => event.type === "content.delta")
+            .map((event) => event.payload.delta)
+            .join("");
+
+          assert.equal(
+            text,
+            'Example:\n\n```\n(http.request.uri.path eq "/wp-comments-post.php")\n```\n',
+          );
+        }),
+    ),
+  );
+
   it.effect("forwards composer image attachments to Pi prompt input", () => {
     const attachment = {
       type: "image" as const,

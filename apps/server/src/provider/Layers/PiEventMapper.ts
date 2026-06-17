@@ -526,6 +526,10 @@ function trimText(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
+function textPayload(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
 function readRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null
     ? (value as Record<string, unknown>)
@@ -572,24 +576,24 @@ function assistantMessageEvent(event: PiRpcEvent): Record<string, unknown> | und
 function assistantDelta(event: PiRpcEvent): string | undefined {
   const type = readPiEventType(event);
   if (type === "assistant_delta" || type === "text_delta")
-    return trimText(event.delta) ?? trimText(event.text);
+    return textPayload(event.delta) ?? textPayload(event.text);
   const nested = assistantMessageEvent(event);
   const nestedType = trimText(nested?.type);
   return nestedType === "text_delta" || nestedType === "assistant_delta"
-    ? (trimText(nested?.delta) ?? trimText(nested?.text))
+    ? (textPayload(nested?.delta) ?? textPayload(nested?.text))
     : undefined;
 }
 
 function reasoningDelta(event: PiRpcEvent): string | undefined {
   const type = readPiEventType(event);
   if (type === "thought_delta" || type === "reasoning_delta" || type === "thinking_delta")
-    return trimText(event.delta) ?? trimText(event.text);
+    return textPayload(event.delta) ?? textPayload(event.text);
   const nested = assistantMessageEvent(event);
   const nestedType = trimText(nested?.type);
   return nestedType === "thinking_delta" ||
     nestedType === "thought_delta" ||
     nestedType === "reasoning_delta"
-    ? (trimText(nested?.delta) ?? trimText(nested?.text))
+    ? (textPayload(nested?.delta) ?? textPayload(nested?.text))
     : undefined;
 }
 
@@ -620,7 +624,7 @@ function extractAssistantFinalText(event: PiRpcEvent): string | undefined {
   const text = content
     .map((entry) => {
       const record = readRecord(entry);
-      return record?.type === "text" ? (trimText(record.text) ?? "") : "";
+      return record?.type === "text" ? (textPayload(record.text) ?? "") : "";
     })
     .join("");
   return text || undefined;
