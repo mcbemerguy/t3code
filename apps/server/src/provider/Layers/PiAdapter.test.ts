@@ -33,6 +33,7 @@ import { makePiAdapter, type PiAdapterShape, type PiAdapterLiveOptions } from ".
 import { type PiWorkflowMonitorOptions } from "./PiWorkflowMonitor.ts";
 import {
   PiRpcLifecycleError,
+  PiRpcTimeoutError,
   type PiExtensionUiResponseInput,
   type PiRpcRuntimeMessage,
   type PiSessionRuntimeOptions,
@@ -104,7 +105,7 @@ class FakePiRuntime implements PiSessionRuntimeShape {
         Effect.tryPromise({
           try: () => runPrompt(input),
           catch: (error) =>
-            error instanceof PiRpcLifecycleError
+            error instanceof PiRpcLifecycleError || error instanceof PiRpcTimeoutError
               ? error
               : new PiRpcLifecycleError(
                   error instanceof Error ? error.message : "prompt failed",
@@ -1832,6 +1833,63 @@ describe("PiAdapter", () => {
         }),
     ).pipe(Effect.provide(TestClock.layer())),
   );
+
+  it.effect("recovers Pi runtime after prompt acknowledgement timeout", () => {
+    let created = 0;
+    return withHarness(
+      (fake) => {
+        const index = created;
+        created += 1;
+        if (index === 0) {
+          fake.promptImpl = vi.fn(async () => {
+            throw new PiRpcTimeoutError({
+              command: "prompt",
+              timeoutMs: 30_000,
+              diagnostics: "No response was received for id test-timeout.",
+            });
+          });
+        }
+      },
+      ({ adapter, runtimes }) =>
+        Effect.gen(function* () {
+          const eventsFiber = yield* collectEvents(
+            adapter,
+            2,
+            (event) => event.type === "turn.completed" || event.type === "runtime.warning",
+          ).pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
+          yield* Effect.yieldNow;
+
+          const failed = yield* adapter
+            .sendTurn({ threadId, input: "timeout start" })
+            .pipe(Effect.result);
+          const events = yield* Fiber.join(eventsFiber);
+
+          assert.equal(failed._tag, "Failure");
+          assert.equal(Option.isSome(events), true);
+          if (Option.isSome(events)) {
+            assert.deepEqual(
+              events.value.map((event) => event.type),
+              ["turn.completed", "runtime.warning"],
+            );
+            const completed = events.value.find((event) => event.type === "turn.completed");
+            assert.equal(completed?.type, "turn.completed");
+            if (completed?.type === "turn.completed") {
+              assert.equal(completed.payload.state, "failed");
+              assert.match(completed.payload.errorMessage ?? "", /prompt timed out/);
+            }
+          }
+          assert.equal(runtimes[0]?.closeImpl.mock.calls.length, 1);
+
+          const restarted = yield* adapter.sendTurn({ threadId, input: "after timeout" });
+          assert.equal(restarted.turnId, "pi-turn-2");
+          assert.equal(runtimes.length, 2);
+          assert.deepEqual(
+            runtimes[1]?.promptInputs.map((input) => input.message),
+            ["after timeout"],
+          );
+        }),
+    );
+  });
 
   it.effect("warns on no Pi events after prompt acceptance and keeps interrupt usable", () =>
     withHarness(

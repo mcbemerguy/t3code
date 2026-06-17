@@ -49,6 +49,7 @@ import {
   DEFAULT_PI_RPC_TIMEOUTS,
   PiRpcLifecycleError,
   PiRpcSpawnError,
+  PiRpcTimeoutError,
   makePiSessionRuntime,
   type PiRpcRuntimeMessage,
   type PiSessionRuntimeError,
@@ -700,6 +701,23 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     return fallback;
   };
 
+  const handlePromptStartFailure = Effect.fn("handlePiPromptStartFailure")(function* (
+    session: PiAdapterSessionContext,
+    cause: PiSessionRuntimeError,
+  ) {
+    yield* completeTurn(session, undefined, "failed", {
+      errorMessage: describeError(cause, "Pi prompt failed"),
+    });
+    if (cause instanceof PiRpcTimeoutError) {
+      yield* cancelPendingUserInputs(session);
+      session.nextTurnRequiresPromptStart = true;
+      yield* discardRuntimeForRecovery(
+        session,
+        `Pi RPC prompt acknowledgement timed out after ${cause.input.timeoutMs}ms.`,
+      );
+    }
+  });
+
   const isProviderAdapterError = (cause: unknown): cause is ProviderAdapterError => {
     if (typeof cause !== "object" || cause === null || !("_tag" in cause)) return false;
     return (
@@ -1151,11 +1169,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
               yield* startNoEventWatchdog(session, turnId);
             }),
           ),
-          Effect.tapError((cause) =>
-            completeTurn(session, undefined, "failed", {
-              errorMessage: describeError(cause, "Pi prompt failed"),
-            }),
-          ),
+          Effect.tapError((cause) => handlePromptStartFailure(session, cause)),
           Effect.mapError((cause) => mapPiRuntimeError(input.threadId, "prompt", cause)),
         );
       if (session.quarantinePromptEventsUntilAcceptedDrain) {
