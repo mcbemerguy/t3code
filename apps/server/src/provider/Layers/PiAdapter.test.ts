@@ -1489,28 +1489,38 @@ describe("PiAdapter", () => {
       },
       ({ adapter, runtime }) =>
         Effect.gen(function* () {
-          const completions: Array<ProviderRuntimeEvent> = [];
-          const collector = yield* adapter.streamEvents.pipe(
-            Stream.filter((event) => event.type === "turn.completed"),
-            Stream.runForEach((event) => Effect.sync(() => completions.push(event))),
-            Effect.forkChild,
-          );
+          const firstCompletionFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.type === "turn.completed",
+          ).pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
 
           yield* adapter.sendTurn({ threadId, input: "start" });
           const interruptResult = yield* adapter.interruptTurn(threadId).pipe(Effect.result);
+          yield* TestClock.adjust("1 second");
+          const firstCompletion = yield* Fiber.join(firstCompletionFiber);
+
+          const secondCompletionFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.type === "turn.completed",
+          ).pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
           yield* runtime.emit({ type: "prompt_end", success: true });
           yield* runtime.emit({ type: "agent_end", success: true });
-          yield* Effect.yieldNow;
-          yield* Fiber.interrupt(collector);
+          yield* TestClock.adjust("1 second");
+          const secondCompletion = yield* Fiber.join(secondCompletionFiber);
 
           assert.equal(interruptResult._tag, "Success");
-          assert.equal(completions.length, 1);
-          assert.equal(completions[0]?.turnId, "pi-turn-1");
-          if (completions[0]?.type === "turn.completed") {
-            assert.equal(completions[0].payload.state, "interrupted");
+          assert.equal(Option.isSome(firstCompletion), true);
+          assert.equal(Option.isNone(secondCompletion), true);
+          if (Option.isSome(firstCompletion)) {
+            assert.equal(firstCompletion.value[0]?.turnId, "pi-turn-1");
+            if (firstCompletion.value[0]?.type === "turn.completed") {
+              assert.equal(firstCompletion.value[0].payload.state, "interrupted");
+            }
           }
         }),
-    ),
+    ).pipe(Effect.provide(TestClock.layer())),
   );
 
   it.effect("applies selected Pi models through set_model", () =>
