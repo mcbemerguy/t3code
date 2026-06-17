@@ -29,6 +29,7 @@ import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import type { ProviderAdapterError } from "../Errors.ts";
 import { makePiAdapter, type PiAdapterShape } from "./PiAdapter.ts";
+import { type PiWorkflowMonitorOptions } from "./PiWorkflowMonitor.ts";
 import {
   PiRpcLifecycleError,
   type PiExtensionUiResponseInput,
@@ -182,7 +183,11 @@ function withHarness<T, R = never>(
     runtime: FakePiRuntime;
   }) => Effect.Effect<T, ProviderAdapterError, R>,
   startInput?: Partial<ProviderSessionStartInput>,
-  adapterOptions?: { readonly instanceId?: ProviderInstanceId; readonly usageDebounceMs?: number },
+  adapterOptions?: {
+    readonly instanceId?: ProviderInstanceId;
+    readonly usageDebounceMs?: number;
+    readonly workflowMonitor?: PiWorkflowMonitorOptions;
+  },
 ) {
   const runtimes: Array<FakePiRuntime> = [];
   return Effect.scoped(
@@ -192,6 +197,9 @@ function withHarness<T, R = never>(
         {
           usageDebounceMs: adapterOptions?.usageDebounceMs ?? 0,
           ...(adapterOptions?.instanceId ? { instanceId: adapterOptions.instanceId } : {}),
+          ...(adapterOptions?.workflowMonitor
+            ? { workflowMonitor: adapterOptions.workflowMonitor }
+            : {}),
           makeRuntime: (options) =>
             Effect.gen(function* () {
               const eventQueue = yield* Queue.unbounded<PiRpcRuntimeMessage>();
@@ -1723,7 +1731,7 @@ describe("PiAdapter", () => {
     );
   });
 
-  it.effect("persists pending abort cursors so restored sessions replay trailing usage", () => {
+  it.effect("keeps restored pending abort monitors alive for delayed trailing usage", () => {
     const fixture = createWorkflowRunFixture({
       status: "running",
       events: [{ type: "run_start", sequence: 1 }],
@@ -1777,6 +1785,7 @@ describe("PiAdapter", () => {
                 (event.type === "thread.token-usage.updated" || event.type === "task.completed") &&
                 event.raw?.source === "pi.workflow.artifact",
             ).pipe(Effect.timeout("2 seconds"), Effect.orDie, Effect.forkChild);
+            yield* Effect.yieldNow;
             appendWorkflowFixtureEvents(fixture, [
               {
                 type: "context_usage_update",
@@ -1798,6 +1807,7 @@ describe("PiAdapter", () => {
             });
           }),
         { resumeCursor },
+        { workflowMonitor: { terminalFallbackGraceMs: 0 } },
       );
     });
   });

@@ -113,19 +113,22 @@ export function startPiWorkflowRunMonitor(
         replayRun(session, offer, activeRun, { ...options, includeTerminalFallback: false }).pipe(
           Effect.andThen(() => {
             if (!session.workflowRuns.has(run.runId)) return Effect.void;
+            const currentRun = session.workflowRuns.get(run.runId);
+            if (!currentRun) return Effect.void;
             const terminalRun = readPiWorkflowRun(
-              activeRun.runDir ?? run.runId,
+              currentRun.runDir ?? activeRun.runDir ?? run.runId,
               options.workflowRunsDir,
             );
             if (!isTerminalWorkflowStatus(terminalRun?.status)) {
               terminalObservedAt = undefined;
               return Effect.void;
             }
+            if (!shouldEmitTerminalFallback(currentRun, options)) return Effect.void;
             const now = Date.now();
             terminalObservedAt ??= now;
             if (now - terminalObservedAt < (options.terminalFallbackGraceMs ?? 1000))
               return Effect.void;
-            return replayRun(session, offer, session.workflowRuns.get(run.runId) ?? activeRun, {
+            return replayRun(session, offer, currentRun, {
               ...options,
               includeTerminalFallback: true,
             });
@@ -143,6 +146,14 @@ export function startPiWorkflowRunMonitor(
     session.workflowMonitorDisposers.add(dispose);
     tick();
   });
+}
+
+function shouldEmitTerminalFallback(
+  run: PiWorkflowRunCursor,
+  options: PiWorkflowMonitorOptions,
+): boolean {
+  if (options.includeTerminalFallback === false) return false;
+  return run.status?.toLowerCase() !== "aborting";
 }
 
 export function replayRun(

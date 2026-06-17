@@ -64,6 +64,7 @@ import {
   startPiWorkflowCommandMonitor,
   startPiWorkflowRunMonitor,
   stopWorkflowMonitors,
+  type PiWorkflowMonitorOptions,
 } from "./PiWorkflowMonitor.ts";
 
 const PROVIDER = ProviderDriverKind.make("pi");
@@ -95,6 +96,7 @@ export interface PiAdapterLiveOptions {
     options: PiSessionRuntimeOptions,
   ) => Effect.Effect<PiSessionRuntimeShape, PiSessionRuntimeError, Scope.Scope>;
   readonly usageDebounceMs?: number;
+  readonly workflowMonitor?: PiWorkflowMonitorOptions;
 }
 
 export interface PiAdapterShape extends ProviderAdapterShape<ProviderAdapterError> {
@@ -636,7 +638,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         );
         sessions.set(input.threadId, session);
         sessionScopeTransferred = true;
-        yield* restorePiWorkflowRuns(session, offer);
+        yield* restorePiWorkflowRuns(session, offer, options?.workflowMonitor);
         yield* offer([
           {
             ...basePiEvent(session),
@@ -709,7 +711,8 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       status,
     });
     const controlledRun = session.workflowRuns.get(target);
-    if (controlledRun) yield* startPiWorkflowRunMonitor(session, offer, controlledRun, undefined);
+    if (controlledRun)
+      yield* startPiWorkflowRunMonitor(session, offer, controlledRun, options?.workflowMonitor);
   });
 
   const handleWorkflowControlPrompt = Effect.fn("handlePiWorkflowControlPrompt")(function* (
@@ -784,7 +787,12 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         payload: { state: "running" },
       } satisfies ProviderRuntimeEvent,
     ]);
-    yield* startPiWorkflowCommandMonitor(session, offer, input.input ?? "");
+    yield* startPiWorkflowCommandMonitor(
+      session,
+      offer,
+      input.input ?? "",
+      options?.workflowMonitor,
+    );
     const result = yield* Effect.gen(function* () {
       const providerResult = yield* session.runtime
         .prompt({ message: input.input ?? "", images })
