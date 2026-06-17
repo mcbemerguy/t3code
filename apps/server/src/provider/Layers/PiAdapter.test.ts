@@ -440,6 +440,78 @@ describe("PiAdapter", () => {
     ),
   );
 
+  it.effect("keeps late Pi tool events attached after a subsequent turn starts", () =>
+    withHarness(
+      (fake) => {
+        fake.promptScript = (rt) =>
+          Effect.gen(function* () {
+            if (rt.promptInputs.length === 1) {
+              yield* rt.emit({
+                type: "tool_execution_start",
+                toolCallId: "tool-1",
+                toolName: "bash",
+                args: { command: "echo done" },
+              });
+              yield* rt.emit({ type: "agent_end" });
+              return;
+            }
+            yield* rt.emit({
+              type: "tool_execution_update",
+              toolCallId: "tool-1",
+              partialResult: "almost done",
+            });
+            yield* rt.emit({
+              type: "tool_execution_end",
+              toolCallId: "tool-1",
+              toolName: "bash",
+              result: "done",
+            });
+            yield* rt.emit({ type: "agent_end" });
+          });
+      },
+      ({ adapter }) =>
+        Effect.gen(function* () {
+          const firstTurnCompleted = yield* Deferred.make<void>();
+          const eventsFiber = yield* adapter.streamEvents.pipe(
+            Stream.filter(
+              (event) =>
+                (event.type === "item.started" && event.itemId === "pi-tool-tool-1") ||
+                (event.type === "item.updated" && event.itemId === "pi-tool-tool-1") ||
+                (event.type === "item.completed" && event.itemId === "pi-tool-tool-1") ||
+                event.type === "turn.completed",
+            ),
+            Stream.tap((event) =>
+              event.type === "turn.completed" && event.turnId === "pi-turn-1"
+                ? Deferred.succeed(firstTurnCompleted, undefined).pipe(Effect.ignore)
+                : Effect.void,
+            ),
+            Stream.take(5),
+            Stream.runCollect,
+            Effect.map((events) => Array.from(events) as Array<ProviderRuntimeEvent>),
+            Effect.forkChild,
+          );
+
+          const firstResult = yield* adapter.sendTurn({ threadId, input: "run command" });
+          yield* Deferred.await(firstTurnCompleted);
+          const secondResult = yield* adapter.sendTurn({ threadId, input: "next turn" });
+          const events = yield* Fiber.join(eventsFiber);
+
+          assert.equal(firstResult.turnId, "pi-turn-1");
+          assert.equal(secondResult.turnId, "pi-turn-2");
+          assert.deepEqual(
+            events.map((event) => [event.type, event.turnId]),
+            [
+              ["item.started", "pi-turn-1"],
+              ["turn.completed", "pi-turn-1"],
+              ["item.updated", "pi-turn-1"],
+              ["item.completed", "pi-turn-1"],
+              ["turn.completed", "pi-turn-2"],
+            ],
+          );
+        }),
+    ),
+  );
+
   it.effect("keeps late Pi workflow lifecycle events attached to the originating turn", () =>
     withHarness(
       (fake) => {

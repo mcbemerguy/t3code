@@ -69,6 +69,7 @@ import {
 
 const PROVIDER = ProviderDriverKind.make("pi");
 const DEFAULT_USAGE_DEBOUNCE_MS = 50;
+const MAX_RETAINED_PENDING_TOOLS = 1024;
 
 function mergeUsageRefreshOptions(
   previous: PiUsageRefreshOptions | undefined,
@@ -81,6 +82,14 @@ function mergeUsageRefreshOptions(
         ? "compaction"
         : undefined;
   return contextChange ? { contextChange } : undefined;
+}
+
+function pruneRetainedPendingTools(session: PiAdapterSessionContext): void {
+  while (session.tools.size > MAX_RETAINED_PENDING_TOOLS) {
+    const oldest = session.tools.keys().next();
+    if (oldest.done) return;
+    session.tools.delete(oldest.value);
+  }
 }
 
 type PiImageContent = {
@@ -778,7 +787,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     yield* applyModelSelection(session, input.modelSelection, "sendTurn");
 
     const turnId = TurnId.make(`pi-turn-${++turnCounter}`);
-    session.tools.clear();
+    pruneRetainedPendingTools(session);
     session.currentTurnId = turnId;
     session.latestTurnId = turnId;
     session.turnCompleted = false;
