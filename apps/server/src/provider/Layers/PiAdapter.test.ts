@@ -29,7 +29,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import type { ProviderAdapterError } from "../Errors.ts";
-import { makePiAdapter, type PiAdapterShape } from "./PiAdapter.ts";
+import { makePiAdapter, type PiAdapterShape, type PiAdapterLiveOptions } from "./PiAdapter.ts";
 import { type PiWorkflowMonitorOptions } from "./PiWorkflowMonitor.ts";
 import {
   PiRpcLifecycleError,
@@ -205,6 +205,7 @@ function withHarness<T, R = never>(
     readonly instanceId?: ProviderInstanceId;
     readonly usageDebounceMs?: number;
     readonly workflowMonitor?: PiWorkflowMonitorOptions;
+    readonly timeouts?: PiAdapterLiveOptions["timeouts"];
   },
 ) {
   const runtimes: Array<FakePiRuntime> = [];
@@ -218,6 +219,7 @@ function withHarness<T, R = never>(
           ...(adapterOptions?.workflowMonitor
             ? { workflowMonitor: adapterOptions.workflowMonitor }
             : {}),
+          ...(adapterOptions?.timeouts ? { timeouts: adapterOptions.timeouts } : {}),
           makeRuntime: (options) =>
             Effect.gen(function* () {
               const eventQueue = yield* Queue.unbounded<PiRpcRuntimeMessage>();
@@ -1830,6 +1832,100 @@ describe("PiAdapter", () => {
         }),
     ).pipe(Effect.provide(TestClock.layer())),
   );
+
+  it.effect("warns on no Pi events after prompt acceptance and keeps interrupt usable", () =>
+    withHarness(
+      undefined,
+      ({ adapter, runtime }) =>
+        Effect.gen(function* () {
+          const warningsFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.type === "runtime.warning",
+          ).pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
+          const completedFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.type === "turn.completed",
+          ).pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
+          yield* Effect.yieldNow;
+
+          yield* adapter.sendTurn({ threadId, input: "silent start" });
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("150 millis");
+          const warnings = yield* Fiber.join(warningsFiber);
+          const interruptResult = yield* adapter.interruptTurn(threadId).pipe(Effect.result);
+          yield* TestClock.adjust("1 second");
+          const completed = yield* Fiber.join(completedFiber);
+
+          assert.equal(Option.isSome(warnings), true);
+          if (Option.isSome(warnings) && warnings.value[0]?.type === "runtime.warning") {
+            assert.match(warnings.value[0].payload.message, /has not produced any events/);
+          }
+          assert.equal(interruptResult._tag, "Success");
+          assert.equal(runtime.abortImpl.mock.calls.length, 1);
+          assert.equal(runtime.closeImpl.mock.calls.length, 0);
+          assert.equal(Option.isSome(completed), true);
+          if (Option.isSome(completed) && completed.value[0]?.type === "turn.completed") {
+            assert.equal(completed.value[0].payload.state, "interrupted");
+          }
+        }),
+      undefined,
+      { timeouts: { noEventWarningMs: 100, noEventHardRecoveryMs: 1_000 } },
+    ).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("hard-recovers no-event Pi stalls after warning threshold", () => {
+    let created = 0;
+    return withHarness(
+      (fake) => {
+        const index = created;
+        created += 1;
+        if (index === 1) {
+          fake.promptScript = (rt) => rt.emit({ type: "agent_end", success: true });
+        }
+      },
+      ({ adapter, runtimes }) =>
+        Effect.gen(function* () {
+          const eventsFiber = yield* collectEvents(
+            adapter,
+            3,
+            (event) => event.type === "runtime.warning" || event.type === "turn.completed",
+          ).pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
+          yield* Effect.yieldNow;
+
+          yield* adapter.sendTurn({ threadId, input: "silent start" });
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("400 millis");
+          const events = yield* Fiber.join(eventsFiber);
+
+          assert.equal(Option.isSome(events), true);
+          if (Option.isSome(events)) {
+            assert.deepEqual(
+              events.value.map((event) => event.type),
+              ["runtime.warning", "turn.completed", "runtime.warning"],
+            );
+            const completed = events.value.find((event) => event.type === "turn.completed");
+            assert.equal(completed?.type, "turn.completed");
+            if (completed?.type === "turn.completed") {
+              assert.equal(completed.payload.state, "failed");
+              assert.match(completed.payload.errorMessage ?? "", /produced no events/);
+            }
+          }
+          assert.equal(runtimes[0]?.closeImpl.mock.calls.length, 1);
+
+          const restarted = yield* adapter.sendTurn({ threadId, input: "after stall" });
+          assert.equal(restarted.turnId, "pi-turn-2");
+          assert.equal(runtimes.length, 2);
+          assert.deepEqual(
+            runtimes[1]?.promptInputs.map((input) => input.message),
+            ["after stall"],
+          );
+        }),
+      undefined,
+      { timeouts: { noEventWarningMs: 100, noEventHardRecoveryMs: 300 } },
+    ).pipe(Effect.provide(TestClock.layer()));
+  });
 
   it.effect("applies selected Pi models through set_model", () =>
     withHarness(

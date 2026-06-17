@@ -32,6 +32,12 @@ export interface PiToolState {
   readonly snapshot?: PiToolSnapshot;
 }
 
+export interface PiAdapterTimeouts {
+  readonly interruptAbortWatchdogMs: number;
+  readonly noEventWarningMs: number;
+  readonly noEventHardRecoveryMs: number;
+}
+
 export interface PiAdapterSessionContext {
   readonly threadId: ThreadId;
   readonly cwd: string;
@@ -65,6 +71,9 @@ export interface PiAdapterSessionContext {
   assistantItemId?: RuntimeItemId;
   reasoningItemId?: RuntimeItemId;
   usageRefreshTimerFiber?: Fiber.Fiber<void, never>;
+  noEventWatchdogFiber?: Fiber.Fiber<void, never>;
+  turnActivitySequence: number;
+  noEventWarningEmitted: boolean;
   usageRefreshInFlight: boolean;
   usageRefreshQueued: boolean;
   usageRefreshQueuedForce: boolean;

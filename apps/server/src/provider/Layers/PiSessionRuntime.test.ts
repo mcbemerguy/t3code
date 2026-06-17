@@ -23,6 +23,7 @@ import {
   stripAnsi,
   windowsProcessTreeKillCommand,
   type PiSessionRuntimeError,
+  type PiSessionRuntimeOptions,
   type PiSessionRuntimeShape,
 } from "./PiSessionRuntime.ts";
 
@@ -71,7 +72,10 @@ async function readJsonFileEventually(filePath: string): Promise<unknown> {
   throw lastError;
 }
 
-function makeRuntime(extraEnv: Record<string, string> = {}) {
+function makeRuntime(
+  extraEnv: Record<string, string> = {},
+  timeouts?: PiSessionRuntimeOptions["timeouts"],
+) {
   return Effect.gen(function* () {
     const binaryPath = yield* Effect.promise(() => makeMockPiWrapper(extraEnv));
     return yield* makePiSessionRuntime({
@@ -79,7 +83,7 @@ function makeRuntime(extraEnv: Record<string, string> = {}) {
       binaryPath,
       cwd: process.cwd(),
       runtimeMode: "full-access",
-      timeouts: { request: 1_000, abort: 1_000, workflowControl: 1_000 },
+      timeouts: { request: 1_000, abort: 1_000, workflowControl: 1_000, ...timeouts },
     });
   });
 }
@@ -239,6 +243,22 @@ describe("PiSessionRuntime", () => {
         }
       }),
     ),
+  );
+
+  it.effect("times out prompt acknowledgement without waiting indefinitely", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeRuntime({ MOCK_PI_RPC_IGNORE_COMMAND: "prompt" }, { prompt: 50 });
+      yield* runtime.start();
+      const error = yield* runtime
+        .prompt({ message: "will not be acknowledged" })
+        .pipe(Effect.flip, Effect.ensuring(runtime.close));
+
+      assert.equal(error instanceof PiRpcTimeoutError, true);
+      if (error instanceof PiRpcTimeoutError) {
+        assert.equal(error.input.command, "prompt");
+        assert.equal(error.input.timeoutMs, 50);
+      }
+    }).pipe(Effect.orDie),
   );
 
   it.effect("reports process-exit diagnostics for in-flight requests", () =>

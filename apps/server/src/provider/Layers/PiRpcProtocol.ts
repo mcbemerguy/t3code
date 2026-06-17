@@ -26,7 +26,7 @@ export interface PiRpcTimeouts {
 
 export const DEFAULT_PI_RPC_TIMEOUTS: PiRpcTimeouts = {
   request: 30_000,
-  prompt: 0,
+  prompt: 30_000,
   abort: 3_000,
   workflowControl: 5_000,
 };

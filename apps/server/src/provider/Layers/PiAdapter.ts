@@ -38,7 +38,11 @@ import {
 } from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import { basePiEvent, PiEventMapper } from "./PiEventMapper.ts";
-import type { PiAdapterSessionContext, PiUsageRefreshOptions } from "./PiAdapterTypes.ts";
+import type {
+  PiAdapterSessionContext,
+  PiAdapterTimeouts,
+  PiUsageRefreshOptions,
+} from "./PiAdapterTypes.ts";
 import { parsePiModelSelection } from "./PiModels.ts";
 import { isPiThinkingLevel } from "./PiThinking.ts";
 import {
@@ -73,7 +77,11 @@ import {
 const PROVIDER = ProviderDriverKind.make("pi");
 const DEFAULT_USAGE_DEBOUNCE_MS = 50;
 const MAX_RETAINED_PENDING_TOOLS = 1024;
-const PI_INTERRUPT_ABORT_WATCHDOG_MS = 2_500;
+export const DEFAULT_PI_ADAPTER_TIMEOUTS: PiAdapterTimeouts = {
+  interruptAbortWatchdogMs: 2_500,
+  noEventWarningMs: 30_000,
+  noEventHardRecoveryMs: 120_000,
+};
 const MAX_RETAINED_COMPLETED_PROMPTS = 1024;
 const MAX_RETAINED_COMPLETED_TURNS = 1024;
 
@@ -128,6 +136,7 @@ export interface PiAdapterLiveOptions {
   ) => Effect.Effect<PiSessionRuntimeShape, PiSessionRuntimeError, Scope.Scope>;
   readonly usageDebounceMs?: number;
   readonly workflowMonitor?: PiWorkflowMonitorOptions;
+  readonly timeouts?: Partial<PiAdapterTimeouts>;
 }
 
 export interface PiAdapterShape extends ProviderAdapterShape<ProviderAdapterError> {
@@ -177,10 +186,22 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
   const serverConfig = yield* Effect.service(ServerConfig);
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
   const sessions = new Map<ThreadId, PiAdapterSessionContext>();
+  const adapterTimeouts: PiAdapterTimeouts = {
+    ...DEFAULT_PI_ADAPTER_TIMEOUTS,
+    ...options?.timeouts,
+  };
   let turnCounter = 0;
 
   const offer = (events: ReadonlyArray<ProviderRuntimeEvent>) =>
     Queue.offerAll(runtimeEventQueue, events).pipe(Effect.asVoid);
+
+  const clearNoEventWatchdog = (session: PiAdapterSessionContext): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const fiber = session.noEventWatchdogFiber;
+      delete session.noEventWatchdogFiber;
+      session.noEventWarningEmitted = false;
+      if (fiber) yield* Fiber.interrupt(fiber).pipe(Effect.ignore);
+    });
 
   const completeTurn = (
     session: PiAdapterSessionContext,
@@ -192,6 +213,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       const turnId = session.currentTurnId ?? session.latestTurnId;
       if (turnId && session.completedTurnIds.has(turnId)) return;
       if (session.turnCompleted) return;
+      yield* clearNoEventWatchdog(session);
       session.turnCompleted = true;
       if (turnId) {
         session.completedTurnIds.add(turnId);
@@ -430,9 +452,15 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
   const mapper = new PiEventMapper(offer, scheduleUsageRefresh, completeTurn);
 
   const forkRuntimeEvents = (session: PiAdapterSessionContext, runtime: PiSessionRuntimeShape) =>
-    Stream.runForEach(runtime.events, (message) => mapper.handle(session, message)).pipe(
-      Effect.forkIn(session.scope),
-    );
+    Stream.runForEach(runtime.events, (message) =>
+      Effect.gen(function* () {
+        if (message.kind === "event") {
+          session.turnActivitySequence += 1;
+          session.noEventWarningEmitted = false;
+        }
+        yield* mapper.handle(session, message);
+      }),
+    ).pipe(Effect.forkIn(session.scope));
 
   const emitRuntimeRecoveryError = (
     session: PiAdapterSessionContext,
@@ -478,6 +506,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           yield* Fiber.interrupt(session.eventFiber).pipe(Effect.ignore);
           delete session.eventFiber;
         }
+        yield* clearNoEventWatchdog(session);
         yield* stopWorkflowMonitors(session);
         yield* session.runtime.close.pipe(Effect.ignore);
         if (resumeCursor) {
@@ -487,7 +516,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
               type: "runtime.warning",
               payload: {
                 message:
-                  "Pi RPC did not acknowledge interruption in time; T3 closed it and will restart from the saved Pi session before the next request.",
+                  "Pi RPC became unresponsive; T3 closed it and will restart from the saved Pi session before the next request.",
                 detail: { reason, sessionFile: resumeCursor.sessionFile, discardedAt },
               },
             } satisfies ProviderRuntimeEvent,
@@ -501,6 +530,70 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         );
       }),
     );
+  });
+
+  const turnStillRunning = (session: PiAdapterSessionContext, turnId: TurnId): boolean =>
+    !session.stopped &&
+    !session.turnCompleted &&
+    session.currentTurnId === turnId &&
+    !session.completedTurnIds.has(turnId);
+
+  const startNoEventWatchdog = Effect.fn("startPiNoEventWatchdog")(function* (
+    session: PiAdapterSessionContext,
+    turnId: TurnId,
+  ) {
+    if (!turnStillRunning(session, turnId)) return;
+    if (adapterTimeouts.noEventWarningMs <= 0 || adapterTimeouts.noEventHardRecoveryMs <= 0) return;
+    const warningMs = adapterTimeouts.noEventWarningMs;
+    const hardRecoveryMs = Math.max(adapterTimeouts.noEventHardRecoveryMs, warningMs);
+    yield* clearNoEventWatchdog(session);
+    session.noEventWarningEmitted = false;
+    session.noEventWatchdogFiber = yield* Effect.gen(function* () {
+      let observedSequence = session.turnActivitySequence;
+      while (turnStillRunning(session, turnId)) {
+        yield* Effect.sleep(Duration.millis(warningMs));
+        if (!turnStillRunning(session, turnId)) return;
+        if (session.turnActivitySequence !== observedSequence) {
+          observedSequence = session.turnActivitySequence;
+          session.noEventWarningEmitted = false;
+          continue;
+        }
+        if (!session.noEventWarningEmitted) {
+          session.noEventWarningEmitted = true;
+          yield* offer([
+            {
+              ...basePiEvent(session, { turnId }),
+              type: "runtime.warning",
+              payload: {
+                message:
+                  "Pi accepted the prompt but has not produced any events yet. The turn is still running; Stop remains available if you want T3 to interrupt or recover it.",
+                detail: { timeoutMs: warningMs, hardRecoveryMs },
+              },
+            } satisfies ProviderRuntimeEvent,
+          ]);
+        }
+        yield* Effect.sleep(Duration.millis(hardRecoveryMs - warningMs));
+        if (!turnStillRunning(session, turnId)) return;
+        if (session.turnActivitySequence !== observedSequence) {
+          observedSequence = session.turnActivitySequence;
+          session.noEventWarningEmitted = false;
+          continue;
+        }
+        delete session.noEventWatchdogFiber;
+        session.noEventWarningEmitted = false;
+        yield* cancelPendingUserInputs(session);
+        session.nextTurnRequiresPromptStart = true;
+        yield* completeTurn(session, undefined, "failed", {
+          errorMessage: `Pi accepted the prompt but produced no events for ${hardRecoveryMs}ms.`,
+          stopReason: "no_event_stall",
+        });
+        yield* discardRuntimeForRecovery(
+          session,
+          `Pi RPC produced no events for ${hardRecoveryMs}ms after prompt acceptance.`,
+        );
+        return;
+      }
+    }).pipe(Effect.forkIn(session.scope));
   });
 
   const ensureRuntimeReady = Effect.fn("ensurePiRuntimeReady")(function* (
@@ -577,8 +670,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
             ...basePiEvent(session),
             type: "runtime.warning",
             payload: {
-              message:
-                "Restarted Pi RPC from the saved Pi session after an unresponsive interrupt.",
+              message: "Restarted Pi RPC from the saved Pi session after it became unresponsive.",
               detail: {
                 operation,
                 reason: recovery.reason,
@@ -743,6 +835,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     session.stopped = true;
     sessions.delete(session.threadId);
     yield* cancelPendingUserInputs(session);
+    yield* clearNoEventWatchdog(session);
     yield* clearUsageRefreshTimer(session);
     yield* flushUsageRefreshWaiters(session);
     yield* stopWorkflowMonitors(session);
@@ -837,6 +930,8 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           usageRefreshInFlight: false,
           usageRefreshQueued: false,
           usageRefreshQueuedForce: false,
+          turnActivitySequence: 0,
+          noEventWarningEmitted: false,
           usageRefreshWaiters: new Set(),
           usageRefreshSequence: 0,
           latestForcedUsageRefreshSequence: 0,
@@ -1049,10 +1144,11 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         .prompt({ message: input.input ?? "", images })
         .pipe(
           Effect.tap((promptResult) =>
-            Effect.sync(() => {
+            Effect.gen(function* () {
               session.promptAccepted = true;
               const cursor = parsePiResumeCursor(promptResult.resumeCursor);
               if (cursor?.sessionFile) session.sessionFile = cursor.sessionFile;
+              yield* startNoEventWatchdog(session, turnId);
             }),
           ),
           Effect.tapError((cause) =>
@@ -1146,12 +1242,12 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
                 .abort()
                 .pipe(
                   Effect.exit,
-                  Effect.timeoutOption(Duration.millis(PI_INTERRUPT_ABORT_WATCHDOG_MS)),
+                  Effect.timeoutOption(Duration.millis(adapterTimeouts.interruptAbortWatchdogMs)),
                 );
               if (Option.isNone(abortResult)) {
                 yield* discardRuntimeForRecovery(
                   session,
-                  `Pi RPC abort did not settle within ${PI_INTERRUPT_ABORT_WATCHDOG_MS}ms.`,
+                  `Pi RPC abort did not settle within ${adapterTimeouts.interruptAbortWatchdogMs}ms.`,
                 );
               }
             }),
