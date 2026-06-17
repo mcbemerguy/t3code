@@ -104,6 +104,7 @@ type WorkEntryPresentationInput = Pick<
   | "requestKind"
   | "command"
   | "changedFiles"
+  | "isToolLifecycle"
 >;
 
 function normalizedToolIdentity(workEntry: WorkEntryPresentationInput): string | undefined {
@@ -129,7 +130,25 @@ function labelToolSemanticKind(workEntry: WorkEntryPresentationInput): ToolSeman
   return "other";
 }
 
+function shouldUseToolSemantics(workEntry: WorkEntryPresentationInput): boolean {
+  if (workEntry.isToolLifecycle !== undefined) {
+    return workEntry.isToolLifecycle;
+  }
+  return (
+    workEntry.tone === "tool" ||
+    workEntry.toolKind !== undefined ||
+    workEntry.toolName !== undefined ||
+    workEntry.itemType !== undefined ||
+    workEntry.command !== undefined ||
+    (workEntry.changedFiles?.length ?? 0) > 0
+  );
+}
+
 function resolveToolSemanticKind(workEntry: WorkEntryPresentationInput): ToolSemanticKind {
+  if (!shouldUseToolSemantics(workEntry)) {
+    return "other";
+  }
+
   if (workEntry.requestKind === "command") return "execute";
   if (workEntry.requestKind === "file-read") return "read";
   if (workEntry.requestKind === "file-change") return "file-change";

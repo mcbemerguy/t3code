@@ -188,6 +188,19 @@ describe("work entry presentation", () => {
       }),
     ).toBe(false);
   });
+
+  it("does not use approval requestKind metadata as tool presentation", () => {
+    const approvalEntry = {
+      label: "Command approval requested",
+      tone: "info" as const,
+      detail: "bun run lint",
+      requestKind: "command" as const,
+      isToolLifecycle: false,
+    };
+
+    expect(isCompactToolWorkEntry(approvalEntry)).toBe(false);
+    expect(resolveWorkEntryIconKind(approvalEntry)).toBe("info");
+  });
 });
 
 describe("resolveAssistantMessageCopyState", () => {
