@@ -102,7 +102,8 @@ function isSafeRealScope(input: {
     relativeFromCwd.length > 0 &&
     relativeFromCwd !== ".." &&
     !relativeFromCwd.startsWith("../") &&
-    !input.path.isAbsolute(relativeFromCwd)
+    !input.path.isAbsolute(relativeFromCwd) &&
+    !hasGitDirectorySegment(relativeFromCwd)
   );
 }
 

@@ -469,6 +469,18 @@ export const makeWorkspaceEntries = Effect.gen(function* () {
   );
 
   const explicitScopeCacheKeysByCwd = new Map<string, Set<string>>();
+  const explicitScopeCacheKeysByRecency = new Map<string, string>();
+  const forgetTrackedExplicitScopeCacheKey = (cacheKey: string) => {
+    const parsedKey = parseExplicitScopeCacheKey(cacheKey);
+    const keysForCwd = explicitScopeCacheKeysByCwd.get(parsedKey.cwd);
+    if (keysForCwd) {
+      keysForCwd.delete(cacheKey);
+      if (keysForCwd.size === 0) {
+        explicitScopeCacheKeysByCwd.delete(parsedKey.cwd);
+      }
+    }
+    explicitScopeCacheKeysByRecency.delete(cacheKey);
+  };
   const buildExplicitScopeIndex = Effect.fn("WorkspaceEntries.buildExplicitScopeIndex")(function* (
     cacheKey: string,
   ) {
@@ -487,13 +499,39 @@ export const makeWorkspaceEntries = Effect.gen(function* () {
     timeToLive: () => Duration.millis(WORKSPACE_CACHE_TTL_MS),
   });
 
+  const trackExplicitScopeCacheKey = Effect.fn("WorkspaceEntries.trackExplicitScopeCacheKey")(
+    function* (input: { readonly cwd: string; readonly scopeRelativePath: string }) {
+      const cacheKey = explicitScopeCacheKey(input);
+      const keysForCwd = explicitScopeCacheKeysByCwd.get(input.cwd) ?? new Set<string>();
+      keysForCwd.delete(cacheKey);
+      keysForCwd.add(cacheKey);
+      explicitScopeCacheKeysByCwd.set(input.cwd, keysForCwd);
+      explicitScopeCacheKeysByRecency.delete(cacheKey);
+      explicitScopeCacheKeysByRecency.set(cacheKey, input.cwd);
+
+      const evictedCacheKeys: string[] = [];
+      while (explicitScopeCacheKeysByRecency.size > EXPLICIT_SCOPE_CACHE_MAX_KEYS) {
+        const oldestCacheKey = explicitScopeCacheKeysByRecency.keys().next().value;
+        if (!oldestCacheKey) {
+          break;
+        }
+        forgetTrackedExplicitScopeCacheKey(oldestCacheKey);
+        evictedCacheKeys.push(oldestCacheKey);
+      }
+
+      yield* Effect.forEach(
+        evictedCacheKeys,
+        (evictedCacheKey) => Cache.invalidate(explicitScopeIndexCache, evictedCacheKey),
+        { discard: true },
+      );
+      return cacheKey;
+    },
+  );
+
   const getExplicitScopeIndexFromCache = Effect.fn(
     "WorkspaceEntries.getExplicitScopeIndexFromCache",
   )(function* (input: { readonly cwd: string; readonly scopeRelativePath: string }) {
-    const cacheKey = explicitScopeCacheKey(input);
-    const keysForCwd = explicitScopeCacheKeysByCwd.get(input.cwd) ?? new Set<string>();
-    keysForCwd.add(cacheKey);
-    explicitScopeCacheKeysByCwd.set(input.cwd, keysForCwd);
+    const cacheKey = yield* trackExplicitScopeCacheKey(input);
     return yield* Cache.get(explicitScopeIndexCache, cacheKey);
   });
 
@@ -505,7 +543,10 @@ export const makeWorkspaceEntries = Effect.gen(function* () {
       }
       yield* Effect.forEach(
         cacheKeys,
-        (cacheKey) => Cache.invalidate(explicitScopeIndexCache, cacheKey),
+        (cacheKey) => {
+          explicitScopeCacheKeysByRecency.delete(cacheKey);
+          return Cache.invalidate(explicitScopeIndexCache, cacheKey);
+        },
         { discard: true },
       );
       explicitScopeCacheKeysByCwd.delete(cwd);

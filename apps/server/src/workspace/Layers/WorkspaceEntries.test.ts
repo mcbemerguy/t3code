@@ -235,6 +235,29 @@ it.layer(TestLayer)("WorkspaceEntriesLive", (it) => {
       }),
     );
 
+    it.effect("does not follow an explicit scope symlink into .git", () =>
+      Effect.gen(function* () {
+        if (process.platform === "win32") {
+          return;
+        }
+
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir({
+          prefix: "t3code-workspace-symlink-git-scope-",
+          git: true,
+        });
+        yield* writeTextFile(cwd, ".git/private.ts", "export {};");
+        yield* Effect.promise(() =>
+          fsPromises.symlink(path.join(cwd, ".git"), path.join(cwd, ".local"), "dir"),
+        );
+
+        const result = yield* searchWorkspaceEntries({ cwd, query: ".local/", limit: 100 });
+        const paths = result.entries.map((entry) => entry.path);
+
+        expect(paths).not.toContain(".local/private.ts");
+      }),
+    );
+
     it.effect("caches explicit scope scans across nested queries", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;
