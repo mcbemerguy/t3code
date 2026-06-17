@@ -69,7 +69,9 @@ Test the native Pi adapter as the main boundary. Cover at least:
 
 Keep tests focused on observable provider/runtime events and session state. Do not rely on exact implementation internals beyond fake runtime hooks already present in `PiAdapter.test.ts`.
 
-## Phase 2 — Add native Pi local turn lifecycle and bounded interrupt
+## Phase 2 — Add native Pi local turn lifecycle and bounded interrupt — done
+
+Status: Implemented/committed native Pi local cancelling/completed turn tracking, bounded best-effort abort, local interrupted completion, next-turn prompt routing, and quarantine of stale/late lifecycle/UI events after interruption.
 
 Goal: port the `custom-acp` cancellation model conceptually into native Pi.
 
