@@ -141,7 +141,9 @@ Align workflow behavior with these semantics:
 
 This phase can build on the general local completion/restart foundation rather than creating a separate workflow-only recovery mechanism.
 
-## Phase 6 — UI and durable diagnostics
+## Phase 6 — UI and durable diagnostics — done
+
+Status: Implemented/committed durable Pi recovery diagnostic metadata, runtime-error detail preservation/activity summaries, and UI work-log retention for tagged recovery/usability notices.
 
 Goal: make recovery visible and understandable to the user.
 
