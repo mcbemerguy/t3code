@@ -258,6 +258,37 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain(">C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts<");
   });
 
+  it("compacts common tool rows to show the argument as the visible label", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Read file",
+              tone: "tool",
+              toolTitle: "read",
+              toolKind: "read",
+              toolPreview: "apps/web/src/session-logic.ts",
+              itemType: "dynamic_tool_call",
+              settled: true,
+            },
+          },
+        ]}
+        workspaceRoot="/repo/t3code"
+      />,
+    );
+
+    expect(markup).toContain("apps/web/src/session-logic.ts");
+    expect(markup).not.toContain("Read - apps/web/src/session-logic.ts");
+  });
+
   it("gates fuzzy inline file-link rendering for work rows until settled", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const timelineEntry = (settled: boolean) => ({
@@ -298,32 +329,45 @@ describe("MessagesTimeline", () => {
     );
   });
 
-  it("renders structured changed-file preview links outside button tooltip triggers", async () => {
+  it("renders structured changed-file preview links outside button tooltip triggers after settlement", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const timelineEntry = (settled: boolean) => ({
+      id: `entry-${settled ? "settled" : "active"}`,
+      kind: "work" as const,
+      createdAt: "2026-03-17T19:12:28.000Z",
+      entry: {
+        id: `work-${settled ? "settled" : "active"}`,
+        createdAt: "2026-03-17T19:12:28.000Z",
+        label: "Updated files",
+        tone: "tool" as const,
+        changedFiles: ["/repo/t3code/apps/web/src/session-logic.ts"],
+        settled,
+      },
+    });
+
+    const activeMarkup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
-        timelineEntries={[
-          {
-            id: "entry-1",
-            kind: "work",
-            createdAt: "2026-03-17T19:12:28.000Z",
-            entry: {
-              id: "work-1",
-              createdAt: "2026-03-17T19:12:28.000Z",
-              label: "Updated files",
-              tone: "tool",
-              changedFiles: ["/repo/t3code/apps/web/src/session-logic.ts"],
-            },
-          },
-        ]}
+        timelineEntries={[timelineEntry(false)]}
+        workspaceRoot="/repo/t3code"
+      />,
+    );
+    expect(activeMarkup).toContain("apps/web/src/session-logic.ts");
+    expect(activeMarkup).not.toContain("chat-markdown-file-link");
+
+    const settledMarkup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[timelineEntry(true)]}
         workspaceRoot="/repo/t3code"
       />,
     );
 
-    expect(markup).toContain("chat-markdown-file-link");
-    expect(markup).toMatch(/<div\b[^>]*data-slot="tooltip-trigger"[\s\S]*chat-markdown-file-link/);
-    expect(markup).not.toMatch(
+    expect(settledMarkup).toContain("chat-markdown-file-link");
+    expect(settledMarkup).toMatch(
+      /<div\b[^>]*data-slot="tooltip-trigger"[\s\S]*chat-markdown-file-link/,
+    );
+    expect(settledMarkup).not.toMatch(
       /<button\b[^>]*data-slot="tooltip-trigger"[\s\S]*chat-markdown-file-link[\s\S]*<\/button>/,
     );
   });

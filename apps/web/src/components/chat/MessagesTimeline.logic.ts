@@ -68,6 +68,128 @@ export function normalizeCompactToolLabel(value: string): string {
   return value.replace(/\s+(?:complete|completed)\s*$/i, "").trim();
 }
 
+type ToolSemanticKind =
+  | "execute"
+  | "read"
+  | "file-change"
+  | "search"
+  | "web"
+  | "image"
+  | "mcp"
+  | "dynamic"
+  | "other";
+
+export type WorkEntryIconKind =
+  | "command"
+  | "read"
+  | "file-change"
+  | "search"
+  | "web"
+  | "image"
+  | "mcp"
+  | "dynamic"
+  | "error"
+  | "thinking"
+  | "info"
+  | "tool";
+
+type WorkEntryPresentationInput = Pick<
+  WorkLogEntry,
+  | "label"
+  | "tone"
+  | "toolKind"
+  | "toolName"
+  | "toolTitle"
+  | "itemType"
+  | "requestKind"
+  | "command"
+  | "changedFiles"
+>;
+
+function normalizedToolIdentity(workEntry: WorkEntryPresentationInput): string | undefined {
+  return (
+    (workEntry.toolName ?? workEntry.toolTitle ?? workEntry.label).trim().toLowerCase() || undefined
+  );
+}
+
+function labelToolSemanticKind(workEntry: WorkEntryPresentationInput): ToolSemanticKind {
+  const identity = normalizedToolIdentity(workEntry);
+  if (identity === "bash" || identity === "terminal" || identity === "ran command") {
+    return "execute";
+  }
+  if (identity === "read" || identity === "read file") {
+    return "read";
+  }
+  if (identity === "find" || identity === "grep" || identity === "search") {
+    return "search";
+  }
+  if (identity === "edit" || identity === "write" || identity === "apply_patch") {
+    return "file-change";
+  }
+  return "other";
+}
+
+function resolveToolSemanticKind(workEntry: WorkEntryPresentationInput): ToolSemanticKind {
+  if (workEntry.requestKind === "command") return "execute";
+  if (workEntry.requestKind === "file-read") return "read";
+  if (workEntry.requestKind === "file-change") return "file-change";
+
+  const toolKind = workEntry.toolKind?.toLowerCase();
+  if (toolKind === "execute") return "execute";
+  if (toolKind === "read") return "read";
+  if (toolKind === "search") return "search";
+  if (toolKind === "web") return "web";
+  if (toolKind === "image") return "image";
+  if (toolKind === "mcp") return "mcp";
+  if (
+    toolKind === "write" ||
+    toolKind === "edit" ||
+    toolKind === "apply_patch" ||
+    toolKind === "apply-patch" ||
+    toolKind === "delete" ||
+    toolKind === "move"
+  ) {
+    return "file-change";
+  }
+
+  if (workEntry.itemType === "command_execution") return "execute";
+  if (workEntry.itemType === "file_change") return "file-change";
+  if (workEntry.itemType === "web_search") return "web";
+  if (workEntry.itemType === "image_view") return "image";
+  if (workEntry.itemType === "mcp_tool_call") return "mcp";
+  if (
+    workEntry.itemType === "dynamic_tool_call" ||
+    workEntry.itemType === "collab_agent_tool_call"
+  ) {
+    const labelKind = labelToolSemanticKind(workEntry);
+    return labelKind === "other" ? "dynamic" : labelKind;
+  }
+
+  const labelKind = labelToolSemanticKind(workEntry);
+  if (labelKind !== "other") return labelKind;
+  if (workEntry.command) return "execute";
+  if ((workEntry.changedFiles?.length ?? 0) > 0) return "file-change";
+  return "other";
+}
+
+export function isCompactToolWorkEntry(workEntry: WorkEntryPresentationInput): boolean {
+  const kind = resolveToolSemanticKind(workEntry);
+  return kind === "execute" || kind === "read" || kind === "search" || kind === "file-change";
+}
+
+export function resolveWorkEntryIconKind(workEntry: WorkEntryPresentationInput): WorkEntryIconKind {
+  const kind = resolveToolSemanticKind(workEntry);
+  if (kind === "execute") return "command";
+  if (kind === "read") return "read";
+  if (kind === "file-change") return "file-change";
+  if (kind === "search") return "search";
+  if (kind === "web") return "web";
+  if (kind === "image") return "image";
+  if (kind === "mcp") return "mcp";
+  if (kind === "dynamic") return "dynamic";
+  return workEntry.tone;
+}
+
 export function resolveAssistantMessageCopyState({
   text,
   showCopyButton,

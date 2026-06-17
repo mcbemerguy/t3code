@@ -3,8 +3,10 @@ import {
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
+  isCompactToolWorkEntry,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
+  resolveWorkEntryIconKind,
 } from "./MessagesTimeline.logic";
 
 describe("computeMessageDurationStart", () => {
@@ -147,6 +149,44 @@ describe("normalizeCompactToolLabel", () => {
 
   it("removes trailing completion wording from other labels", () => {
     expect(normalizeCompactToolLabel("Read file completed")).toBe("Read file");
+  });
+});
+
+describe("work entry presentation", () => {
+  it("uses semantic tool kind before labels for icon selection", () => {
+    expect(
+      resolveWorkEntryIconKind({
+        label: "grep",
+        tone: "tool",
+        toolKind: "read",
+        itemType: "dynamic_tool_call",
+      }),
+    ).toBe("read");
+    expect(
+      resolveWorkEntryIconKind({
+        label: "Read file",
+        tone: "tool",
+        toolKind: "search",
+        itemType: "dynamic_tool_call",
+      }),
+    ).toBe("search");
+  });
+
+  it("compacts common semantic tool rows", () => {
+    expect(
+      isCompactToolWorkEntry({
+        label: "Read file",
+        tone: "tool",
+        toolKind: "read",
+        itemType: "dynamic_tool_call",
+      }),
+    ).toBe(true);
+    expect(
+      isCompactToolWorkEntry({
+        label: "Context compacted",
+        tone: "info",
+      }),
+    ).toBe(false);
   });
 });
 

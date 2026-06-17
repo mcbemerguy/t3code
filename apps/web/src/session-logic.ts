@@ -58,6 +58,9 @@ export interface WorkLogEntry {
   settled?: boolean;
   tone: "thinking" | "tool" | "info" | "error";
   toolTitle?: string;
+  toolKind?: string;
+  toolName?: string;
+  toolPreview?: string;
   itemType?: ToolLifecycleItemType;
   requestKind?: PendingApproval["requestKind"];
 }
@@ -554,7 +557,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     activityKind: activity.kind,
   };
   const itemType = extractWorkLogItemType(payload);
+  const toolKind = extractWorkLogToolKind(payload);
+  const toolName = extractWorkLogToolName(payload);
   const requestKind = extractWorkLogRequestKind(payload);
+  const toolPreview = extractWorkLogToolPreview(payload, commandPreview.command, changedFiles);
   if (detail) {
     entry.detail = detail;
   }
@@ -569,6 +575,15 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (title) {
     entry.toolTitle = title;
+  }
+  if (toolKind) {
+    entry.toolKind = toolKind;
+  }
+  if (toolName) {
+    entry.toolName = toolName;
+  }
+  if (toolPreview) {
+    entry.toolPreview = toolPreview;
   }
   if (itemType) {
     entry.itemType = itemType;
@@ -635,6 +650,9 @@ function mergeDerivedWorkLogEntries(
   const command = next.command ?? previous.command;
   const rawCommand = next.rawCommand ?? previous.rawCommand;
   const toolTitle = next.toolTitle ?? previous.toolTitle;
+  const toolKind = next.toolKind ?? previous.toolKind;
+  const toolName = next.toolName ?? previous.toolName;
+  const toolPreview = next.toolPreview ?? previous.toolPreview;
   const itemType = next.itemType ?? previous.itemType;
   const requestKind = next.requestKind ?? previous.requestKind;
   const collapseKey = next.collapseKey ?? previous.collapseKey;
@@ -648,6 +666,9 @@ function mergeDerivedWorkLogEntries(
     ...(rawCommand ? { rawCommand } : {}),
     ...(changedFiles.length > 0 ? { changedFiles } : {}),
     ...(toolTitle ? { toolTitle } : {}),
+    ...(toolKind ? { toolKind } : {}),
+    ...(toolName ? { toolName } : {}),
+    ...(toolPreview ? { toolPreview } : {}),
     ...(itemType ? { itemType } : {}),
     ...(requestKind ? { requestKind } : {}),
     ...(collapseKey ? { collapseKey } : {}),
@@ -1040,6 +1061,106 @@ function extractWorkLogItemType(
 ): WorkLogEntry["itemType"] | undefined {
   if (typeof payload?.itemType === "string" && isToolLifecycleItemType(payload.itemType)) {
     return payload.itemType;
+  }
+  return undefined;
+}
+
+function extractWorkLogToolKind(payload: Record<string, unknown> | null): string | undefined {
+  const kind = asTrimmedString(asRecord(payload?.data)?.kind)?.toLowerCase();
+  return kind ?? undefined;
+}
+
+function extractWorkLogToolName(payload: Record<string, unknown> | null): string | undefined {
+  const data = asRecord(payload?.data);
+  return asTrimmedString(data?.toolName) ?? asTrimmedString(data?.acpTitle) ?? undefined;
+}
+
+function firstPreviewString(...values: ReadonlyArray<unknown>): string | null {
+  for (const value of values) {
+    const text = asTrimmedString(value);
+    if (text) {
+      return text;
+    }
+  }
+  return null;
+}
+
+function extractNestedString(
+  record: Record<string, unknown> | null,
+  nestedKey: string,
+  key: string,
+): string | null {
+  return firstPreviewString(asRecord(record?.[nestedKey])?.[key]);
+}
+
+function extractStructuredPathPreview(data: Record<string, unknown> | null): string | null {
+  return firstPreviewString(
+    data?.primaryPath,
+    data?.path,
+    data?.filePath,
+    data?.relativePath,
+    data?.filename,
+    data?.newPath,
+    data?.oldPath,
+    extractNestedString(data, "rawInput", "path"),
+    extractNestedString(data, "rawInput", "filePath"),
+    extractNestedString(data, "rawInput", "relativePath"),
+    extractNestedString(data, "args", "path"),
+    extractNestedString(data, "args", "filePath"),
+    extractNestedString(data, "args", "relativePath"),
+  );
+}
+
+function extractStructuredQueryPreview(data: Record<string, unknown> | null): string | null {
+  return firstPreviewString(
+    data?.query,
+    data?.pattern,
+    data?.searchTerm,
+    data?.regex,
+    extractNestedString(data, "rawInput", "query"),
+    extractNestedString(data, "rawInput", "pattern"),
+    extractNestedString(data, "rawInput", "searchTerm"),
+    extractNestedString(data, "rawInput", "regex"),
+    extractNestedString(data, "args", "query"),
+    extractNestedString(data, "args", "pattern"),
+    extractNestedString(data, "args", "searchTerm"),
+    extractNestedString(data, "args", "regex"),
+  );
+}
+
+function extractWorkLogToolPreview(
+  payload: Record<string, unknown> | null,
+  command: string | null,
+  changedFiles: ReadonlyArray<string>,
+): string | undefined {
+  if (command) {
+    return command;
+  }
+
+  const data = asRecord(payload?.data);
+  const kind = extractWorkLogToolKind(payload);
+  const itemType = extractWorkLogItemType(payload);
+  const requestKind = extractWorkLogRequestKind(payload);
+  const path = extractStructuredPathPreview(data);
+  const query = extractStructuredQueryPreview(data);
+
+  if (kind === "search") {
+    return query ?? path ?? undefined;
+  }
+  if (kind === "read") {
+    return path ?? undefined;
+  }
+  if (kind === "write" || kind === "edit" || kind === "apply_patch" || kind === "apply-patch") {
+    return path ?? changedFiles[0] ?? undefined;
+  }
+  if (requestKind === "file-read") {
+    return path ?? undefined;
+  }
+  if (requestKind === "file-change" || itemType === "file_change") {
+    return path ?? changedFiles[0] ?? undefined;
+  }
+  if (itemType === "web_search") {
+    return query ?? undefined;
   }
   return undefined;
 }

@@ -962,6 +962,80 @@ describe("deriveWorkLogEntries", () => {
     ]);
   });
 
+  it("extracts native Pi tool metadata and argument previews", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "pi-read-start",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.updated",
+        summary: "Read file",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "read",
+          detail: "apps/web/src/session-logic.ts",
+          data: {
+            kind: "read",
+            toolName: "read",
+            toolCallId: "pi-read-1",
+            primaryPath: "apps/web/src/session-logic.ts",
+          },
+        },
+      }),
+      makeActivity({
+        id: "pi-read-complete",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "Read file",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "read",
+          detail: "apps/web/src/session-logic.ts",
+          data: {
+            kind: "read",
+            toolName: "read",
+            toolCallId: "pi-read-1",
+            primaryPath: "apps/web/src/session-logic.ts",
+            rawOutput: { content: "export const value = 1;" },
+          },
+        },
+      }),
+      makeActivity({
+        id: "pi-search",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "tool.completed",
+        summary: "Searched files",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "find",
+          detail: "deriveWorkLogEntries",
+          data: {
+            kind: "search",
+            toolName: "find",
+            toolCallId: "pi-find-1",
+            query: "deriveWorkLogEntries",
+            primaryPath: "apps/web/src",
+          },
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined);
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({
+      id: "pi-read-complete",
+      toolKind: "read",
+      toolName: "read",
+      toolPreview: "apps/web/src/session-logic.ts",
+      settled: true,
+    });
+    expect(entries[1]).toMatchObject({
+      id: "pi-search",
+      toolKind: "search",
+      toolName: "find",
+      toolPreview: "deriveWorkLogEntries",
+    });
+  });
+
   it("does not treat read or search tool paths as changed files", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

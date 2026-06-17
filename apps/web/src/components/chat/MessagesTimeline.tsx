@@ -34,6 +34,7 @@ import {
   GlobeIcon,
   HammerIcon,
   type LucideIcon,
+  SearchIcon,
   SquarePenIcon,
   TerminalIcon,
   Undo2Icon,
@@ -50,8 +51,10 @@ import {
   computeStableMessagesTimelineRows,
   MAX_VISIBLE_WORK_LOG_ENTRIES,
   deriveMessagesTimelineRows,
+  isCompactToolWorkEntry,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
+  resolveWorkEntryIconKind,
   type StableMessagesTimelineRowsState,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
@@ -1112,9 +1115,10 @@ function workToneClass(tone: "thinking" | "tool" | "info" | "error"): string {
 }
 
 function workEntryPreview(
-  workEntry: Pick<TimelineWorkEntry, "detail" | "command" | "changedFiles">,
+  workEntry: Pick<TimelineWorkEntry, "detail" | "command" | "changedFiles" | "toolPreview">,
   workspaceRoot: string | undefined,
 ) {
+  if (workEntry.toolPreview) return workEntry.toolPreview;
   if (workEntry.command) return workEntry.command;
   if (workEntry.detail) return workEntry.detail;
   if ((workEntry.changedFiles?.length ?? 0) === 0) return null;
@@ -1140,16 +1144,18 @@ function ChangedFilesPreviewText({
   changedFiles,
   workspaceRoot,
   resolvedTheme,
+  enabled,
 }: {
   changedFiles: ReadonlyArray<string> | undefined;
   workspaceRoot: string | undefined;
   resolvedTheme: "light" | "dark";
+  enabled: boolean;
 }) {
   const firstPath = changedFiles?.[0];
   if (!firstPath) return null;
 
   const displayPath = formatWorkspaceRelativePath(firstPath, workspaceRoot);
-  const fileLinkMeta = resolveMarkdownFileLinkMeta(firstPath, workspaceRoot);
+  const fileLinkMeta = enabled ? resolveMarkdownFileLinkMeta(firstPath, workspaceRoot) : null;
   const moreCount = Math.max((changedFiles?.length ?? 0) - 1, 0);
 
   return (
@@ -1174,28 +1180,26 @@ function ChangedFilesPreviewText({
 }
 
 function workEntryIcon(workEntry: TimelineWorkEntry): LucideIcon {
-  if (workEntry.requestKind === "command") return TerminalIcon;
-  if (workEntry.requestKind === "file-read") return EyeIcon;
-  if (workEntry.requestKind === "file-change") return SquarePenIcon;
-
-  if (workEntry.itemType === "command_execution" || workEntry.command) {
-    return TerminalIcon;
-  }
-  if (workEntry.itemType === "file_change" || (workEntry.changedFiles?.length ?? 0) > 0) {
-    return SquarePenIcon;
-  }
-  if (workEntry.itemType === "web_search") return GlobeIcon;
-  if (workEntry.itemType === "image_view") return EyeIcon;
-
-  switch (workEntry.itemType) {
-    case "mcp_tool_call":
+  switch (resolveWorkEntryIconKind(workEntry)) {
+    case "command":
+      return TerminalIcon;
+    case "read":
+      return EyeIcon;
+    case "file-change":
+      return SquarePenIcon;
+    case "search":
+      return SearchIcon;
+    case "web":
+      return GlobeIcon;
+    case "image":
+      return EyeIcon;
+    case "mcp":
       return WrenchIcon;
-    case "dynamic_tool_call":
-    case "collab_agent_tool_call":
+    case "dynamic":
       return HammerIcon;
+    default:
+      return workToneIcon(workEntry.tone).icon;
   }
-
-  return workToneIcon(workEntry.tone).icon;
 }
 
 function capitalizePhrase(value: string): string {
@@ -1230,7 +1234,9 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       ? null
       : rawPreview;
   const rawCommand = workEntryRawCommand(workEntry);
-  const displayText = preview ? `${heading} - ${preview}` : heading;
+  const compactTool = isCompactToolWorkEntry(workEntry) && Boolean(preview);
+  const displayText =
+    compactTool && preview ? preview : preview ? `${heading} - ${preview}` : heading;
   const hasChangedFiles = (workEntry.changedFiles?.length ?? 0) > 0;
   const canResolveInlinePaths = workEntry.settled === true;
   const previewIsChangedFiles = hasChangedFiles && !workEntry.command && !workEntry.detail;
@@ -1254,9 +1260,11 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                 )}
                 title={displayText}
               >
-                <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
-                  {heading}
-                </span>
+                {!compactTool && (
+                  <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
+                    {heading}
+                  </span>
+                )}
                 {preview && (
                   <Tooltip>
                     <TooltipTrigger
@@ -1264,8 +1272,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                       delay={75}
                       render={
                         <span className="max-w-full cursor-default text-muted-foreground/55 transition-colors hover:text-muted-foreground/75 focus-visible:text-muted-foreground/75">
-                          {" "}
-                          -{" "}
+                          {!compactTool && " - "}
                           {canResolveInlinePaths ? (
                             <InlineFilePathText
                               text={preview}
@@ -1315,18 +1322,20 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                         preview ? "text-muted-foreground/70" : "",
                       )}
                     >
-                      <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
-                        {heading}
-                      </span>
+                      {!compactTool && (
+                        <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
+                          {heading}
+                        </span>
+                      )}
                       {preview && (
                         <span className="text-muted-foreground/55">
-                          {" "}
-                          -{" "}
+                          {!compactTool && " - "}
                           {previewIsChangedFiles ? (
                             <ChangedFilesPreviewText
                               changedFiles={workEntry.changedFiles}
                               workspaceRoot={workspaceRoot}
                               resolvedTheme={resolvedTheme}
+                              enabled={canResolveInlinePaths}
                             />
                           ) : canResolveInlinePaths ? (
                             <InlineFilePathText
@@ -1347,11 +1356,12 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                 <p className="whitespace-pre-wrap wrap-break-word text-xs leading-5">
                   {previewIsChangedFiles ? (
                     <>
-                      {heading} -{" "}
+                      {!compactTool && `${heading} - `}
                       <ChangedFilesPreviewText
                         changedFiles={workEntry.changedFiles}
                         workspaceRoot={workspaceRoot}
                         resolvedTheme={resolvedTheme}
+                        enabled={canResolveInlinePaths}
                       />
                     </>
                   ) : canResolveInlinePaths ? (
@@ -1373,7 +1383,9 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
         <div className="mt-1 flex flex-wrap gap-1 pl-6">
           {workEntry.changedFiles?.slice(0, 4).map((filePath) => {
             const displayPath = formatWorkspaceRelativePath(filePath, workspaceRoot);
-            const fileLinkMeta = resolveMarkdownFileLinkMeta(filePath, workspaceRoot);
+            const fileLinkMeta = canResolveInlinePaths
+              ? resolveMarkdownFileLinkMeta(filePath, workspaceRoot)
+              : null;
             if (!fileLinkMeta) {
               return (
                 <span
