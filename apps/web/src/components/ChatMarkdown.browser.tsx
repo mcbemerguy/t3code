@@ -138,4 +138,40 @@ describe("ChatMarkdown", () => {
       await screen.unmount();
     }
   });
+
+  it("autolinks inline-code file paths only after streaming is complete", async () => {
+    const pathText = "src/components/ChatMarkdown.tsx:42";
+    const streaming = await render(
+      <ChatMarkdown text={`Open \`${pathText}\``} cwd="/repo/project" isStreaming />,
+    );
+
+    try {
+      expect(document.querySelector(".chat-markdown-file-link")).toBeNull();
+    } finally {
+      await streaming.unmount();
+    }
+
+    const settled = await render(
+      <ChatMarkdown text={`Open \`${pathText}\``} cwd="/repo/project" isStreaming={false} />,
+    );
+
+    try {
+      const link = page.getByRole("link", { name: pathText });
+      await expect.element(link).toBeInTheDocument();
+      await expect
+        .element(link)
+        .toHaveAttribute("href", "/repo/project/src/components/ChatMarkdown.tsx:42");
+
+      await link.click();
+
+      await vi.waitFor(() => {
+        expect(openInPreferredEditorMock).toHaveBeenCalledWith(
+          expect.anything(),
+          "/repo/project/src/components/ChatMarkdown.tsx:42",
+        );
+      });
+    } finally {
+      await settled.unmount();
+    }
+  });
 });

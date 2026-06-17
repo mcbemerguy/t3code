@@ -55,6 +55,7 @@ export interface WorkLogEntry {
   command?: string;
   rawCommand?: string;
   changedFiles?: ReadonlyArray<string>;
+  settled?: boolean;
   tone: "thinking" | "tool" | "info" | "error";
   toolTitle?: string;
   itemType?: ToolLifecycleItemType;
@@ -549,6 +550,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
         : activity.tone === "approval"
           ? "info"
           : activity.tone,
+    settled: isSettledWorkLogActivity(activity.kind),
     activityKind: activity.kind,
   };
   const itemType = extractWorkLogItemType(payload);
@@ -637,6 +639,7 @@ function mergeDerivedWorkLogEntries(
   const requestKind = next.requestKind ?? previous.requestKind;
   const collapseKey = next.collapseKey ?? previous.collapseKey;
   const toolCallId = next.toolCallId ?? previous.toolCallId;
+  const settled = next.settled ?? previous.settled;
   return {
     ...previous,
     ...next,
@@ -649,7 +652,12 @@ function mergeDerivedWorkLogEntries(
     ...(requestKind ? { requestKind } : {}),
     ...(collapseKey ? { collapseKey } : {}),
     ...(toolCallId ? { toolCallId } : {}),
+    ...(settled !== undefined ? { settled } : {}),
   };
+}
+
+function isSettledWorkLogActivity(kind: OrchestrationThreadActivity["kind"]): boolean {
+  return kind !== "tool.updated" && kind !== "task.progress";
 }
 
 function mergeChangedFiles(

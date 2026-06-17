@@ -255,7 +255,44 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("t3code/apps/web/src/session-logic.ts");
-    expect(markup).not.toContain("C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts");
+    expect(markup).not.toContain(">C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts<");
+  });
+
+  it("gates fuzzy inline file-link rendering for work rows until settled", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const timelineEntry = (settled: boolean) => ({
+      id: `entry-${settled ? "settled" : "active"}`,
+      kind: "work" as const,
+      createdAt: "2026-03-17T19:12:28.000Z",
+      entry: {
+        id: `work-${settled ? "settled" : "active"}`,
+        createdAt: "2026-03-17T19:12:28.000Z",
+        label: "Read",
+        tone: "tool" as const,
+        detail: "apps/web/src/session-logic.ts:12",
+        settled,
+      },
+    });
+
+    const activeMarkup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[timelineEntry(false)]}
+        workspaceRoot="/repo/t3code"
+      />,
+    );
+    expect(activeMarkup).toContain("apps/web/src/session-logic.ts:12");
+    expect(activeMarkup).not.toContain("chat-markdown-file-link");
+
+    const settledMarkup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[timelineEntry(true)]}
+        workspaceRoot="/repo/t3code"
+      />,
+    );
+    expect(settledMarkup).toContain("chat-markdown-file-link");
+    expect(settledMarkup).toContain("/repo/t3code/apps/web/src/session-logic.ts:12");
   });
 
   it("renders review comment contexts as structured cards instead of raw tags", async () => {
