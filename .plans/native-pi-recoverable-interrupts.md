@@ -110,7 +110,9 @@ Define a native Pi recovery path that:
 
 Do not create a new unrelated Pi conversation as a recovery fallback. If no resume cursor/session file is available, fail visibly and require explicit user action rather than silently continuing in a different session.
 
-## Phase 4 — Stalled prompt and no-event watchdogs
+## Phase 4 — Stalled prompt and no-event watchdogs — done
+
+Status: Implemented/committed centralized Pi adapter timeouts, prompt acknowledgement timeout with ambiguous-runtime recovery, no-event warning watchdog, hard stall recovery, and targeted adapter/session runtime tests.
 
 Goal: prevent silent indefinite running states during provider outages.
 
