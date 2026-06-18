@@ -1320,6 +1320,34 @@ describe("PiAdapter", () => {
     ),
   );
 
+  it.effect("emits non-runtime workflow control notices without waiting for later events", () =>
+    withHarness(
+      (fake) => {
+        fake.statsResponses = [new Error("stats unavailable")];
+      },
+      ({ adapter }) =>
+        Effect.gen(function* () {
+          const noticeFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) =>
+              event.type === "content.delta" && event.raw?.source === "pi.workflow.artifact",
+          ).pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
+          const result = yield* adapter.sendTurn({ threadId, input: "/workflow:pause" });
+          const notice = yield* Fiber.join(noticeFiber);
+
+          assert.equal(result.turnId, "pi-turn-1");
+          assert.equal(Option.isSome(notice), true);
+          const event = Option.isSome(notice) ? notice.value[0] : undefined;
+          assert.equal(event?.type, "content.delta");
+          if (event?.type === "content.delta") {
+            assert.equal(event.payload.streamKind, "assistant_text");
+            assert.equal(event.payload.delta, "No active workflow runs available to pause.");
+          }
+        }),
+    ),
+  );
+
   it.effect("emits native Pi tool presentation metadata across lifecycle events", () =>
     withHarness(
       (fake) => {
@@ -1667,8 +1695,11 @@ describe("PiAdapter", () => {
           const staleFiber = yield* collectEvents(
             adapter,
             1,
-            (event) => event.itemId === "pi-tool-stale-tool",
+            (event) =>
+              event.itemId === "pi-tool-stale-tool" ||
+              (event.type === "content.delta" && event.payload.delta.includes("stale")),
           ).pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
+          yield* runtimes[0]!.emit({ type: "assistant_delta", text: "stale assistant text" });
           yield* runtimes[0]!.emit({
             type: "tool_execution_start",
             toolCallId: "stale-tool",

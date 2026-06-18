@@ -189,17 +189,22 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
   const sessions = new Map<ThreadId, PiAdapterSessionContext>();
   const sessionStates = new Map<ThreadId, string>();
-  let pendingTextDelta: ProviderRuntimeEvent | undefined;
+  const pendingRuntimeTextDeltas = new Map<ThreadId, ProviderRuntimeEvent>();
   const adapterTimeouts: PiAdapterTimeouts = {
     ...DEFAULT_PI_ADAPTER_TIMEOUTS,
     ...options?.timeouts,
   };
   let turnCounter = 0;
 
-  const flushPendingTextDelta = (): Effect.Effect<void> => {
-    const pending = pendingTextDelta;
+  const clearPendingRuntimeTextDelta = (threadId: ThreadId): Effect.Effect<void> =>
+    Effect.sync(() => {
+      pendingRuntimeTextDeltas.delete(threadId);
+    });
+
+  const flushPendingRuntimeTextDelta = (threadId: ThreadId): Effect.Effect<void> => {
+    const pending = pendingRuntimeTextDeltas.get(threadId);
     if (!pending) return Effect.void;
-    pendingTextDelta = undefined;
+    pendingRuntimeTextDeltas.delete(threadId);
     return Queue.offerAll(runtimeEventQueue, [pending]).pipe(Effect.asVoid);
   };
 
@@ -252,23 +257,42 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       const ready: Array<ProviderRuntimeEvent> = [];
       for (const event of events) {
         if (!shouldEmitEvent(event)) continue;
-        if (isCoalescibleTextDelta(event)) {
-          if (pendingTextDelta && canMergeTextDeltas(pendingTextDelta, event)) {
-            pendingTextDelta = mergeTextDeltas(pendingTextDelta, event);
-          } else {
-            if (pendingTextDelta) ready.push(pendingTextDelta);
-            pendingTextDelta = event;
-          }
-          continue;
-        }
-        if (pendingTextDelta) {
-          ready.push(pendingTextDelta);
-          pendingTextDelta = undefined;
+        const pendingRuntimeTextDelta = pendingRuntimeTextDeltas.get(event.threadId);
+        if (pendingRuntimeTextDelta) {
+          pendingRuntimeTextDeltas.delete(event.threadId);
+          ready.push(pendingRuntimeTextDelta);
         }
         ready.push(event);
       }
       if (ready.length > 0) yield* Queue.offerAll(runtimeEventQueue, ready).pipe(Effect.asVoid);
     });
+
+  const offerRuntimeEvents =
+    (session: PiAdapterSessionContext) => (events: ReadonlyArray<ProviderRuntimeEvent>) =>
+      Effect.gen(function* () {
+        const ready: Array<ProviderRuntimeEvent> = [];
+        let pendingTextDelta = pendingRuntimeTextDeltas.get(session.threadId);
+        for (const event of events) {
+          if (!shouldEmitEvent(event)) continue;
+          if (isCoalescibleTextDelta(event)) {
+            if (pendingTextDelta && canMergeTextDeltas(pendingTextDelta, event)) {
+              pendingTextDelta = mergeTextDeltas(pendingTextDelta, event);
+            } else {
+              if (pendingTextDelta) ready.push(pendingTextDelta);
+              pendingTextDelta = event;
+            }
+            continue;
+          }
+          if (pendingTextDelta) {
+            ready.push(pendingTextDelta);
+            pendingTextDelta = undefined;
+          }
+          ready.push(event);
+        }
+        if (pendingTextDelta) pendingRuntimeTextDeltas.set(session.threadId, pendingTextDelta);
+        else pendingRuntimeTextDeltas.delete(session.threadId);
+        if (ready.length > 0) yield* Queue.offerAll(runtimeEventQueue, ready).pipe(Effect.asVoid);
+      });
 
   const clearNoEventWatchdog = (session: PiAdapterSessionContext): Effect.Effect<void> =>
     Effect.gen(function* () {
@@ -524,10 +548,14 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     );
 
   const createRuntime = options?.makeRuntime ?? makePiSessionRuntime;
-  const mapper = new PiEventMapper(offer, scheduleUsageRefresh, completeTurn);
 
-  const forkRuntimeEvents = (session: PiAdapterSessionContext, runtime: PiSessionRuntimeShape) =>
-    Stream.runForEach(Stream.chunks(runtime.events), (messages) =>
+  const forkRuntimeEvents = (session: PiAdapterSessionContext, runtime: PiSessionRuntimeShape) => {
+    const mapper = new PiEventMapper(
+      offerRuntimeEvents(session),
+      scheduleUsageRefresh,
+      completeTurn,
+    );
+    return Stream.runForEach(Stream.chunks(runtime.events), (messages) =>
       Effect.gen(function* () {
         for (const message of messages) {
           if (message.kind === "event") {
@@ -536,9 +564,13 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           }
           yield* mapper.handle(session, message);
         }
-        yield* flushPendingTextDelta();
+        yield* flushPendingRuntimeTextDelta(session.threadId);
       }),
-    ).pipe(Effect.forkIn(session.scope));
+    ).pipe(
+      Effect.ensuring(clearPendingRuntimeTextDelta(session.threadId)),
+      Effect.forkIn(session.scope),
+    );
+  };
 
   const emitRuntimeRecoveryError = (
     session: PiAdapterSessionContext,
