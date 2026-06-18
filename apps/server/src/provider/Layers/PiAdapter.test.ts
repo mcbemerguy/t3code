@@ -2535,6 +2535,51 @@ describe("PiAdapter", () => {
     ).pipe(Effect.provide(TestClock.layer())),
   );
 
+  it.effect("does not hard-recover no-event stalls while a tool is active", () =>
+    withHarness(
+      (fake) => {
+        fake.promptScript = (rt) =>
+          rt.emit({
+            type: "tool_execution_start",
+            toolCallId: "tool-active",
+            toolName: "bash",
+            args: { command: "sleep 300" },
+          });
+      },
+      ({ adapter, runtime }) =>
+        Effect.gen(function* () {
+          const warningFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.type === "runtime.warning",
+          ).pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
+          const completedFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.type === "turn.completed",
+          ).pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
+          yield* Effect.yieldNow;
+
+          yield* adapter.sendTurn({ threadId, input: "run long tool" });
+          yield* Effect.yieldNow;
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("1 second");
+          const warnings = yield* Fiber.join(warningFiber);
+          const completed = yield* Fiber.join(completedFiber);
+
+          assert.equal(Option.isSome(warnings), true);
+          if (Option.isSome(warnings) && warnings.value[0]?.type === "runtime.warning") {
+            assert.match(warnings.value[0].payload.message, /still running bash/);
+          }
+          assert.equal(Option.isNone(completed), true);
+          assert.equal(runtime.closeImpl.mock.calls.length, 0);
+          assert.equal(runtime.abortImpl.mock.calls.length, 0);
+        }),
+      undefined,
+      { timeouts: { noEventWarningMs: 100, noEventHardRecoveryMs: 300 } },
+    ).pipe(Effect.provide(TestClock.layer())),
+  );
+
   it.effect("hard-recovers no-event Pi stalls after warning threshold", () => {
     let created = 0;
     return withHarness(

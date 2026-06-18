@@ -735,6 +735,23 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     session.currentTurnId === turnId &&
     !session.completedTurnIds.has(turnId);
 
+  const activeToolsForTurn = (session: PiAdapterSessionContext, turnId: TurnId) =>
+    Array.from(session.tools.values()).filter((tool) => tool.turnId === turnId);
+
+  const activeToolNames = (session: PiAdapterSessionContext, turnId: TurnId) =>
+    activeToolsForTurn(session, turnId)
+      .map((tool) => tool.toolName)
+      .filter((name, index, names) => names.indexOf(name) === index);
+
+  const activeToolSummary = (session: PiAdapterSessionContext, turnId: TurnId) => {
+    const names = activeToolNames(session, turnId);
+    if (names.length === 0) return undefined;
+    if (names.length === 1) return names[0];
+    const shown = names.slice(0, 3).join(", ");
+    const remaining = names.length - 3;
+    return remaining > 0 ? `${shown}, and ${remaining} more` : shown;
+  };
+
   const startNoEventWatchdog = Effect.fn("startPiNoEventWatchdog")(function* (
     session: PiAdapterSessionContext,
     turnId: TurnId,
@@ -757,17 +774,25 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         }
         if (!session.noEventWarningEmitted) {
           session.noEventWarningEmitted = true;
+          const toolSummary = activeToolSummary(session, turnId);
           yield* offer([
             {
               ...basePiEvent(session, { turnId }),
               type: "runtime.warning",
               payload: {
-                message:
-                  "Pi accepted the prompt but has not produced any events yet. The turn is still running; Stop remains available if you want T3 to interrupt or recover it.",
+                message: toolSummary
+                  ? `Pi is still running ${toolSummary} but has not produced events for ${warningMs}ms. The turn is still running; Stop remains available if you want T3 to interrupt it.`
+                  : "Pi accepted the prompt but has not produced any events yet. The turn is still running; Stop remains available if you want T3 to interrupt or recover it.",
                 detail: {
-                  diagnosticKind: "pi.noEventWarning",
+                  diagnosticKind: toolSummary ? "pi.activeToolNoEventWarning" : "pi.noEventWarning",
                   timeoutMs: warningMs,
                   hardRecoveryMs,
+                  ...(toolSummary
+                    ? {
+                        activeToolCount: activeToolsForTurn(session, turnId).length,
+                        activeToolNames: activeToolNames(session, turnId),
+                      }
+                    : {}),
                 },
               },
             } satisfies ProviderRuntimeEvent,
@@ -778,6 +803,27 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         if (session.turnActivitySequence !== observedSequence) {
           observedSequence = session.turnActivitySequence;
           session.noEventWarningEmitted = false;
+          continue;
+        }
+        const activeTools = activeToolsForTurn(session, turnId);
+        if (activeTools.length > 0) {
+          const toolSummary = activeToolSummary(session, turnId) ?? "an active tool";
+          session.noEventWarningEmitted = true;
+          yield* offer([
+            {
+              ...basePiEvent(session, { turnId }),
+              type: "runtime.warning",
+              payload: {
+                message: `Pi is still running ${toolSummary} but has not produced events for ${hardRecoveryMs}ms. T3 will not auto-recover while Pi tools are active; Stop remains available if you want T3 to interrupt it.`,
+                detail: {
+                  diagnosticKind: "pi.activeToolNoEventWarning",
+                  timeoutMs: hardRecoveryMs,
+                  activeToolCount: activeTools.length,
+                  activeToolNames: activeToolNames(session, turnId),
+                },
+              },
+            } satisfies ProviderRuntimeEvent,
+          ]);
           continue;
         }
         delete session.noEventWatchdogFiber;
