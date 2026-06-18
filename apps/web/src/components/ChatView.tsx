@@ -129,10 +129,11 @@ import {
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
-import { buildDraftThreadRouteParams } from "../threadRoutes";
+import { buildDraftThreadRouteParams, buildThreadRouteParams } from "../threadRoutes";
 import {
   type ComposerImageAttachment,
   type DraftThreadEnvMode,
+  markPromotedDraftThreadByRef,
   useComposerDraftStore,
   type DraftId,
 } from "../composerDraftStore";
@@ -163,6 +164,7 @@ import {
   createLocalDispatchSnapshot,
   deriveComposerSendState,
   hasServerAcknowledgedLocalDispatch,
+  promoteDraftThreadToServerRoute,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
   LastInvokedScriptByProjectSchema,
   type LocalDispatchSnapshot,
@@ -3002,6 +3004,7 @@ export default function ChatView(props: ChatViewProps) {
     composerRef.current?.resetCursorState();
 
     let turnStartSucceeded = false;
+    let postDispatchPromotionFailed = false;
     await (async () => {
       let firstComposerImageName: string | null = null;
       if (composerImagesSnapshot.length > 0) {
@@ -3096,7 +3099,22 @@ export default function ChatView(props: ChatViewProps) {
         createdAt: messageCreatedAt,
       });
       turnStartSucceeded = true;
+      if (isLocalDraftThread) {
+        await promoteDraftThreadToServerRoute({
+          threadRef: scopeThreadRef(activeThread.environmentId, threadIdForSend),
+          markPromotedDraftThread: markPromotedDraftThreadByRef,
+          navigateToThread: (threadRef) =>
+            navigate({
+              to: "/$environmentId/$threadId",
+              params: buildThreadRouteParams(threadRef),
+              replace: true,
+            }),
+        });
+      }
     })().catch(async (err: unknown) => {
+      if (turnStartSucceeded) {
+        postDispatchPromotionFailed = true;
+      }
       if (
         !turnStartSucceeded &&
         promptRef.current.length === 0 &&
@@ -3130,7 +3148,7 @@ export default function ChatView(props: ChatViewProps) {
       );
     });
     sendInFlightRef.current = false;
-    if (!turnStartSucceeded) {
+    if (!turnStartSucceeded || postDispatchPromotionFailed) {
       resetLocalDispatch();
     }
   };

@@ -262,6 +262,15 @@ export function deriveLockedProvider(input: {
   return narrowedThreadProvider ?? narrowedSelectedProvider ?? null;
 }
 
+export async function promoteDraftThreadToServerRoute(input: {
+  threadRef: ScopedThreadRef;
+  markPromotedDraftThread: (threadRef: ScopedThreadRef) => void;
+  navigateToThread: (threadRef: ScopedThreadRef) => Promise<unknown> | unknown;
+}): Promise<void> {
+  input.markPromotedDraftThread(input.threadRef);
+  await input.navigateToThread(input.threadRef);
+}
+
 export async function waitForStartedServerThread(
   threadRef: ScopedThreadRef,
   timeoutMs = 1_000,

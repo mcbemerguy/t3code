@@ -17,6 +17,7 @@ import {
   createLocalDispatchSnapshot,
   deriveComposerSendState,
   hasServerAcknowledgedLocalDispatch,
+  promoteDraftThreadToServerRoute,
   reconcileMountedTerminalThreadIds,
   resolveSendEnvMode,
   shouldWriteThreadErrorToCurrentServerThread,
@@ -359,6 +360,45 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   setStoreThreads([]);
+});
+
+describe("promoteDraftThreadToServerRoute", () => {
+  it("marks the draft promoted before navigating to the server thread", async () => {
+    const threadRef = scopeThreadRef(localEnvironmentId, ThreadId.make("thread-promote"));
+    const calls: string[] = [];
+
+    await promoteDraftThreadToServerRoute({
+      threadRef,
+      markPromotedDraftThread: (nextThreadRef) => {
+        calls.push(`mark:${nextThreadRef.threadId}`);
+      },
+      navigateToThread: async (nextThreadRef) => {
+        calls.push(`navigate:${nextThreadRef.threadId}`);
+      },
+    });
+
+    expect(calls).toEqual(["mark:thread-promote", "navigate:thread-promote"]);
+  });
+
+  it("keeps the draft marked promoted if navigation fails", async () => {
+    const threadRef = scopeThreadRef(localEnvironmentId, ThreadId.make("thread-promote-error"));
+    const calls: string[] = [];
+
+    await expect(
+      promoteDraftThreadToServerRoute({
+        threadRef,
+        markPromotedDraftThread: (nextThreadRef) => {
+          calls.push(`mark:${nextThreadRef.threadId}`);
+        },
+        navigateToThread: async () => {
+          calls.push("navigate");
+          throw new Error("Navigation failed");
+        },
+      }),
+    ).rejects.toThrow("Navigation failed");
+
+    expect(calls).toEqual(["mark:thread-promote-error", "navigate"]);
+  });
 });
 
 describe("waitForStartedServerThread", () => {
