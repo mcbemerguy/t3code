@@ -1644,6 +1644,53 @@ describe("PiAdapter", () => {
     ),
   );
 
+  it.effect("uses both Pi tool update fields as fallback completion output", () =>
+    withHarness(
+      (fake) => {
+        fake.promptScript = (rt) =>
+          Effect.gen(function* () {
+            yield* rt.emit({
+              type: "tool_execution_start",
+              toolCallId: "dual-update-tool",
+              toolName: "bash",
+              args: { command: "printf fallback" },
+            });
+            yield* rt.emit({
+              type: "tool_execution_update",
+              toolCallId: "dual-update-tool",
+              partialResult: "partial",
+              update: { stdout: "update" },
+            });
+            yield* rt.emit({
+              type: "tool_execution_end",
+              toolCallId: "dual-update-tool",
+            });
+          });
+      },
+      ({ adapter }) =>
+        Effect.gen(function* () {
+          const eventsFiber = yield* collectEvents(
+            adapter,
+            3,
+            (event) =>
+              (event.type === "item.started" && event.itemId === "pi-tool-dual-update-tool") ||
+              (event.type === "content.delta" && event.itemId === "pi-tool-dual-update-tool") ||
+              (event.type === "item.completed" && event.itemId === "pi-tool-dual-update-tool"),
+          ).pipe(Effect.forkChild);
+          yield* adapter.sendTurn({ threadId, input: "fallback" });
+          const events = yield* Fiber.join(eventsFiber);
+
+          const output = events.find(
+            (event) =>
+              event.type === "content.delta" && event.itemId === "pi-tool-dual-update-tool",
+          );
+          assert.equal(output?.type, "content.delta");
+          if (output?.type === "content.delta")
+            assert.equal(output.payload.delta, "partial\nupdate");
+        }),
+    ),
+  );
+
   it.effect("emits non-runtime workflow control notices without waiting for later events", () =>
     withHarness(
       (fake) => {
@@ -1818,6 +1865,29 @@ describe("PiAdapter", () => {
             yield* rt.emit({
               type: "tool_execution_end",
               toolCallId: "subagent-1",
+              args: {
+                messages: [
+                  {
+                    role: "user",
+                    content: [{ type: "image", mimeType: "image/png", data: "x".repeat(100_000) }],
+                  },
+                ],
+              },
+              details: {
+                results: [
+                  {
+                    agent: "scout",
+                    messages: [
+                      {
+                        role: "user",
+                        content: [
+                          { type: "image", mimeType: "image/png", data: "x".repeat(100_000) },
+                        ],
+                      },
+                    ],
+                  },
+                ],
+              },
               result: {
                 content: [{ type: "text", text: "done" }],
                 details: {
@@ -1867,6 +1937,20 @@ describe("PiAdapter", () => {
               details?: { results?: Array<{ messages?: unknown }> };
             };
             assert.deepEqual(result.details?.results?.[0]?.messages, {
+              stripped: true,
+              count: 1,
+              reason: "subagent message history omitted",
+            });
+            const rawPayload = completed.raw?.payload as {
+              args?: { messages?: unknown };
+              details?: { results?: Array<{ messages?: unknown }> };
+            };
+            assert.deepEqual(rawPayload.args?.messages, {
+              stripped: true,
+              count: 1,
+              reason: "subagent message history omitted",
+            });
+            assert.deepEqual(rawPayload.details?.results?.[0]?.messages, {
               stripped: true,
               count: 1,
               reason: "subagent message history omitted",

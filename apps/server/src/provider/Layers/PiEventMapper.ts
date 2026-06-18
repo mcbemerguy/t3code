@@ -491,10 +491,9 @@ export class PiEventMapper {
       if (!id) return;
       const state = session.tools.get(id);
       if (!state) return;
-      const updateText = toolResultToText(
-        sanitizeToolPayloadForPresentation(event.partialResult ?? event.update),
-      );
-      if (updateText) state.updates.push(updateText);
+      for (const updateText of toolUpdateTexts(event)) {
+        state.updates.push(updateText);
+      }
       yield* self.scheduleUsageRefresh(session);
     });
   }
@@ -597,18 +596,17 @@ function sanitizeRawPayload(payload: unknown): unknown {
   if (!record) return payload;
   const type = readPiEventType(record);
   if (type !== "tool_execution_update" && type !== "tool_execution_end") return payload;
-  return {
-    ...record,
-    ...(record.partialResult !== undefined
-      ? { partialResult: sanitizeToolPayloadForPresentation(record.partialResult) }
-      : {}),
-    ...(record.update !== undefined
-      ? { update: sanitizeToolPayloadForPresentation(record.update) }
-      : {}),
-    ...(record.result !== undefined
-      ? { result: sanitizeToolPayloadForPresentation(record.result) }
-      : {}),
-  };
+  return sanitizeToolPayloadForPresentation(record);
+}
+
+function toolUpdateTexts(event: PiRpcEvent): ReadonlyArray<string> {
+  const texts: Array<string> = [];
+  for (const value of [event.partialResult, event.update]) {
+    if (value === undefined) continue;
+    const text = toolResultToText(sanitizeToolPayloadForPresentation(value));
+    if (text) texts.push(text);
+  }
+  return texts;
 }
 
 function runtimeItemId(value: string): RuntimeItemId {
