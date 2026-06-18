@@ -509,7 +509,6 @@ export function deriveWorkLogEntries(
   for (const activity of ordered) {
     if (latestTurnId && activity.turnId !== latestTurnId && !isDurableThreadNotice(activity))
       continue;
-    if (activity.kind === "tool.started") continue;
     if (activity.kind === "task.started") continue;
     if (activity.kind === "context-window.updated") continue;
     if (activity.summary === "Checkpoint captured") continue;
@@ -575,7 +574,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
           : activity.tone,
     settled: isSettledWorkLogActivity(activity.kind),
     activityKind: activity.kind,
-    isToolLifecycle: activity.kind === "tool.updated" || activity.kind === "tool.completed",
+    isToolLifecycle:
+      activity.kind === "tool.started" ||
+      activity.kind === "tool.updated" ||
+      activity.kind === "tool.completed",
   };
   const itemType = extractWorkLogItemType(payload);
   const toolKind = extractWorkLogToolKind(payload);
@@ -641,14 +643,17 @@ function shouldCollapseToolLifecycleEntries(
   previous: DerivedWorkLogEntry,
   next: DerivedWorkLogEntry,
 ): boolean {
-  if (previous.activityKind !== "tool.updated" && previous.activityKind !== "tool.completed") {
+  if (!isToolLifecycleActivityKind(previous.activityKind)) {
     return false;
   }
-  if (next.activityKind !== "tool.updated" && next.activityKind !== "tool.completed") {
+  if (!isToolLifecycleActivityKind(next.activityKind)) {
     return false;
   }
   if (previous.activityKind === "tool.completed") {
     return false;
+  }
+  if (next.activityKind === "tool.started") {
+    return previous.toolCallId !== undefined && previous.toolCallId === next.toolCallId;
   }
   if (previous.collapseKey !== undefined && previous.collapseKey === next.collapseKey) {
     return true;
@@ -699,7 +704,11 @@ function mergeDerivedWorkLogEntries(
 }
 
 function isSettledWorkLogActivity(kind: OrchestrationThreadActivity["kind"]): boolean {
-  return kind !== "tool.updated" && kind !== "task.progress";
+  return kind !== "tool.started" && kind !== "tool.updated" && kind !== "task.progress";
+}
+
+function isToolLifecycleActivityKind(kind: OrchestrationThreadActivity["kind"]): boolean {
+  return kind === "tool.started" || kind === "tool.updated" || kind === "tool.completed";
 }
 
 function mergeChangedFiles(
@@ -714,7 +723,7 @@ function mergeChangedFiles(
 }
 
 function deriveToolLifecycleCollapseKey(entry: DerivedWorkLogEntry): string | undefined {
-  if (entry.activityKind !== "tool.updated" && entry.activityKind !== "tool.completed") {
+  if (!isToolLifecycleActivityKind(entry.activityKind)) {
     return undefined;
   }
   if (entry.toolCallId) {

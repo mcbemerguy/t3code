@@ -613,7 +613,38 @@ describe("findSidebarProposedPlan", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
-  it("omits tool started entries and keeps completed entries", () => {
+  it("shows tool started entries before they complete", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "tool-start",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        summary: "subagent",
+        kind: "tool.started",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "subagent",
+          status: "inProgress",
+          data: {
+            toolCallId: "tool-subagent-1",
+            kind: "mcp",
+            toolName: "subagent",
+          },
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "tool-start",
+      label: "subagent",
+      toolTitle: "subagent",
+      isToolLifecycle: true,
+      settled: false,
+    });
+  });
+
+  it("collapses tool started entries with their completed entry", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
         id: "tool-complete",

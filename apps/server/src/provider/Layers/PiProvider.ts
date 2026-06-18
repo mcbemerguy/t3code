@@ -14,7 +14,6 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import {
   buildServerProvider,
-  DEFAULT_TIMEOUT_MS,
   detailFromResult,
   isCommandMissingCause,
   parseGenericCliVersion,
@@ -27,6 +26,7 @@ import { PiRpcProcessHandle } from "./PiRpcProcess.ts";
 import { PiRpcLifecycleError, type PiRpcRuntimeMessage } from "./PiSessionRuntime.ts";
 
 const PROVIDER = ProviderDriverKind.make("pi");
+const PI_VERSION_PROBE_TIMEOUT_MS = 10_000;
 const PI_PRESENTATION = {
   displayName: "Pi",
   showInteractionModeToggle: false,
@@ -236,7 +236,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
   }
 
   const versionProbe = yield* runPiCommand(piSettings, ["--version"], environment).pipe(
-    Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
+    Effect.timeoutOption(PI_VERSION_PROBE_TIMEOUT_MS),
     Effect.result,
   );
 
