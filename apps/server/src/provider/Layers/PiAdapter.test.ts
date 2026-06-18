@@ -1037,6 +1037,55 @@ describe("PiAdapter", () => {
       ),
   );
 
+  it.effect("coalesces queued opportunistic usage refreshes before forced finals", () =>
+    withHarness(undefined, ({ adapter, runtime }) =>
+      Effect.gen(function* () {
+        const statsStarted = yield* Deferred.make<void>();
+        const statsGate = yield* Deferred.make<unknown>();
+        runtime.getSessionStatsImpl = () =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(statsStarted, undefined);
+            return yield* Deferred.await(statsGate);
+          });
+        runtime.promptScript = (rt) =>
+          Effect.gen(function* () {
+            yield* rt.emit({
+              type: "message_end",
+              message: { role: "assistant", content: "seed usage refresh" },
+            });
+            yield* Deferred.await(statsStarted);
+            yield* rt.emit({
+              type: "message_end",
+              message: { role: "assistant", content: "queued stale refresh 1" },
+            });
+            yield* rt.emit({
+              type: "message_end",
+              message: { role: "assistant", content: "queued stale refresh 2" },
+            });
+            yield* rt.emit({ type: "agent_end", success: true });
+          });
+        const usageFiber = yield* collectEvents(adapter, 3, isUsageEvent).pipe(
+          Effect.timeout("1 second"),
+          Effect.orDie,
+          Effect.forkChild,
+        );
+        const sendFiber = yield* adapter
+          .sendTurn({ threadId, input: "coalesce stale usage refreshes" })
+          .pipe(Effect.forkChild);
+        const ack = yield* Fiber.join(sendFiber).pipe(Effect.timeoutOption("100 millis"));
+
+        assert.equal(Option.isSome(ack), true);
+        assert.equal(runtime.statsReadCount, 1);
+
+        yield* Deferred.succeed(statsGate, piStats(900));
+        const events = yield* Fiber.join(usageFiber);
+
+        assert.equal(runtime.statsReadCount, 3);
+        assert.deepEqual(events.map(usageUsedTokens), [900, 900, 900]);
+      }),
+    ),
+  );
+
   it.effect("prompt failure schedules nonblocking final Pi usage", () =>
     withHarness(
       (fake) => {

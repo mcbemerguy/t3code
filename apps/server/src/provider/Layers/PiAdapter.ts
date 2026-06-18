@@ -368,6 +368,41 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     });
   };
 
+  const compactUsageRefreshQueueForForcedRequest = (
+    session: PiAdapterSessionContext,
+    refreshOptions: PiUsageRefreshOptions | undefined,
+  ): {
+    readonly options?: PiUsageRefreshOptions;
+    readonly droppedWaiters: ReadonlyArray<Deferred.Deferred<void>>;
+  } => {
+    let pendingOptions = refreshOptions;
+    const compactedQueue: typeof session.usageRefreshQueue = [];
+    const droppedWaiters: Array<Deferred.Deferred<void>> = [];
+
+    for (const request of session.usageRefreshQueue) {
+      if (!request.force) {
+        pendingOptions = mergeUsageRefreshOptions(pendingOptions, request.options);
+        if (request.waiter) droppedWaiters.push(request.waiter);
+        continue;
+      }
+
+      const options = mergeUsageRefreshOptions(request.options, pendingOptions);
+      compactedQueue.push({
+        ...(options ? { options } : {}),
+        force: true,
+        ...(request.waiter ? { waiter: request.waiter } : {}),
+      });
+      pendingOptions = undefined;
+    }
+
+    session.usageRefreshQueue.length = 0;
+    session.usageRefreshQueue.push(...compactedQueue);
+    return {
+      ...(pendingOptions ? { options: pendingOptions } : {}),
+      droppedWaiters,
+    };
+  };
+
   const flushUsageRefreshWaiters = (session: PiAdapterSessionContext): Effect.Effect<void> =>
     Effect.forEach(Array.from(session.usageRefreshWaiters), (waiter) =>
       Deferred.succeed(waiter, undefined),
@@ -473,14 +508,39 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       yield* ensureUsageRefreshDraining(session);
     });
 
+  const enqueueForcedUsageRefresh = (
+    session: PiAdapterSessionContext,
+    refreshOptions?: PiUsageRefreshOptions,
+    waiter?: Deferred.Deferred<void>,
+  ): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      if (session.stopped) {
+        if (waiter) yield* Deferred.succeed(waiter, undefined).pipe(Effect.asVoid);
+        return;
+      }
+      const timerOptions = mergeUsageRefreshOptions(
+        session.usageRefreshPendingOptions,
+        refreshOptions,
+      );
+      yield* clearUsageRefreshTimer(session);
+      const { options: forcedOptions, droppedWaiters } = session.usageRefreshInFlight
+        ? compactUsageRefreshQueueForForcedRequest(session, timerOptions)
+        : { ...(timerOptions ? { options: timerOptions } : {}), droppedWaiters: [] };
+      for (const droppedWaiter of droppedWaiters) {
+        yield* settleUsageRefreshWaiter(session, droppedWaiter);
+      }
+      if (session.stopped) {
+        if (waiter) yield* Deferred.succeed(waiter, undefined).pipe(Effect.asVoid);
+        return;
+      }
+      if (waiter) session.usageRefreshWaiters.add(waiter);
+      yield* enqueueUsageRefresh(session, forcedOptions, true, waiter);
+    });
+
   const scheduleForcedUsageRefresh = (
     session: PiAdapterSessionContext,
     refreshOptions?: PiUsageRefreshOptions,
-  ): Effect.Effect<void> =>
-    Effect.gen(function* () {
-      if (session.stopped) return;
-      yield* forceUsageRefresh(session, refreshOptions).pipe(Effect.forkIn(session.scope));
-    });
+  ): Effect.Effect<void> => enqueueForcedUsageRefresh(session, refreshOptions);
 
   const scheduleUsageRefresh = (
     session: PiAdapterSessionContext,
@@ -517,23 +577,6 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         delete session.usageRefreshPendingOptions;
         yield* enqueueUsageRefresh(session, pendingOptions);
       }).pipe(Effect.forkIn(session.scope));
-    });
-
-  const forceUsageRefresh = (
-    session: PiAdapterSessionContext,
-    refreshOptions?: PiUsageRefreshOptions,
-  ): Effect.Effect<void> =>
-    Effect.gen(function* () {
-      if (session.stopped) return;
-      const forcedOptions = mergeUsageRefreshOptions(
-        session.usageRefreshPendingOptions,
-        refreshOptions,
-      );
-      yield* clearUsageRefreshTimer(session);
-      const waiter = yield* Deferred.make<void>();
-      session.usageRefreshWaiters.add(waiter);
-      yield* enqueueUsageRefresh(session, forcedOptions, true, waiter);
-      yield* Deferred.await(waiter);
     });
 
   const currentResumeCursor = (session: PiAdapterSessionContext) =>
