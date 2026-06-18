@@ -26,6 +26,7 @@ import {
   buildToolEndPresentation,
   buildToolLifecyclePresentation,
   captureEditSnapshot,
+  sanitizeToolPayloadForPresentation,
   toPiToolItemType,
   toolResultToText,
 } from "./PiToolPresentation.ts";
@@ -52,7 +53,8 @@ export function basePiEvent(
   },
 ): Omit<ProviderRuntimeEvent, "type" | "payload"> {
   const raw = input?.raw;
-  const rawPayload = raw?.kind === "event" || raw?.kind === "response" ? raw.payload : raw?.line;
+  const rawPayload =
+    raw?.kind === "event" || raw?.kind === "response" ? sanitizeRawPayload(raw.payload) : raw?.line;
   const method =
     raw?.kind === "event"
       ? readPiEventType(raw.payload)
@@ -480,7 +482,7 @@ export class PiEventMapper {
 
   private toolUpdate(
     session: PiAdapterSessionContext,
-    message: PiRpcRuntimeMessage & { readonly kind: "event" },
+    _message: PiRpcRuntimeMessage & { readonly kind: "event" },
     event: PiRpcEvent,
   ) {
     const self = this;
@@ -489,33 +491,10 @@ export class PiEventMapper {
       if (!id) return;
       const state = session.tools.get(id);
       if (!state) return;
-      if (event.partialResult !== undefined) state.updates.push(event.partialResult);
-      if (event.update !== undefined) state.updates.push(event.update);
-      const updateText = toolResultToText(event.partialResult ?? event.update);
-      const events: Array<ProviderRuntimeEvent> = [];
-      if (updateText) {
-        events.push({
-          ...basePiEvent(session, toolEventInput(message, state.itemId, state.turnId)),
-          type: "content.delta",
-          payload: { streamKind: "command_output", delta: updateText },
-        } satisfies ProviderRuntimeEvent);
-      }
-      events.push({
-        ...basePiEvent(session, toolEventInput(message, state.itemId, state.turnId)),
-        type: "item.updated",
-        payload: {
-          itemType: state.presentation.itemType,
-          status: "inProgress",
-          title: state.presentation.title,
-          ...(state.presentation.detail ? { detail: state.presentation.detail } : {}),
-          data: {
-            ...state.presentation.data,
-            ...(event.partialResult !== undefined ? { partialResult: event.partialResult } : {}),
-            ...(event.update !== undefined ? { update: event.update } : {}),
-          },
-        },
-      } satisfies ProviderRuntimeEvent);
-      yield* self.offer(events);
+      const updateText = toolResultToText(
+        sanitizeToolPayloadForPresentation(event.partialResult ?? event.update),
+      );
+      if (updateText) state.updates.push(updateText);
       yield* self.scheduleUsageRefresh(session);
     });
   }
@@ -605,11 +584,31 @@ function toolEventInput(
 
 function mergeToolCompletionData(metadata: object, result: unknown): object {
   if (result === undefined) return metadata;
+  const safeResult = sanitizeToolPayloadForPresentation(result);
   const resultFields =
-    typeof result === "object" && result !== null && !Array.isArray(result)
-      ? (result as Record<string, unknown>)
+    typeof safeResult === "object" && safeResult !== null && !Array.isArray(safeResult)
+      ? (safeResult as Record<string, unknown>)
       : undefined;
-  return { ...resultFields, ...metadata, result };
+  return { ...resultFields, ...metadata, result: safeResult };
+}
+
+function sanitizeRawPayload(payload: unknown): unknown {
+  const record = readRecord(payload);
+  if (!record) return payload;
+  const type = readPiEventType(record);
+  if (type !== "tool_execution_update" && type !== "tool_execution_end") return payload;
+  return {
+    ...record,
+    ...(record.partialResult !== undefined
+      ? { partialResult: sanitizeToolPayloadForPresentation(record.partialResult) }
+      : {}),
+    ...(record.update !== undefined
+      ? { update: sanitizeToolPayloadForPresentation(record.update) }
+      : {}),
+    ...(record.result !== undefined
+      ? { result: sanitizeToolPayloadForPresentation(record.result) }
+      : {}),
+  };
 }
 
 function runtimeItemId(value: string): RuntimeItemId {

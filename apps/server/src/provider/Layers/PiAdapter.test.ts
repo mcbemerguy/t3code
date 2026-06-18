@@ -46,6 +46,14 @@ import { makePiResumeCursor } from "./PiWorkflowCursor.ts";
 const PROVIDER = ProviderDriverKind.make("pi");
 const threadId = ThreadId.make("thread-pi-adapter");
 
+function containsStringValue(value: unknown, needle: string, depth = 0): boolean {
+  if (typeof value === "string") return value.includes(needle);
+  if (value === null || typeof value !== "object" || depth > 20) return false;
+  if (Array.isArray(value))
+    return value.some((entry) => containsStringValue(entry, needle, depth + 1));
+  return Object.values(value).some((entry) => containsStringValue(entry, needle, depth + 1));
+}
+
 class FakePiRuntime implements PiSessionRuntimeShape {
   private readonly eventQueue: Queue.Queue<PiRpcRuntimeMessage>;
   readonly events: Stream.Stream<PiRpcRuntimeMessage>;
@@ -622,7 +630,6 @@ describe("PiAdapter", () => {
             Stream.filter(
               (event) =>
                 (event.type === "item.started" && event.itemId === "pi-tool-tool-1") ||
-                (event.type === "item.updated" && event.itemId === "pi-tool-tool-1") ||
                 (event.type === "item.completed" && event.itemId === "pi-tool-tool-1") ||
                 event.type === "turn.completed",
             ),
@@ -631,7 +638,7 @@ describe("PiAdapter", () => {
                 ? Deferred.succeed(firstTurnCompleted, undefined).pipe(Effect.ignore)
                 : Effect.void,
             ),
-            Stream.take(5),
+            Stream.take(4),
             Stream.runCollect,
             Effect.map((events) => Array.from(events) as Array<ProviderRuntimeEvent>),
             Effect.forkChild,
@@ -649,7 +656,6 @@ describe("PiAdapter", () => {
             [
               ["item.started", "pi-turn-1"],
               ["turn.completed", "pi-turn-1"],
-              ["item.updated", "pi-turn-1"],
               ["item.completed", "pi-turn-1"],
               ["turn.completed", "pi-turn-2"],
             ],
@@ -1517,7 +1523,7 @@ describe("PiAdapter", () => {
         Effect.gen(function* () {
           const eventsFiber = yield* collectEvents(
             adapter,
-            4,
+            3,
             (event) =>
               event.type === "item.started" ||
               event.type === "content.delta" ||
@@ -1535,7 +1541,7 @@ describe("PiAdapter", () => {
     ),
   );
 
-  it.effect("preserves all tool updates amid noisy interleaved Pi bursts", () =>
+  it.effect("coalesces native Pi tool updates until tool completion", () =>
     withHarness(
       (fake) => {
         fake.promptScript = (rt) =>
@@ -1587,7 +1593,6 @@ describe("PiAdapter", () => {
               (event) =>
                 event.type === "content.delta" ||
                 event.type === "item.started" ||
-                event.type === "item.updated" ||
                 event.type === "item.completed" ||
                 event.type === "turn.completed",
             ),
@@ -1606,8 +1611,7 @@ describe("PiAdapter", () => {
             (event) =>
               event.type === "content.delta" &&
               event.itemId === "pi-tool-burst-tool" &&
-              event.payload.streamKind === "command_output" &&
-              event.raw?.method === "tool_execution_update",
+              event.payload.streamKind === "command_output",
           );
           const assistantText = events
             .flatMap((event) =>
@@ -1628,44 +1632,10 @@ describe("PiAdapter", () => {
             events.every((event) => event.turnId === "pi-turn-1"),
             true,
           );
-          assert.equal(toolUpdates.length, 3);
+          assert.equal(toolUpdates.length, 0);
           assert.deepEqual(
             toolOutput.map((event) => (event.type === "content.delta" ? event.payload.delta : "")),
-            ["chunk one\n", "chunk two", "chunk three"],
-          );
-          assert.deepEqual(
-            toolUpdates.map((event) =>
-              event.type === "item.updated" ? event.payload.data : undefined,
-            ),
-            [
-              {
-                kind: "execute",
-                toolName: "bash",
-                toolCallId: "burst-tool",
-                rawInput: { command: "printf burst" },
-                args: { command: "printf burst" },
-                command: "printf burst",
-                partialResult: "chunk one\n",
-              },
-              {
-                kind: "execute",
-                toolName: "bash",
-                toolCallId: "burst-tool",
-                rawInput: { command: "printf burst" },
-                args: { command: "printf burst" },
-                command: "printf burst",
-                update: { stdout: "chunk two\n" },
-              },
-              {
-                kind: "execute",
-                toolName: "bash",
-                toolCallId: "burst-tool",
-                rawInput: { command: "printf burst" },
-                args: { command: "printf burst" },
-                command: "printf burst",
-                partialResult: { stdout: "chunk three\n" },
-              },
-            ],
+            ["done"],
           );
           assert.equal(assistantText, "Final answer.");
           assert.equal(reasoningText, "thinking");
@@ -1751,7 +1721,7 @@ describe("PiAdapter", () => {
         Effect.gen(function* () {
           const eventsFiber = yield* collectEvents(
             adapter,
-            7,
+            6,
             (event) =>
               event.type === "item.started" ||
               event.type === "item.updated" ||
@@ -1779,14 +1749,19 @@ describe("PiAdapter", () => {
           const bashUpdated = events.find(
             (event) => event.type === "item.updated" && event.itemId === "pi-tool-bash-1",
           );
-          assert.equal(bashUpdated?.type, "item.updated");
-          if (bashUpdated?.type === "item.updated") {
-            const data = bashUpdated.payload.data as Record<string, unknown>;
+          assert.equal(bashUpdated, undefined);
+
+          const bashCompleted = events.find(
+            (event) => event.type === "item.completed" && event.itemId === "pi-tool-bash-1",
+          );
+          assert.equal(bashCompleted?.type, "item.completed");
+          if (bashCompleted?.type === "item.completed") {
+            const data = bashCompleted.payload.data as Record<string, unknown>;
             assert.equal(data.kind, "execute");
             assert.equal(data.toolCallId, "bash-1");
             assert.equal(data.command, "pnpm test");
             assert.deepEqual(data.rawInput, { command: "pnpm test" });
-            assert.deepEqual(data.partialResult, { stdout: "running" });
+            assert.equal(data.partialResult, undefined);
           }
 
           const grepCompleted = events.find(
@@ -1802,6 +1777,101 @@ describe("PiAdapter", () => {
             assert.equal(data.path, undefined);
             assert.deepEqual(data.matches, []);
             assert.deepEqual(data.result, { matches: [] });
+          }
+        }),
+    ),
+  );
+
+  it.effect("strips heavyweight subagent message details from native Pi tool completion data", () =>
+    withHarness(
+      (fake) => {
+        fake.promptScript = (rt) =>
+          Effect.gen(function* () {
+            yield* rt.emit({
+              type: "tool_execution_start",
+              toolCallId: "subagent-1",
+              toolName: "subagent",
+              args: { type: "scout", tasks: ["find files"] },
+            });
+            yield* rt.emit({
+              type: "tool_execution_update",
+              toolCallId: "subagent-1",
+              partialResult: {
+                content: [{ type: "text", text: "running" }],
+                details: {
+                  results: [
+                    {
+                      agent: "scout",
+                      messages: [
+                        {
+                          role: "user",
+                          content: [
+                            { type: "image", mimeType: "image/png", data: "x".repeat(100_000) },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              },
+            });
+            yield* rt.emit({
+              type: "tool_execution_end",
+              toolCallId: "subagent-1",
+              result: {
+                content: [{ type: "text", text: "done" }],
+                details: {
+                  results: [
+                    {
+                      agent: "scout",
+                      messages: [
+                        {
+                          role: "user",
+                          content: [
+                            { type: "image", mimeType: "image/png", data: "x".repeat(100_000) },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              },
+            });
+          });
+      },
+      ({ adapter }) =>
+        Effect.gen(function* () {
+          const eventsFiber = yield* collectEvents(
+            adapter,
+            3,
+            (event) =>
+              event.type === "item.started" ||
+              event.type === "item.updated" ||
+              event.type === "item.completed" ||
+              event.type === "content.delta",
+          ).pipe(Effect.forkChild);
+          yield* adapter.sendTurn({ threadId, input: "delegate" });
+          const events = yield* Fiber.join(eventsFiber);
+
+          assert.equal(
+            events.some((event) => event.type === "item.updated"),
+            false,
+          );
+          const completed = events.find(
+            (event) => event.type === "item.completed" && event.itemId === "pi-tool-subagent-1",
+          );
+          assert.equal(completed?.type, "item.completed");
+          if (completed?.type === "item.completed") {
+            const data = completed.payload.data as Record<string, unknown>;
+            const result = data.result as {
+              details?: { results?: Array<{ messages?: unknown }> };
+            };
+            assert.deepEqual(result.details?.results?.[0]?.messages, {
+              stripped: true,
+              count: 1,
+              reason: "subagent message history omitted",
+            });
+            assert.equal(containsStringValue(completed, "x".repeat(1_000)), false);
           }
         }),
     ),

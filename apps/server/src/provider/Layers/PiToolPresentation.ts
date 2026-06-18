@@ -6,6 +6,8 @@ import type { CanonicalItemType } from "@t3tools/contracts";
 
 const TEXT_LIMIT_BYTES = 64 * 1024;
 const DIFF_FILE_LIMIT_BYTES = 256 * 1024;
+const PRESENTATION_ARRAY_LIMIT = 50;
+const PRESENTATION_DEPTH_LIMIT = 8;
 
 export interface PiToolSnapshot {
   readonly path: string;
@@ -70,11 +72,12 @@ export function buildToolLifecyclePresentation(input: {
   const path = extractPath(input.args);
   const query = extractQuery(input.args);
   const detail = command ?? path ?? query;
+  const safeArgs = sanitizeToolPayloadForPresentation(input.args);
   const data: PiToolLifecycleMetadata = {
     kind,
     toolName: input.toolName,
     toolCallId: input.toolCallId,
-    ...(input.args !== undefined ? { rawInput: input.args, args: input.args } : {}),
+    ...(input.args !== undefined ? { rawInput: safeArgs, args: safeArgs } : {}),
     ...(command ? { command } : {}),
     ...(path && isFileMutationKind(kind) ? { path } : {}),
     ...(path ? { primaryPath: path } : {}),
@@ -160,7 +163,9 @@ export function buildToolEndPresentation(input: {
   readonly updates: ReadonlyArray<unknown>;
   readonly snapshot?: PiToolSnapshot;
 }): PiToolEndPresentation {
-  const outputText = toolResultToText(input.result) ?? mergedUpdateText(input.updates);
+  const outputText =
+    toolResultToText(sanitizeToolPayloadForPresentation(input.result)) ??
+    mergedUpdateText(input.updates);
   const snapshot = input.snapshot;
   if (!snapshot) return outputText ? { outputText } : {};
   if (snapshot.skippedReason) {
@@ -188,6 +193,10 @@ export function buildToolEndPresentation(input: {
   } catch {
     return outputText ? { outputText } : {};
   }
+}
+
+export function sanitizeToolPayloadForPresentation(value: unknown): unknown {
+  return sanitizePresentationValue(value, 0, undefined);
 }
 
 export function readStringField(value: unknown, key: string): string | undefined {
@@ -278,7 +287,11 @@ function normalizeCommandValue(value: unknown): string | undefined {
 
 function mergedUpdateText(updates: ReadonlyArray<unknown>): string | undefined {
   const text = updates
-    .map((update) => (typeof update === "string" ? update : toolResultToText(update)))
+    .map((update) =>
+      typeof update === "string"
+        ? update
+        : toolResultToText(sanitizeToolPayloadForPresentation(update)),
+    )
     .filter(Boolean)
     .join("\n");
   return text ? truncateText(text) : undefined;
@@ -296,6 +309,65 @@ function firstNumber(...values: ReadonlyArray<unknown>): number | undefined {
     if (typeof value === "number" && Number.isFinite(value)) return value;
   }
   return undefined;
+}
+
+function sanitizePresentationValue(
+  value: unknown,
+  depth: number,
+  key: string | undefined,
+): unknown {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value === "string") return truncateText(value);
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "bigint") return value.toString();
+  if (typeof value !== "object") return String(value);
+  if (depth >= PRESENTATION_DEPTH_LIMIT) return "[Pi presentation truncated nested value]";
+
+  if (Array.isArray(value)) {
+    if (key === "messages") {
+      return { stripped: true, count: value.length, reason: "subagent message history omitted" };
+    }
+    const entries = value
+      .slice(0, PRESENTATION_ARRAY_LIMIT)
+      .map((entry) => sanitizePresentationValue(entry, depth + 1, undefined));
+    if (value.length > PRESENTATION_ARRAY_LIMIT) {
+      entries.push({
+        truncated: true,
+        omitted: value.length - PRESENTATION_ARRAY_LIMIT,
+        reason: "Pi presentation array limit",
+      });
+    }
+    return entries;
+  }
+
+  const record = value as Record<string, unknown>;
+  const output: Record<string, unknown> = {};
+  const isImageRecord =
+    record.type === "image" ||
+    (typeof record.mimeType === "string" && record.mimeType.startsWith("image/"));
+
+  for (const [entryKey, entryValue] of Object.entries(record)) {
+    if (entryValue === undefined) continue;
+    if (entryKey === "messages" && Array.isArray(entryValue)) {
+      output[entryKey] = {
+        stripped: true,
+        count: entryValue.length,
+        reason: "subagent message history omitted",
+      };
+      continue;
+    }
+    if (entryKey === "encrypted_content") {
+      output[entryKey] = "[stripped encrypted reasoning payload]";
+      continue;
+    }
+    if (isImageRecord && entryKey === "data") {
+      output[entryKey] = "[stripped image data]";
+      continue;
+    }
+    output[entryKey] = sanitizePresentationValue(entryValue, depth + 1, entryKey);
+  }
+  return output;
 }
 
 function truncateText(text: string): string {
