@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { assert, describe, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
 import {
@@ -363,6 +364,29 @@ describe("PiSessionRuntime", () => {
         assert.equal(result.turnId, "pi-turn-1");
         assert.deepStrictEqual(result.resumeCursor, { sessionFile: "/tmp/mock-pi-session.json" });
       }).pipe(Effect.orDie),
+  );
+
+  it.effect("delegates workflow-control fallback after prompt write acknowledgement", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeRuntime(
+        { MOCK_PI_RPC_WORKFLOW_UNKNOWN: "1", MOCK_PI_RPC_IGNORE_COMMAND: "prompt" },
+        { workflowControl: 50 },
+      );
+      yield* runtime.start();
+      const result = yield* runtime
+        .workflowControl({ action: "resume", target: "run-1", reason: "continue" })
+        .pipe(Effect.timeoutOption("250 millis"), Effect.ensuring(runtime.close));
+
+      assert.equal(Option.isSome(result), true);
+      if (Option.isSome(result)) {
+        assert.deepStrictEqual(result.value, {
+          delegated: true,
+          via: "prompt",
+          action: "resume",
+          target: "run-1",
+        });
+      }
+    }).pipe(Effect.orDie),
   );
 
   it.effect("reports process-exit diagnostics for in-flight requests", () =>

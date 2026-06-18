@@ -275,6 +275,7 @@ class PiSessionRuntimeImpl implements PiSessionRuntimeShape {
       const { response } = yield* self.requestWithWriteAck(
         { type: "prompt", message: input.message, images: input.images ?? [] },
         0,
+        { writeAckTimeoutMs: self.timeouts.prompt },
       );
       response
         .then((message) => {
@@ -412,11 +413,13 @@ class PiSessionRuntimeImpl implements PiSessionRuntimeShape {
       if (response.success) return response.data;
       if (isUnknownWorkflowControlCommand(response.error)) {
         const payload = Buffer.from(JSON.stringify(input), "utf8").toString("base64url");
-        const fallback = yield* self.requestAndRequireSuccess(
+        const { response: fallbackResponse } = yield* self.requestWithWriteAck(
           { type: "prompt", message: `/workflow:control ${payload}` },
           0,
+          { writeAckTimeoutMs: self.timeouts.workflowControl },
         );
-        return fallback.data;
+        fallbackResponse.catch(() => {});
+        return { delegated: true, via: "prompt", action: input.action, target: input.target };
       }
       return yield* Effect.fail(
         new PiRpcRequestFailedError({
@@ -480,6 +483,7 @@ class PiSessionRuntimeImpl implements PiSessionRuntimeShape {
   private requestWithWriteAck(
     command: PiRpcCommand,
     timeoutMs: number,
+    options: { readonly responseTimeoutMs?: number; readonly writeAckTimeoutMs?: number } = {},
   ): Effect.Effect<{ readonly response: Promise<PiRpcResponse> }, PiSessionRuntimeError> {
     const self = this;
     return Effect.gen(function* () {
@@ -489,7 +493,7 @@ class PiSessionRuntimeImpl implements PiSessionRuntimeShape {
           new PiRpcLifecycleError(`Pi RPC process has not started; cannot send ${command.type}.`),
         );
       return yield* Effect.tryPromise({
-        try: () => proc.requestWithWriteAck(command, timeoutMs),
+        try: () => proc.requestWithWriteAck(command, timeoutMs, options),
         catch: (error) => self.normalizeError(error),
       });
     });

@@ -373,6 +373,11 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       delete session.reasoningItemId;
     });
 
+  const workflowMonitorOptions = (): PiWorkflowMonitorOptions => ({
+    ...options?.workflowMonitor,
+    completeTurn,
+  });
+
   const enqueueUsageRefreshRequest = (
     session: PiAdapterSessionContext,
     refreshOptions: PiUsageRefreshOptions | undefined,
@@ -860,7 +865,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         const resumeCursor = currentResumeCursor(session) ?? recovery.resumeCursor;
         if (resumeCursor) session.runtimeOptions = { ...session.runtimeOptions, resumeCursor };
         delete session.runtimeRecovery;
-        yield* restorePiWorkflowRuns(session, offer, options?.workflowMonitor);
+        yield* restorePiWorkflowRuns(session, offer, workflowMonitorOptions());
         yield* offer([
           {
             ...basePiEvent(session),
@@ -1209,7 +1214,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         );
         sessions.set(input.threadId, session);
         sessionScopeTransferred = true;
-        yield* restorePiWorkflowRuns(session, offer, options?.workflowMonitor);
+        yield* restorePiWorkflowRuns(session, offer, workflowMonitorOptions());
         yield* offer([
           {
             ...basePiEvent(session),
@@ -1293,7 +1298,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     });
     const controlledRun = session.workflowRuns.get(target);
     if (controlledRun)
-      yield* startPiWorkflowRunMonitor(session, offer, controlledRun, options?.workflowMonitor);
+      yield* startPiWorkflowRunMonitor(session, offer, controlledRun, workflowMonitorOptions());
   });
 
   const beginTurn = Effect.fn("beginPiTurn")(function* (
@@ -1401,7 +1406,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
 
       const run = runs[0]!;
       session.workflowRunTurnIds.set(run.runId, turnId);
-      yield* startPiWorkflowRunMonitor(session, offer, run, options?.workflowMonitor);
+      yield* startPiWorkflowRunMonitor(session, offer, run, workflowMonitorOptions());
       yield* runWorkflowControl(
         session,
         "resume",
@@ -1534,7 +1539,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       session,
       offer,
       input.input ?? "",
-      options?.workflowMonitor,
+      workflowMonitorOptions(),
     );
     yield* session.runtime.promptDetached({ message: input.input ?? "", images }).pipe(
       Effect.tap((promptResult) =>
@@ -1587,7 +1592,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
             status: "interrupted",
           }),
         );
-        yield* startPiWorkflowRunMonitor(session, offer, run, options?.workflowMonitor);
+        yield* startPiWorkflowRunMonitor(session, offer, run, workflowMonitorOptions());
         const result = yield* runWorkflowControl(
           session,
           "interrupt",

@@ -1,7 +1,11 @@
 // @effect-diagnostics globalDate:off globalTimersInEffect:off runEffectInsideEffect:off
 import * as Effect from "effect/Effect";
 
-import type { PiAdapterSessionContext, PiRuntimeEventOffer } from "./PiAdapterTypes.ts";
+import type {
+  PiAdapterSessionContext,
+  PiRuntimeEventOffer,
+  PiTurnCompleter,
+} from "./PiAdapterTypes.ts";
 import {
   defaultPiWorkflowRunsDir,
   isTerminalWorkflowRecord,
@@ -20,6 +24,7 @@ export interface PiWorkflowMonitorOptions {
   readonly workflowRunsDir?: string;
   readonly terminalFallbackGraceMs?: number;
   readonly includeTerminalFallback?: boolean;
+  readonly completeTurn?: PiTurnCompleter;
 }
 
 export function workflowCommandTarget(
@@ -192,9 +197,40 @@ export function replayRun(
         session.turnActivitySequence += 1;
         yield* offer(events);
       }
-      if (cursor && terminal) session.workflowRunTurnIds.delete(cursor.runId);
+      if (cursor && terminal) {
+        const turnId = session.workflowRunTurnIds.get(cursor.runId);
+        if (
+          options.completeTurn &&
+          turnId &&
+          session.currentTurnId === turnId &&
+          !session.turnCompleted
+        ) {
+          const failed = workflowRecordFailed(replay.record);
+          const errorMessage = workflowRecordError(replay.record);
+          yield* options.completeTurn(
+            session,
+            undefined,
+            failed ? "failed" : "completed",
+            failed && errorMessage ? { errorMessage } : {},
+          );
+        }
+        session.workflowRunTurnIds.delete(cursor.runId);
+      }
     }
   });
+}
+
+function workflowRecordFailed(record: Record<string, unknown>): boolean {
+  const status = stringField(record.status)?.toLowerCase();
+  return status === "failed" || status === "aborted" || Boolean(stringField(record.error));
+}
+
+function workflowRecordError(record: Record<string, unknown>): string | undefined {
+  return stringField(record.error) ?? stringField(record.message);
+}
+
+function stringField(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 export function stopWorkflowMonitors(session: PiAdapterSessionContext): Effect.Effect<void> {

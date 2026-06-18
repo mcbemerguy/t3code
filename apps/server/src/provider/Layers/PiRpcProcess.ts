@@ -39,6 +39,11 @@ interface PendingRequest {
   readonly reject: (error: PiSessionRuntimeError) => void;
 }
 
+interface PiRpcWriteAckRequestOptions {
+  readonly responseTimeoutMs?: number;
+  readonly writeAckTimeoutMs?: number;
+}
+
 export class PiRpcJsonlSplitter {
   private readonly decoder = new StringDecoder("utf8");
   private buffer = "";
@@ -216,79 +221,103 @@ export class PiRpcProcessHandle {
   async requestWithWriteAck(
     command: PiRpcCommand,
     timeoutMs: number,
+    options: PiRpcWriteAckRequestOptions = {},
   ): Promise<{ readonly response: Promise<PiRpcResponse> }> {
     const id = `pi-rpc-${++this.nextRequestId}`;
     const withId = { ...command, id };
+    const responseTimeoutMs = options.responseTimeoutMs ?? timeoutMs;
+    const writeAckTimeoutMs = options.writeAckTimeoutMs ?? timeoutMs;
 
     let acknowledgeWrite: () => void = () => {};
     let rejectWrite: (error: PiSessionRuntimeError) => void = () => {};
     let writeSettled = false;
+    let writeAckTimeout: NodeJS.Timeout | null = null;
+    const clearWriteAckTimeout = () => {
+      if (!writeAckTimeout) return;
+      NodeTimers.clearTimeout(writeAckTimeout);
+      writeAckTimeout = null;
+    };
     const writeAck = new Promise<void>((resolve, reject) => {
       acknowledgeWrite = () => {
         if (writeSettled) return;
         writeSettled = true;
+        clearWriteAckTimeout();
         resolve();
       };
       rejectWrite = (error) => {
         if (writeSettled) return;
         writeSettled = true;
+        clearWriteAckTimeout();
         reject(error);
       };
     });
 
-    const response = new Promise<PiRpcResponse>((resolve, reject) => {
-      let settled = false;
-      const timeout =
-        timeoutMs > 0
-          ? NodeTimers.setTimeout(() => {
-              if (settled) return;
-              settled = true;
-              this.pending.delete(id);
-              const error = new PiRpcTimeoutError({
-                command: command.type,
-                timeoutMs,
-                diagnostics: this.formatDiagnostics(),
-              });
-              rejectWrite(error);
-              reject(error);
-            }, timeoutMs)
-          : null;
+    let responseSettled = false;
+    let responseTimeout: NodeJS.Timeout | null = null;
+    const clearResponseTimeout = () => {
+      if (!responseTimeout) return;
+      NodeTimers.clearTimeout(responseTimeout);
+      responseTimeout = null;
+    };
+    const timeoutError = (timeout: number) =>
+      new PiRpcTimeoutError({
+        command: command.type,
+        timeoutMs: timeout,
+        diagnostics: this.formatDiagnostics(),
+      });
 
-      const finish = (complete: () => void) => {
-        if (settled) return;
-        settled = true;
+    const response = new Promise<PiRpcResponse>((resolve, reject) => {
+      const settleResponse = (complete: () => void) => {
+        if (responseSettled) return;
+        responseSettled = true;
         acknowledgeWrite();
-        if (timeout) NodeTimers.clearTimeout(timeout);
+        clearResponseTimeout();
         complete();
       };
+
+      const failBeforeResponse = (error: PiSessionRuntimeError) => {
+        this.pending.delete(id);
+        rejectWrite(error);
+        settleResponse(() => reject(error));
+      };
+
+      if (responseTimeoutMs > 0) {
+        responseTimeout = NodeTimers.setTimeout(() => {
+          if (responseSettled) return;
+          failBeforeResponse(timeoutError(responseTimeoutMs));
+        }, responseTimeoutMs);
+      }
+
+      if (writeAckTimeoutMs > 0) {
+        writeAckTimeout = NodeTimers.setTimeout(() => {
+          if (writeSettled) return;
+          failBeforeResponse(timeoutError(writeAckTimeoutMs));
+        }, writeAckTimeoutMs);
+      }
 
       this.pending.set(id, {
         command: command.type,
         writeCompleted: false,
-        resolve: (value) => finish(() => resolve(value)),
-        reject: (error) => finish(() => reject(error)),
+        resolve: (value) => settleResponse(() => resolve(value)),
+        reject: (error) => settleResponse(() => reject(error)),
       });
 
       try {
         this.writeLine(withId, (error) => {
           const pending = this.pending.get(id);
           if (error) {
-            this.pending.delete(id);
-            rejectWrite(error);
-            finish(() => reject(error));
+            failBeforeResponse(error);
             return;
           }
           if (pending) pending.writeCompleted = true;
           acknowledgeWrite();
         });
       } catch (error) {
-        this.pending.delete(id);
         const normalized =
           error instanceof PiRpcLifecycleError
             ? error
             : this.buildWriteFailureError(command.type, error);
-        rejectWrite(normalized);
-        finish(() => reject(normalized));
+        failBeforeResponse(normalized);
       }
     });
 

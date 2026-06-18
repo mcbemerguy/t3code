@@ -751,6 +751,48 @@ describe("PiAdapter", () => {
     ),
   );
 
+  it.effect("completes a continuation turn when workflow replay observes a terminal event", () => {
+    const fixture = createWorkflowRunFixture({
+      status: "running",
+      events: [{ type: "run_start", sequence: 1 }],
+    });
+    return withHarness(
+      undefined,
+      ({ adapter }) =>
+        Effect.gen(function* () {
+          const completedFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.type === "turn.completed",
+          ).pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
+
+          const result = yield* adapter.sendTurn({ threadId, input: "continue" });
+          appendWorkflowFixtureEvents(fixture, [
+            { type: "run_end", sequence: 2, status: "completed" },
+          ]);
+          writeWorkflowFixtureStatus(fixture, "completed");
+
+          const completed = yield* Fiber.join(completedFiber);
+          assert.equal(Option.isSome(completed), true);
+          if (Option.isSome(completed)) {
+            const event = completed.value[0];
+            assert.equal(event?.turnId, result.turnId);
+            assert.equal(event?.type, "turn.completed");
+            if (event?.type === "turn.completed") assert.equal(event.payload.state, "completed");
+          }
+        }),
+      {
+        resumeCursor: makePiResumeCursor({
+          sessionFile: "/tmp/pi-session.json",
+          activeWorkflowRuns: [
+            { runId: fixture.runId, lastSequence: 0, runDir: fixture.runDir, status: "running" },
+          ],
+        }),
+      },
+      { workflowMonitor: { workflowRunsDir: fixture.root, pollIntervalMs: 10 } },
+    );
+  });
+
   it.effect("preserves whitespace-only Pi assistant deltas", () =>
     withHarness(
       (fake) => {
