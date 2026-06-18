@@ -416,7 +416,10 @@ class PiSessionRuntimeImpl implements PiSessionRuntimeShape {
         const { response: fallbackResponse } = yield* self.requestWithWriteAck(
           { type: "prompt", message: `/workflow:control ${payload}` },
           0,
-          { writeAckTimeoutMs: self.timeouts.workflowControl },
+          {
+            writeAckTimeoutMs: self.timeouts.workflowControl,
+            responseTimeoutMs: self.timeouts.workflowControl,
+          },
         );
         fallbackResponse.catch(() => {});
         return { delegated: true, via: "prompt", action: input.action, target: input.target };

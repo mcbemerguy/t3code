@@ -182,16 +182,21 @@ export function replayRun(
     if (session.workflowRuns.has(run.runId)) session.workflowTails.set(run.runId, batch.nextTail);
     for (const replay of batch.records) {
       const cursor = runCursorFromWorkflowRecord(replay.record, run.runId);
+      const terminal = isTerminalWorkflowRecord(replay.record);
+      let previousRun: PiWorkflowRunCursor | undefined;
       if (cursor) {
-        const previous = session.workflowRuns.get(cursor.runId);
-        if (previous && replay.sequence !== undefined && replay.sequence <= previous.lastSequence)
+        previousRun = session.workflowRuns.get(cursor.runId);
+        if (
+          previousRun &&
+          replay.sequence !== undefined &&
+          replay.sequence <= previousRun.lastSequence
+        )
           continue;
-        if (isTerminalWorkflowRecord(replay.record)) {
+        if (terminal) {
           session.workflowRuns.delete(cursor.runId);
           session.workflowTails.delete(cursor.runId);
-        } else session.workflowRuns.set(cursor.runId, mergeWorkflowRunCursor(previous, cursor));
+        } else session.workflowRuns.set(cursor.runId, mergeWorkflowRunCursor(previousRun, cursor));
       }
-      const terminal = isTerminalWorkflowRecord(replay.record);
       const events = mapper.map(session, replay);
       if (events.length > 0) {
         session.turnActivitySequence += 1;
@@ -205,13 +210,13 @@ export function replayRun(
           session.currentTurnId === turnId &&
           !session.turnCompleted
         ) {
-          const failed = workflowRecordFailed(replay.record);
+          const state = workflowRecordCompletionState(replay.record, previousRun);
           const errorMessage = workflowRecordError(replay.record);
           yield* options.completeTurn(
             session,
             undefined,
-            failed ? "failed" : "completed",
-            failed && errorMessage ? { errorMessage } : {},
+            state,
+            state === "failed" && errorMessage ? { errorMessage } : {},
           );
         }
         session.workflowRunTurnIds.delete(cursor.runId);
@@ -220,9 +225,18 @@ export function replayRun(
   });
 }
 
-function workflowRecordFailed(record: Record<string, unknown>): boolean {
+function workflowRecordCompletionState(
+  record: Record<string, unknown>,
+  previousRun: PiWorkflowRunCursor | undefined,
+): "completed" | "failed" | "cancelled" | "interrupted" {
   const status = stringField(record.status)?.toLowerCase();
-  return status === "failed" || status === "aborted" || Boolean(stringField(record.error));
+  const previousStatus = previousRun?.status?.toLowerCase();
+  if (status === "aborted" && previousStatus === "aborting") return "cancelled";
+  if (status === "aborted" && previousStatus === "interrupted") return "interrupted";
+  if (status === "failed" || status === "aborted" || Boolean(stringField(record.error))) {
+    return "failed";
+  }
+  return "completed";
 }
 
 function workflowRecordError(record: Record<string, unknown>): string | undefined {
