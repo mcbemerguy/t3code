@@ -15,7 +15,7 @@ import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 
-import { PiRpcProcessHandle, killProcessTree } from "./PiRpcProcess.ts";
+import { PiRpcJsonlSplitter, PiRpcProcessHandle, killProcessTree } from "./PiRpcProcess.ts";
 import { type PiThinkingLevel } from "./PiThinking.ts";
 import {
   DEFAULT_PI_RPC_TIMEOUTS,
@@ -62,6 +62,7 @@ export {
   buildPiRpcSpawnEnv,
   defaultPiCommand,
   killProcessTree,
+  PiRpcJsonlSplitter,
   parsePiRpcStdoutLine,
   resolvePiCommand,
   shouldUseShellForPiCommand,

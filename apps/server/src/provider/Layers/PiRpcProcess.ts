@@ -1,9 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import * as Readline from "node:readline";
+import { StringDecoder } from "node:string_decoder";
 import * as NodeTimers from "node:timers";
 
-import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 
 import {
@@ -38,6 +37,30 @@ interface PendingRequest {
   writeCompleted: boolean;
   readonly resolve: (value: PiRpcResponse) => void;
   readonly reject: (error: PiSessionRuntimeError) => void;
+}
+
+export class PiRpcJsonlSplitter {
+  private readonly decoder = new StringDecoder("utf8");
+  private buffer = "";
+
+  push(chunk: Buffer | Uint8Array | string): ReadonlyArray<string> {
+    this.buffer += this.decode(chunk);
+    const records: string[] = [];
+
+    for (;;) {
+      const newlineIndex = this.buffer.indexOf("\n");
+      if (newlineIndex < 0) break;
+      const raw = this.buffer.slice(0, newlineIndex);
+      this.buffer = this.buffer.slice(newlineIndex + 1);
+      records.push(raw.endsWith("\r") ? raw.slice(0, -1) : raw);
+    }
+
+    return records;
+  }
+
+  private decode(chunk: Buffer | Uint8Array | string): string {
+    return typeof chunk === "string" ? chunk : this.decoder.write(Buffer.from(chunk));
+  }
 }
 
 class DiagnosticTail {
@@ -114,8 +137,10 @@ export class PiRpcProcessHandle {
     this.messages = messages;
     child.stderr.on("data", (chunk: unknown) => this.stderrTail.push(chunk));
 
-    const readline = Readline.createInterface({ input: child.stdout });
-    readline.on("line", (line) => this.handleStdoutLine(line));
+    const splitter = new PiRpcJsonlSplitter();
+    child.stdout.on("data", (chunk: Buffer | Uint8Array | string) => {
+      for (const line of splitter.push(chunk)) this.handleStdoutLine(line);
+    });
 
     child.on("spawn", () => {
       this.spawned = true;
@@ -475,6 +500,6 @@ export class PiRpcProcessHandle {
   }
 
   private offer(message: PiRpcRuntimeMessage): void {
-    Effect.runFork(Queue.offer(this.messages, message));
+    Queue.offerUnsafe(this.messages, message);
   }
 }

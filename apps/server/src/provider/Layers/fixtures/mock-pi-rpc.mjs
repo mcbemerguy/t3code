@@ -28,6 +28,7 @@ let staleIdRequest = null;
 const extensionUiFile = process.env.MOCK_PI_RPC_EXTENSION_UI_FILE;
 const thinkingFile = process.env.MOCK_PI_RPC_THINKING_FILE;
 const sessionFile = process.env.MOCK_PI_RPC_SESSION_FILE ?? "/tmp/mock-pi-session.json";
+const promptBurst = process.env.MOCK_PI_RPC_PROMPT_BURST === "1";
 
 function write(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -124,8 +125,23 @@ rl.on("line", (line) => {
       });
       break;
     case "prompt":
-      write({ type: "assistant_delta", text: "hello" });
-      response("prompt", request, { turnId: "turn-mock", sessionFile });
+      if (promptBurst) {
+        const messages = [
+          { type: "assistant_delta", text: "burst-before" },
+          {
+            type: "response",
+            command: "prompt",
+            success: true,
+            data: { turnId: "turn-mock", sessionFile },
+            ...(request.id ? { id: request.id } : {}),
+          },
+          { type: "assistant_delta", text: "burst-after" },
+        ];
+        process.stdout.write(`${messages.map((message) => JSON.stringify(message)).join("\n")}\n`);
+      } else {
+        write({ type: "assistant_delta", text: "hello" });
+        response("prompt", request, { turnId: "turn-mock", sessionFile });
+      }
       break;
     case "steer":
       response("steer", request, { ok: true });

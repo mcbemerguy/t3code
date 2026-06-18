@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 
 import {
+  PiRpcJsonlSplitter,
   PiRpcLifecycleError,
   PiRpcTimeoutError,
   buildPiRpcSpawnArgs,
@@ -162,6 +163,45 @@ describe("Pi RPC protocol helpers", () => {
       options: { stdio: "ignore", windowsHide: true },
     });
   });
+
+  it("splits Pi RPC stdout on LF only and preserves Unicode line separators", () => {
+    const splitter = new PiRpcJsonlSplitter();
+    const lineSeparator = String.fromCharCode(0x2028);
+    const paragraphSeparator = String.fromCharCode(0x2029);
+    const literalLineSeparators = `{"type":"event","text":"literal ${lineSeparator} and ${paragraphSeparator}"}`;
+    const escapedLineSeparators = String.raw`{"type":"event","text":"escaped \u2028 and \u2029"}`;
+
+    assert.deepStrictEqual(
+      splitter.push(Buffer.from(`${literalLineSeparators}\n${escapedLineSeparators}\n`, "utf8")),
+      [literalLineSeparators, escapedLineSeparators],
+    );
+    assert.equal(
+      JSON.parse(literalLineSeparators).text,
+      `literal ${lineSeparator} and ${paragraphSeparator}`,
+    );
+    assert.equal(
+      JSON.parse(escapedLineSeparators).text,
+      `escaped ${lineSeparator} and ${paragraphSeparator}`,
+    );
+  });
+
+  it("handles partial UTF-8 records, multiple records per chunk, and CRLF", () => {
+    const splitter = new PiRpcJsonlSplitter();
+    const lineSeparator = String.fromCharCode(0x2028);
+    const unicodeRecord = `{"type":"event","text":"a${lineSeparator}b"}`;
+    const bytes = Buffer.from(`${unicodeRecord}\n`, "utf8");
+    const lineSeparatorStart = bytes.indexOf(Buffer.from(lineSeparator, "utf8"));
+
+    assert.deepStrictEqual(splitter.push(bytes.subarray(0, lineSeparatorStart + 1)), []);
+    assert.deepStrictEqual(splitter.push(bytes.subarray(lineSeparatorStart + 1)), [unicodeRecord]);
+    assert.deepStrictEqual(
+      splitter.push(
+        Buffer.from('{"type":"event","n":1}\r\n{"type":"event","n":2}\npartial', "utf8"),
+      ),
+      ['{"type":"event","n":1}', '{"type":"event","n":2}'],
+    );
+    assert.deepStrictEqual(splitter.push(Buffer.from("-record\n", "utf8")), ["partial-record"]);
+  });
 });
 
 describe("PiSessionRuntime", () => {
@@ -207,6 +247,28 @@ describe("PiSessionRuntime", () => {
             true,
           );
         }),
+    ),
+  );
+
+  it.effect("preserves burst ordering across events and correlated responses", () =>
+    withStartedRuntime({ MOCK_PI_RPC_PROMPT_BURST: "1" }, (runtime) =>
+      Effect.gen(function* () {
+        yield* runtime.events.pipe(Stream.take(1), Stream.runDrain);
+        yield* runtime.prompt({ message: "ordered burst" });
+        const raw = Array.from(yield* runtime.events.pipe(Stream.take(3), Stream.runCollect));
+
+        assert.deepStrictEqual(
+          raw.map((message) => {
+            if (message.kind === "event") return message.payload.type;
+            if (message.kind === "response") return message.payload.command;
+            return message.line;
+          }),
+          ["assistant_delta", "prompt", "assistant_delta"],
+        );
+        assert.equal(raw[0]?.kind === "event" ? raw[0].payload.text : undefined, "burst-before");
+        assert.equal(raw[1]?.kind === "response" ? raw[1].correlated : false, true);
+        assert.equal(raw[2]?.kind === "event" ? raw[2].payload.text : undefined, "burst-after");
+      }),
     ),
   );
 
