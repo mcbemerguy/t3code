@@ -405,21 +405,20 @@ describe("PiAdapter", () => {
       },
       ({ adapter, runtime }) =>
         Effect.gen(function* () {
-          const eventsFiber = yield* collectEvents(
+          const eventsFiber = yield* collectEventsThroughTurnCompleted(
             adapter,
-            3,
-            (event) => event.type === "content.delta" || event.type === "turn.completed",
+            (event) => event.type === "content.delta",
           ).pipe(Effect.forkChild);
           const result = yield* adapter.sendTurn({ threadId, input: "hi" });
           const events = yield* Fiber.join(eventsFiber);
 
           assert.equal(result.turnId, "pi-turn-1");
-          assert.deepEqual(
+          assert.equal(
             events
               .filter((event) => event.type === "content.delta")
               .map((event) => event.payload.delta)
-              .slice(0, 2),
-            ["hel", "lo"],
+              .join(""),
+            "hello",
           );
           assert.equal(runtime.promptImpl.mock.calls.length, 1);
         }),
@@ -1182,6 +1181,145 @@ describe("PiAdapter", () => {
     ),
   );
 
+  it.effect("preserves all tool updates amid noisy interleaved Pi bursts", () =>
+    withHarness(
+      (fake) => {
+        fake.promptScript = (rt) =>
+          Effect.gen(function* () {
+            yield* rt.emit({ type: "assistant_delta", text: "Final " });
+            yield* rt.emit({ type: "assistant_delta", text: "answer" });
+            yield* rt.emit({ type: "thought_start" });
+            yield* rt.emit({ type: "thought_delta", text: "think" });
+            yield* rt.emit({ type: "thought_delta", text: "ing" });
+            yield* rt.emit({ type: "thought_end" });
+            yield* rt.emit({
+              type: "tool_execution_start",
+              toolCallId: "burst-tool",
+              toolName: "bash",
+              args: { command: "printf burst" },
+            });
+            yield* rt.emit({
+              type: "tool_execution_update",
+              toolCallId: "burst-tool",
+              partialResult: "chunk one\n",
+            });
+            yield* rt.emit({
+              type: "tool_execution_update",
+              toolCallId: "burst-tool",
+              update: { stdout: "chunk two\n" },
+            });
+            yield* rt.emit({
+              type: "tool_execution_update",
+              toolCallId: "burst-tool",
+              partialResult: { stdout: "chunk three\n" },
+            });
+            yield* rt.emit({
+              type: "tool_execution_end",
+              toolCallId: "burst-tool",
+              result: { stdout: "done\n" },
+            });
+            yield* rt.emit({ type: "assistant_delta", text: "." });
+            yield* rt.emit({
+              type: "message_end",
+              message: { role: "assistant", content: "Final answer." },
+            });
+            yield* rt.emit({ type: "agent_end", success: true });
+          });
+      },
+      ({ adapter }) =>
+        Effect.gen(function* () {
+          const eventsFiber = yield* adapter.streamEvents.pipe(
+            Stream.filter(
+              (event) =>
+                event.type === "content.delta" ||
+                event.type === "item.started" ||
+                event.type === "item.updated" ||
+                event.type === "item.completed" ||
+                event.type === "turn.completed",
+            ),
+            Stream.takeUntil((event) => event.type === "turn.completed"),
+            Stream.runCollect,
+            Effect.map((events) => Array.from(events) as Array<ProviderRuntimeEvent>),
+            Effect.forkChild,
+          );
+          yield* adapter.sendTurn({ threadId, input: "burst" });
+          const events = yield* Fiber.join(eventsFiber);
+
+          const toolUpdates = events.filter(
+            (event) => event.type === "item.updated" && event.itemId === "pi-tool-burst-tool",
+          );
+          const toolOutput = events.filter(
+            (event) =>
+              event.type === "content.delta" &&
+              event.itemId === "pi-tool-burst-tool" &&
+              event.payload.streamKind === "command_output" &&
+              event.raw?.method === "tool_execution_update",
+          );
+          const assistantText = events
+            .flatMap((event) =>
+              event.type === "content.delta" && event.payload.streamKind === "assistant_text"
+                ? [event.payload.delta]
+                : [],
+            )
+            .join("");
+          const reasoningText = events
+            .flatMap((event) =>
+              event.type === "content.delta" && event.payload.streamKind === "reasoning_text"
+                ? [event.payload.delta]
+                : [],
+            )
+            .join("");
+
+          assert.equal(
+            events.every((event) => event.turnId === "pi-turn-1"),
+            true,
+          );
+          assert.equal(toolUpdates.length, 3);
+          assert.deepEqual(
+            toolOutput.map((event) => (event.type === "content.delta" ? event.payload.delta : "")),
+            ["chunk one\n", "chunk two", "chunk three"],
+          );
+          assert.deepEqual(
+            toolUpdates.map((event) =>
+              event.type === "item.updated" ? event.payload.data : undefined,
+            ),
+            [
+              {
+                kind: "execute",
+                toolName: "bash",
+                toolCallId: "burst-tool",
+                rawInput: { command: "printf burst" },
+                args: { command: "printf burst" },
+                command: "printf burst",
+                partialResult: "chunk one\n",
+              },
+              {
+                kind: "execute",
+                toolName: "bash",
+                toolCallId: "burst-tool",
+                rawInput: { command: "printf burst" },
+                args: { command: "printf burst" },
+                command: "printf burst",
+                update: { stdout: "chunk two\n" },
+              },
+              {
+                kind: "execute",
+                toolName: "bash",
+                toolCallId: "burst-tool",
+                rawInput: { command: "printf burst" },
+                args: { command: "printf burst" },
+                command: "printf burst",
+                partialResult: { stdout: "chunk three\n" },
+              },
+            ],
+          );
+          assert.equal(assistantText, "Final answer.");
+          assert.equal(reasoningText, "thinking");
+          assert.equal(events.at(-1)?.type, "turn.completed");
+        }),
+    ),
+  );
+
   it.effect("emits native Pi tool presentation metadata across lifecycle events", () =>
     withHarness(
       (fake) => {
@@ -1500,6 +1638,55 @@ describe("PiAdapter", () => {
           assert.match(warningMessages[0] ?? "", /interrupted the turn locally/);
           assert.match(warningMessages[1] ?? "", /will restart from the saved Pi session/);
           assert.match(warningMessages[2] ?? "", /Restarted Pi RPC/);
+        }),
+    ).pipe(Effect.provide(TestClock.layer()));
+  });
+
+  it.effect("does not ingest stale events from a discarded Pi runtime after recovery", () => {
+    let created = 0;
+    return withHarness(
+      (fake) => {
+        const index = created;
+        created += 1;
+        if (index === 0) {
+          fake.abortImpl = vi.fn(() => new Promise<undefined>(() => {}));
+          fake.promptScript = (rt) => rt.emit({ type: "assistant_delta", text: "partial" });
+        } else {
+          fake.promptScript = (rt) => rt.emit({ type: "agent_end", success: true });
+        }
+      },
+      ({ adapter, runtimes }) =>
+        Effect.gen(function* () {
+          yield* adapter.sendTurn({ threadId, input: "start" });
+          const interruptFiber = yield* adapter.interruptTurn(threadId).pipe(Effect.forkChild);
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("4 seconds");
+          yield* Fiber.join(interruptFiber);
+
+          const resumed = yield* adapter.sendTurn({ threadId, input: "after restart" });
+          const staleFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.itemId === "pi-tool-stale-tool",
+          ).pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
+          yield* runtimes[0]!.emit({
+            type: "tool_execution_start",
+            toolCallId: "stale-tool",
+            toolName: "bash",
+            args: { command: "echo stale" },
+          });
+          yield* runtimes[0]!.emit({
+            type: "tool_execution_end",
+            toolCallId: "stale-tool",
+            toolName: "bash",
+            result: "stale",
+          });
+          yield* TestClock.adjust("1 second");
+          const staleEvents = yield* Fiber.join(staleFiber);
+
+          assert.equal(resumed.turnId, "pi-turn-2");
+          assert.equal(runtimes.length, 2);
+          assert.equal(Option.isNone(staleEvents), true);
         }),
     ).pipe(Effect.provide(TestClock.layer()));
   });

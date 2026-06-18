@@ -188,14 +188,87 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
   const serverConfig = yield* Effect.service(ServerConfig);
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
   const sessions = new Map<ThreadId, PiAdapterSessionContext>();
+  const sessionStates = new Map<ThreadId, string>();
+  let pendingTextDelta: ProviderRuntimeEvent | undefined;
   const adapterTimeouts: PiAdapterTimeouts = {
     ...DEFAULT_PI_ADAPTER_TIMEOUTS,
     ...options?.timeouts,
   };
   let turnCounter = 0;
 
+  const flushPendingTextDelta = (): Effect.Effect<void> => {
+    const pending = pendingTextDelta;
+    if (!pending) return Effect.void;
+    pendingTextDelta = undefined;
+    return Queue.offerAll(runtimeEventQueue, [pending]).pipe(Effect.asVoid);
+  };
+
+  const isCoalescibleTextDelta = (event: ProviderRuntimeEvent): boolean =>
+    event.type === "content.delta" &&
+    (event.payload.streamKind === "assistant_text" ||
+      event.payload.streamKind === "reasoning_text");
+
+  const canMergeTextDeltas = (
+    previous: ProviderRuntimeEvent,
+    next: ProviderRuntimeEvent,
+  ): boolean =>
+    previous.type === "content.delta" &&
+    next.type === "content.delta" &&
+    previous.threadId === next.threadId &&
+    previous.turnId === next.turnId &&
+    previous.itemId === next.itemId &&
+    previous.payload.streamKind === next.payload.streamKind;
+
+  const mergeTextDeltas = (
+    previous: ProviderRuntimeEvent,
+    next: ProviderRuntimeEvent,
+  ): ProviderRuntimeEvent => {
+    if (previous.type !== "content.delta" || next.type !== "content.delta") return next;
+    return {
+      ...previous,
+      createdAt: next.createdAt,
+      payload: {
+        ...previous.payload,
+        delta: `${previous.payload.delta}${next.payload.delta}`,
+      },
+      raw: next.raw,
+    } satisfies ProviderRuntimeEvent;
+  };
+
+  const shouldEmitEvent = (event: ProviderRuntimeEvent): boolean => {
+    if (event.type === "session.exited") {
+      sessionStates.delete(event.threadId);
+      return true;
+    }
+    if (event.type !== "session.state.changed") return true;
+    const previous = sessionStates.get(event.threadId);
+    if (previous === event.payload.state) return false;
+    sessionStates.set(event.threadId, event.payload.state);
+    return true;
+  };
+
   const offer = (events: ReadonlyArray<ProviderRuntimeEvent>) =>
-    Queue.offerAll(runtimeEventQueue, events).pipe(Effect.asVoid);
+    Effect.gen(function* () {
+      const ready: Array<ProviderRuntimeEvent> = [];
+      for (const event of events) {
+        if (!shouldEmitEvent(event)) continue;
+        if (isCoalescibleTextDelta(event)) {
+          if (pendingTextDelta && canMergeTextDeltas(pendingTextDelta, event)) {
+            pendingTextDelta = mergeTextDeltas(pendingTextDelta, event);
+          } else {
+            if (pendingTextDelta) ready.push(pendingTextDelta);
+            pendingTextDelta = event;
+          }
+          continue;
+        }
+        if (pendingTextDelta) {
+          ready.push(pendingTextDelta);
+          pendingTextDelta = undefined;
+        }
+        ready.push(event);
+      }
+      if (ready.length > 0) yield* Queue.offerAll(runtimeEventQueue, ready).pipe(Effect.asVoid);
+    });
 
   const clearNoEventWatchdog = (session: PiAdapterSessionContext): Effect.Effect<void> =>
     Effect.gen(function* () {
@@ -454,13 +527,16 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
   const mapper = new PiEventMapper(offer, scheduleUsageRefresh, completeTurn);
 
   const forkRuntimeEvents = (session: PiAdapterSessionContext, runtime: PiSessionRuntimeShape) =>
-    Stream.runForEach(runtime.events, (message) =>
+    Stream.runForEach(Stream.chunks(runtime.events), (messages) =>
       Effect.gen(function* () {
-        if (message.kind === "event") {
-          session.turnActivitySequence += 1;
-          session.noEventWarningEmitted = false;
+        for (const message of messages) {
+          if (message.kind === "event") {
+            session.turnActivitySequence += 1;
+            session.noEventWarningEmitted = false;
+          }
+          yield* mapper.handle(session, message);
         }
-        yield* mapper.handle(session, message);
+        yield* flushPendingTextDelta();
       }),
     ).pipe(Effect.forkIn(session.scope));
 
