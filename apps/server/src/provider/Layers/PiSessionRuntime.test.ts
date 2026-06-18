@@ -294,6 +294,30 @@ describe("PiSessionRuntime", () => {
     }).pipe(Effect.orDie),
   );
 
+  it.effect("sends compact over Pi RPC", () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "pi-rpc-compact-")));
+      const compactFile = path.join(dir, "compact.json");
+      const runtime = yield* makeRuntime({ MOCK_PI_RPC_COMPACT_FILE: compactFile });
+
+      yield* runtime.start();
+      yield* Effect.gen(function* () {
+        const result = yield* runtime.compact("Focus on code changes");
+        assert.deepStrictEqual(result, {
+          summary: "mock compacted context",
+          firstKeptEntryId: "entry-1",
+          tokensBefore: 123,
+          details: { customInstructions: "Focus on code changes" },
+        });
+        const request = (yield* Effect.promise(() =>
+          readJsonFileEventually(compactFile),
+        )) as Record<string, unknown>;
+        assert.equal(request.type, "compact");
+        assert.equal(request.customInstructions, "Focus on code changes");
+      }).pipe(Effect.ensuring(runtime.close));
+    }).pipe(Effect.orDie),
+  );
+
   it.effect("times out pending requests with process diagnostics", () =>
     withStartedRuntime({ MOCK_PI_RPC_IGNORE_COMMAND: "get_session_stats" }, (runtime) =>
       Effect.gen(function* () {

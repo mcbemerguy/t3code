@@ -87,6 +87,19 @@ export const DEFAULT_PI_ADAPTER_TIMEOUTS: PiAdapterTimeouts = {
 const MAX_RETAINED_COMPLETED_PROMPTS = 1024;
 const MAX_RETAINED_COMPLETED_TURNS = 1024;
 
+interface PiCompactCommandInput {
+  readonly customInstructions?: string;
+}
+
+function parsePiCompactCommand(input: string | undefined): PiCompactCommandInput | undefined {
+  const text = input?.trim();
+  if (!text) return undefined;
+  if (text === "/compact") return {};
+  if (!text.startsWith("/compact ")) return undefined;
+  const customInstructions = text.slice("/compact ".length).trim();
+  return customInstructions ? { customInstructions } : {};
+}
+
 function mergeUsageRefreshOptions(
   previous: PiUsageRefreshOptions | undefined,
   next: PiUsageRefreshOptions | undefined,
@@ -1313,11 +1326,74 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     };
   });
 
+  const handlePiCompactCommand = Effect.fn("handlePiCompactCommand")(function* (
+    session: PiAdapterSessionContext,
+    input: ProviderSendTurnInput,
+    command: PiCompactCommandInput,
+  ): Effect.fn.Return<ProviderTurnStartResult, ProviderAdapterError> {
+    if ((input.attachments ?? []).length > 0) {
+      return yield* new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method: "compact",
+        detail: "Pi /compact does not accept attachments.",
+      });
+    }
+
+    yield* applyModelSelection(session, input.modelSelection, "compact");
+
+    const turnId = TurnId.make(`pi-turn-${++turnCounter}`);
+    pruneRetainedPendingTools(session);
+    session.currentTurnId = turnId;
+    session.latestTurnId = turnId;
+    session.turnCompleted = false;
+    session.promptAccepted = false;
+    session.quarantinePromptEventsUntilAcceptedDrain = false;
+    session.requirePromptStartBeforeCompletion = false;
+    session.nextTurnRequiresPromptStart = false;
+    session.cancellingTurnIds.delete(turnId);
+    delete session.activePromptEventId;
+
+    yield* offer([
+      { ...basePiEvent(session), type: "turn.started", payload: {} } satisfies ProviderRuntimeEvent,
+      {
+        ...basePiEvent(session),
+        type: "session.state.changed",
+        payload: { state: "running" },
+      } satisfies ProviderRuntimeEvent,
+    ]);
+
+    const result = yield* session.runtime.compact(command.customInstructions).pipe(
+      Effect.tapError((cause) =>
+        completeTurn(session, undefined, "failed", { errorMessage: cause.message }).pipe(
+          Effect.ignore,
+        ),
+      ),
+      Effect.mapError((cause) => mapPiRuntimeError(input.threadId, "compact", cause)),
+    );
+
+    yield* offer([
+      {
+        ...basePiEvent(session, { turnId }),
+        type: "thread.state.changed",
+        payload: { state: "compacted", detail: result },
+      } satisfies ProviderRuntimeEvent,
+    ]);
+    yield* completeTurn(session, undefined, "completed");
+    yield* scheduleUsageRefresh(session, { contextChange: "compaction" }, true);
+
+    return {
+      threadId: input.threadId,
+      turnId,
+      ...(currentResumeCursor(session) ? { resumeCursor: currentResumeCursor(session) } : {}),
+    };
+  });
+
   const sendTurn = Effect.fn("sendPiTurn")(function* (
     input: ProviderSendTurnInput,
   ): Effect.fn.Return<ProviderTurnStartResult, ProviderAdapterError> {
     const session = yield* requireSession(input.threadId);
     yield* ensureRuntimeReady(session, "turn/start");
+    const compactCommand = parsePiCompactCommand(input.input);
     const controlResult = yield* handleWorkflowControlPrompt(session, input);
     if (controlResult) {
       yield* scheduleUsageRefresh(session, undefined, true);
@@ -1325,6 +1401,13 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     }
 
     if (!session.turnCompleted) {
+      if (compactCommand) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "compact",
+          detail: "Finish or stop the current Pi turn before compacting the session context.",
+        });
+      }
       const images = yield* resolveImageAttachments("turn/start", input);
       yield* session.runtime
         .steer({ message: input.input ?? "", images })
@@ -1333,6 +1416,10 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         threadId: input.threadId,
         turnId: session.currentTurnId ?? TurnId.make(`pi-turn-${++turnCounter}`),
       };
+    }
+
+    if (compactCommand) {
+      return yield* handlePiCompactCommand(session, input, compactCommand);
     }
 
     const images = yield* resolveImageAttachments("turn/start", input);

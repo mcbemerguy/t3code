@@ -21,7 +21,7 @@ import {
   spawnAndCollect,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
-import { normalizePiCommands } from "./PiCommands.ts";
+import { normalizePiCommands, withPiNativeSlashCommands } from "./PiCommands.ts";
 import { FALLBACK_PI_MODELS, normalizePiAvailableModels } from "./PiModels.ts";
 import { PiRpcProcessHandle } from "./PiRpcProcess.ts";
 import { PiRpcLifecycleError, type PiRpcRuntimeMessage } from "./PiSessionRuntime.ts";
@@ -98,12 +98,16 @@ function commandResultFromResponse(response: {
 }): PiCommandDiscoveryResult {
   if (!response.success) {
     return {
-      slashCommands: [],
+      slashCommands: withPiNativeSlashCommands([]),
       skills: [],
       detail: response.error ?? "Pi RPC get_commands returned an unsuccessful response.",
     };
   }
-  return normalizePiCommands(response.data);
+  const commands = normalizePiCommands(response.data);
+  return {
+    ...commands,
+    slashCommands: withPiNativeSlashCommands(commands.slashCommands),
+  };
 }
 
 export const discoverPiCapabilitiesViaRpc = Effect.fn("discoverPiCapabilitiesViaRpc")(function* (
@@ -142,7 +146,7 @@ export const discoverPiCapabilitiesViaRpc = Effect.fn("discoverPiCapabilitiesVia
     const commands = Result.isSuccess(commandResponse)
       ? commandResultFromResponse(commandResponse.success)
       : ({
-          slashCommands: [],
+          slashCommands: withPiNativeSlashCommands([]),
           skills: [],
           detail: commandResponse.failure.message,
         } satisfies PiCommandDiscoveryResult);

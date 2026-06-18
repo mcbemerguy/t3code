@@ -134,6 +134,7 @@ export interface PiSessionRuntimeShape {
   readonly setThinkingLevel: (
     level: PiThinkingLevel,
   ) => Effect.Effect<unknown, PiSessionRuntimeError>;
+  readonly compact: (customInstructions?: string) => Effect.Effect<unknown, PiSessionRuntimeError>;
   readonly getSessionStats: Effect.Effect<unknown, PiSessionRuntimeError>;
   readonly getMessages: Effect.Effect<unknown, PiSessionRuntimeError>;
   readonly workflowControl: (
@@ -321,6 +322,22 @@ class PiSessionRuntimeImpl implements PiSessionRuntimeShape {
         self.timeouts.request,
       );
       self.applyState(response.data);
+      return response.data;
+    });
+  };
+
+  readonly compact = (
+    customInstructions?: string,
+  ): Effect.Effect<unknown, PiSessionRuntimeError> => {
+    const self = this;
+    return Effect.gen(function* () {
+      const response = yield* self.requestAndRequireSuccess(
+        {
+          type: "compact",
+          ...(customInstructions ? { customInstructions } : {}),
+        },
+        self.timeouts.prompt,
+      );
       return response.data;
     });
   };

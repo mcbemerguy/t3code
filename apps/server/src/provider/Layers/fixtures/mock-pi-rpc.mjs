@@ -27,6 +27,7 @@ const staleIdCommand = process.env.MOCK_PI_RPC_STALE_ID_COMMAND;
 let staleIdRequest = null;
 const extensionUiFile = process.env.MOCK_PI_RPC_EXTENSION_UI_FILE;
 const thinkingFile = process.env.MOCK_PI_RPC_THINKING_FILE;
+const compactFile = process.env.MOCK_PI_RPC_COMPACT_FILE;
 const sessionFile = process.env.MOCK_PI_RPC_SESSION_FILE ?? "/tmp/mock-pi-session.json";
 const promptBurst = process.env.MOCK_PI_RPC_PROMPT_BURST === "1";
 
@@ -155,6 +156,15 @@ rl.on("line", (line) => {
     case "set_thinking_level":
       if (thinkingFile) fs.writeFileSync(thinkingFile, JSON.stringify(request));
       response("set_thinking_level", request, { thinkingLevel: request.level, sessionFile });
+      break;
+    case "compact":
+      if (compactFile) fs.writeFileSync(compactFile, JSON.stringify(request));
+      response("compact", request, {
+        summary: "mock compacted context",
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 123,
+        details: { customInstructions: request.customInstructions ?? null },
+      });
       break;
     case "get_session_stats":
       response("get_session_stats", request, { tokens: { input: 10, output: 2 } });

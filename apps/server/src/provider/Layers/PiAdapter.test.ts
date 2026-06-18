@@ -62,6 +62,7 @@ class FakePiRuntime implements PiSessionRuntimeShape {
   promptInputs: Array<{ readonly message: string; readonly images?: ReadonlyArray<unknown> }> = [];
   extensionUiResponses: Array<PiExtensionUiResponseInput> = [];
   workflowControls: Array<PiWorkflowControlInput> = [];
+  compactInputs: Array<string | undefined> = [];
   modelSelections: Array<{ provider: string; modelId: string }> = [];
   thinkingLevels: Array<string> = [];
   modelOptionOperations: Array<string> = [];
@@ -147,6 +148,16 @@ class FakePiRuntime implements PiSessionRuntimeShape {
       this.thinkingLevels.push(level);
       this.modelOptionOperations.push(`set_thinking_level:${level}`);
       return {};
+    });
+  compact = (customInstructions?: string) =>
+    Effect.sync(() => {
+      this.compactInputs.push(customInstructions);
+      return {
+        summary: "mock compacted context",
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 123,
+        details: { customInstructions: customInstructions ?? null },
+      };
     });
   getSessionStats = Effect.suspend(() => {
     this.statsReadCount += 1;
@@ -425,6 +436,50 @@ describe("PiAdapter", () => {
           );
           assert.equal(runtime.promptImpl.mock.calls.length, 1);
         }),
+    ),
+  );
+
+  it.effect("runs Pi compact as an RPC command instead of a prompt", () =>
+    withHarness(undefined, ({ adapter, runtime }) =>
+      Effect.gen(function* () {
+        const eventsFiber = yield* collectEvents(
+          adapter,
+          3,
+          (event) =>
+            event.type === "turn.started" ||
+            event.type === "thread.state.changed" ||
+            event.type === "turn.completed",
+        ).pipe(Effect.forkChild);
+
+        const result = yield* adapter.sendTurn({ threadId, input: "/compact keep code changes" });
+        const events = yield* Fiber.join(eventsFiber);
+
+        assert.equal(result.turnId, "pi-turn-1");
+        assert.deepEqual(runtime.compactInputs, ["keep code changes"]);
+        assert.equal(runtime.promptInputs.length, 0);
+        assert.deepEqual(
+          events.map((event) => event.type),
+          ["turn.started", "thread.state.changed", "turn.completed"],
+        );
+        const compacted = events.find((event) => event.type === "thread.state.changed");
+        assert.equal(
+          compacted?.type === "thread.state.changed" ? compacted.payload.state : null,
+          "compacted",
+        );
+      }),
+    ),
+  );
+
+  it.effect("rejects Pi compact while a turn is active", () =>
+    withHarness(undefined, ({ adapter, runtime }) =>
+      Effect.gen(function* () {
+        yield* adapter.sendTurn({ threadId, input: "start long turn" });
+        const result = yield* adapter.sendTurn({ threadId, input: "/compact" }).pipe(Effect.result);
+
+        assert.equal(Result.isFailure(result), true);
+        assert.deepEqual(runtime.compactInputs, []);
+        assert.equal(runtime.steerImpl.mock.calls.length, 0);
+      }),
     ),
   );
 

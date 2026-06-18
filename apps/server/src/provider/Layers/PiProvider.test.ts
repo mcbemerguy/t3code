@@ -62,6 +62,11 @@ it.layer(NodeServices.layer)("checkPiProviderStatus", (it) => {
       const provider = yield* checkPiProviderStatus({ enabled: true, binaryPath });
 
       expect(provider.slashCommands).toEqual([
+        {
+          name: "compact",
+          description: "Manually compact the Pi session context",
+          input: { hint: "optional instructions" },
+        },
         { name: "workflow:list", description: "List workflow runs" },
         { name: "commit-message", description: "Draft a commit message" },
       ]);
@@ -114,7 +119,13 @@ it.layer(NodeServices.layer)("checkPiProviderStatus", (it) => {
 
       expect(provider.status).toBe("ready");
       expect(provider.models.map((model) => model.slug)).toEqual(["mock/model-a"]);
-      expect(provider.slashCommands).toEqual([]);
+      expect(provider.slashCommands).toEqual([
+        {
+          name: "compact",
+          description: "Manually compact the Pi session context",
+          input: { hint: "optional instructions" },
+        },
+      ]);
       expect(provider.skills).toEqual([]);
       expect(provider.message).toContain("Command discovery failed: mock failure: get_commands");
     }),

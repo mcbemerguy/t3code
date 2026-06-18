@@ -19,6 +19,14 @@ export interface PiCommandDiscoveryResult {
   readonly skills: ReadonlyArray<ServerProviderSkill>;
 }
 
+export const PI_NATIVE_SLASH_COMMANDS = [
+  {
+    name: "compact",
+    description: "Manually compact the Pi session context",
+    input: { hint: "optional instructions" },
+  },
+] as const satisfies ReadonlyArray<ServerProviderSlashCommand>;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -97,6 +105,7 @@ function dedupeSlashCommands(
         : command.description
           ? { description: command.description }
           : {}),
+      ...(existing.input ? {} : command.input ? { input: command.input } : {}),
     });
   }
 
@@ -153,6 +162,12 @@ function dedupeSkills(
   }
 
   return [...skillsByKey.values()];
+}
+
+export function withPiNativeSlashCommands(
+  commands: ReadonlyArray<ServerProviderSlashCommand>,
+): ReadonlyArray<ServerProviderSlashCommand> {
+  return dedupeSlashCommands([...PI_NATIVE_SLASH_COMMANDS, ...commands]);
 }
 
 export function normalizePiCommands(payload: unknown): PiCommandDiscoveryResult {

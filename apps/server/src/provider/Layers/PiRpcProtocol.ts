@@ -86,6 +86,7 @@ export type PiRpcCommand =
       readonly modelId: string;
     }
   | { readonly type: "set_thinking_level"; readonly id?: string; readonly level: PiThinkingLevel }
+  | { readonly type: "compact"; readonly id?: string; readonly customInstructions?: string }
   | { readonly type: "get_session_stats"; readonly id?: string }
   | { readonly type: "get_messages"; readonly id?: string }
   | {

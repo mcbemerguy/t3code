@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 
 import { describe, it } from "@effect/vitest";
 
-import { normalizePiCommands } from "./PiCommands.ts";
+import { normalizePiCommands, withPiNativeSlashCommands } from "./PiCommands.ts";
 
 describe("Pi command normalization", () => {
   it("uses Pi skill command names as stable skill identities", () => {
@@ -52,6 +52,22 @@ describe("Pi command normalization", () => {
         displayName: "repo-map",
         shortDescription: "Repository map",
       },
+    ]);
+  });
+
+  it("adds native Pi slash commands before discovered commands", () => {
+    const result = withPiNativeSlashCommands([
+      { name: "compact", description: "Prompt-defined compact" },
+      { name: "workflow:list", description: "List workflow runs" },
+    ]);
+
+    assert.deepEqual(result, [
+      {
+        name: "compact",
+        description: "Manually compact the Pi session context",
+        input: { hint: "optional instructions" },
+      },
+      { name: "workflow:list", description: "List workflow runs" },
     ]);
   });
 
