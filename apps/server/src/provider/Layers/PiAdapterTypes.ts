@@ -38,6 +38,12 @@ export interface PiAdapterTimeouts {
   readonly noEventHardRecoveryMs: number;
 }
 
+export interface PiQueuedUsageRefresh {
+  readonly options?: PiUsageRefreshOptions;
+  readonly force: boolean;
+  readonly waiter?: Deferred.Deferred<void>;
+}
+
 export interface PiAdapterSessionContext {
   readonly threadId: ThreadId;
   readonly cwd: string;
@@ -71,14 +77,13 @@ export interface PiAdapterSessionContext {
   assistantItemId?: RuntimeItemId;
   reasoningItemId?: RuntimeItemId;
   usageRefreshTimerFiber?: Fiber.Fiber<void, never>;
+  usageRefreshDrainFiber?: Fiber.Fiber<void, never>;
   noEventWatchdogFiber?: Fiber.Fiber<void, never>;
   turnActivitySequence: number;
   noEventWarningEmitted: boolean;
   usageRefreshInFlight: boolean;
-  usageRefreshQueued: boolean;
-  usageRefreshQueuedForce: boolean;
   usageRefreshPendingOptions?: PiUsageRefreshOptions;
-  usageRefreshQueuedOptions?: PiUsageRefreshOptions;
+  readonly usageRefreshQueue: Array<PiQueuedUsageRefresh>;
   readonly usageRefreshWaiters: Set<Deferred.Deferred<void>>;
   usageRefreshSequence: number;
   latestForcedUsageRefreshSequence: number;
@@ -109,6 +114,7 @@ export interface PiUsageRefreshOptions {
 export type PiUsageRefreshScheduler = (
   session: PiAdapterSessionContext,
   options?: PiUsageRefreshOptions,
+  force?: boolean,
 ) => Effect.Effect<void>;
 
 export interface PiTurnCompletionDetail {

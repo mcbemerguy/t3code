@@ -230,6 +230,7 @@ export class PiEventMapper {
         return yield* self.scheduleUsageRefresh(
           session,
           type === "auto_compaction_end" ? { contextChange: "compaction" } : undefined,
+          type === "auto_compaction_end",
         );
       }
 
@@ -253,7 +254,7 @@ export class PiEventMapper {
         yield* self.completeAssistantItem(session, message);
         yield* self.completeReasoningItem(session, message);
         yield* self.completeTurn(session, message, state);
-        yield* self.scheduleUsageRefresh(session);
+        yield* self.scheduleUsageRefresh(session, undefined, true);
       }
     });
   }
@@ -484,6 +485,7 @@ export class PiEventMapper {
         },
       } satisfies ProviderRuntimeEvent);
       yield* self.offer(events);
+      yield* self.scheduleUsageRefresh(session);
     });
   }
 

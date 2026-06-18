@@ -56,6 +56,7 @@ class FakePiRuntime implements PiSessionRuntimeShape {
   };
   statsResponses: Array<unknown> = [];
   statsReadCount = 0;
+  getSessionStatsImpl: (() => Effect.Effect<unknown, PiRpcLifecycleError>) | undefined;
   messages: unknown = [{ id: "message-turn-1", role: "assistant", content: "hello" }];
   promptScript: ((runtime: FakePiRuntime) => Effect.Effect<void>) | undefined;
   promptInputs: Array<{ readonly message: string; readonly images?: ReadonlyArray<unknown> }> = [];
@@ -149,6 +150,8 @@ class FakePiRuntime implements PiSessionRuntimeShape {
     });
   getSessionStats = Effect.suspend(() => {
     this.statsReadCount += 1;
+    const custom = this.getSessionStatsImpl;
+    if (custom) return custom();
     const response = this.statsResponses.length > 0 ? this.statsResponses.shift() : this.stats;
     return response instanceof Error
       ? Effect.fail(new PiRpcLifecycleError(response.message, response))
@@ -866,6 +869,8 @@ describe("PiAdapter", () => {
           piStats(300),
           piStats(400),
           piStats(500),
+          piStats(600),
+          piStats(700),
         ];
         fake.promptScript = (rt) =>
           Effect.gen(function* () {
@@ -883,6 +888,11 @@ describe("PiAdapter", () => {
               toolCallId: "tool-usage",
               toolName: "bash",
               args: { command: "echo ok" },
+            });
+            yield* rt.emit({
+              type: "tool_execution_update",
+              toolCallId: "tool-usage",
+              partialResult: { stdout: "partial" },
             });
             yield* rt.emit({
               type: "tool_execution_end",
@@ -903,9 +913,9 @@ describe("PiAdapter", () => {
       ({ adapter }) =>
         Effect.gen(function* () {
           yield* adapter.sendTurn({ threadId, input: "exercise usage boundaries" });
-          const events = yield* collectEvents(adapter, 5, isUsageEvent);
+          const events = yield* collectEvents(adapter, 7, isUsageEvent);
 
-          assert.deepEqual(events.map(usageUsedTokens), [100, 200, 300, 400, 500]);
+          assert.deepEqual(events.map(usageUsedTokens), [100, 200, 300, 400, 500, 600, 700]);
         }),
     ),
   );
@@ -981,23 +991,15 @@ describe("PiAdapter", () => {
       },
       ({ adapter, runtime }) =>
         Effect.gen(function* () {
-          const throughCompletionFiber = yield* collectEventsThroughTurnCompleted(
-            adapter,
-            isUsageEvent,
-          ).pipe(Effect.forkChild);
-          yield* adapter.sendTurn({ threadId, input: "final usage grows after terminal event" });
-          const throughCompletion = (yield* Fiber.join(throughCompletionFiber)).filter(
-            isUsageEvent,
-          );
-          const afterCompletionFiber = yield* collectEvents(adapter, 1, isUsageEvent).pipe(
+          const eventsFiber = yield* collectEvents(adapter, 2, isUsageEvent).pipe(
             Effect.timeout("1 second"),
             Effect.orDie,
             Effect.forkChild,
           );
+          yield* adapter.sendTurn({ threadId, input: "final usage grows after terminal event" });
           yield* Effect.yieldNow;
           yield* TestClock.adjust("1 second");
-          const afterCompletion = yield* Fiber.join(afterCompletionFiber);
-          const events = [...throughCompletion, ...afterCompletion];
+          const events = yield* Fiber.join(eventsFiber);
           const latest = events.at(-1);
 
           assert.equal(runtime.statsReadCount >= 2, true);
@@ -1005,6 +1007,64 @@ describe("PiAdapter", () => {
           assert.equal(usageMaxTokens(latest!), 272_000);
         }),
     ).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect(
+    "returns sendTurn acknowledgement before delayed stats so slow usage cannot prolong slow ack",
+    () =>
+      withHarness(undefined, ({ adapter, runtime }) =>
+        Effect.gen(function* () {
+          const statsGate = yield* Deferred.make<unknown>();
+          runtime.getSessionStatsImpl = () => Deferred.await(statsGate);
+          const usageFiber = yield* collectEvents(adapter, 1, isUsageEvent).pipe(
+            Effect.timeout("1 second"),
+            Effect.orDie,
+            Effect.forkChild,
+          );
+          const sendFiber = yield* adapter
+            .sendTurn({ threadId, input: "ack before slow stats" })
+            .pipe(Effect.forkChild);
+          const ack = yield* Fiber.join(sendFiber).pipe(Effect.timeoutOption("100 millis"));
+
+          assert.equal(Option.isSome(ack), true);
+          assert.equal(runtime.promptImpl.mock.calls.length, 1);
+
+          yield* Deferred.succeed(statsGate, piStats(321));
+          const events = yield* Fiber.join(usageFiber);
+
+          assert.equal(usageUsedTokens(events[0]!), 321);
+        }),
+      ),
+  );
+
+  it.effect("prompt failure schedules nonblocking final Pi usage", () =>
+    withHarness(
+      (fake) => {
+        fake.promptImpl.mockRejectedValueOnce(new Error("prompt failed"));
+      },
+      ({ adapter, runtime }) =>
+        Effect.gen(function* () {
+          const statsGate = yield* Deferred.make<unknown>();
+          runtime.getSessionStatsImpl = () => Deferred.await(statsGate);
+          const usageFiber = yield* collectEvents(adapter, 1, isUsageEvent).pipe(
+            Effect.timeout("1 second"),
+            Effect.orDie,
+            Effect.forkChild,
+          );
+          const resultFiber = yield* adapter
+            .sendTurn({ threadId, input: "fail before slow stats" })
+            .pipe(Effect.result, Effect.forkChild);
+          const result = yield* Fiber.join(resultFiber).pipe(Effect.timeoutOption("100 millis"));
+
+          assert.equal(Option.isSome(result), true);
+          if (Option.isSome(result)) assert.equal(result.value._tag, "Failure");
+
+          yield* Deferred.succeed(statsGate, piStats(777));
+          const events = yield* Fiber.join(usageFiber);
+
+          assert.equal(usageUsedTokens(events[0]!), 777);
+        }),
+    ),
   );
 
   it.effect("uses native Pi context occupancy when processed totals are cumulative", () =>
@@ -1119,11 +1179,13 @@ describe("PiAdapter", () => {
       },
       ({ adapter }) =>
         Effect.gen(function* () {
-          const eventsFiber = yield* collectEventsThroughTurnCompleted(adapter, isUsageEvent).pipe(
+          const eventsFiber = yield* collectEvents(adapter, 2, isUsageEvent).pipe(
+            Effect.timeout("1 second"),
+            Effect.orDie,
             Effect.forkChild,
           );
           yield* adapter.sendTurn({ threadId, input: "/workflow:review-fix" });
-          const events = (yield* Fiber.join(eventsFiber)).filter(isUsageEvent);
+          const events = yield* Fiber.join(eventsFiber);
           const workflowUsageIndex = events.findIndex(
             (event) => event.raw?.source === "pi.workflow.artifact",
           );
