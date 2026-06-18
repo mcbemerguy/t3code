@@ -347,6 +347,24 @@ describe("PiSessionRuntime", () => {
     }).pipe(Effect.orDie),
   );
 
+  it.effect(
+    "acknowledges detached prompts after write without waiting for the prompt response",
+    () =>
+      Effect.gen(function* () {
+        const runtime = yield* makeRuntime(
+          { MOCK_PI_RPC_IGNORE_COMMAND: "prompt" },
+          { prompt: 50 },
+        );
+        yield* runtime.start();
+        const result = yield* runtime
+          .promptDetached({ message: "workflow can continue streaming artifacts" })
+          .pipe(Effect.ensuring(runtime.close));
+
+        assert.equal(result.turnId, "pi-turn-1");
+        assert.deepStrictEqual(result.resumeCursor, { sessionFile: "/tmp/mock-pi-session.json" });
+      }).pipe(Effect.orDie),
+  );
+
   it.effect("reports process-exit diagnostics for in-flight requests", () =>
     withStartedRuntime({ MOCK_PI_RPC_EXIT_ON_COMMAND: "get_session_stats" }, (runtime) =>
       Effect.gen(function* () {

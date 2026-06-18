@@ -101,7 +101,7 @@ export class PiEventMapper {
     return Effect.gen(function* () {
       if (message.kind === "event") return yield* self.handleEvent(session, message);
       if (message.kind === "response" && !message.payload.success) {
-        return yield* self.offer([
+        yield* self.offer([
           {
             ...basePiEvent(session, { raw: message }),
             type: "runtime.error",
@@ -112,6 +112,12 @@ export class PiEventMapper {
             },
           } satisfies ProviderRuntimeEvent,
         ]);
+        if (message.payload.command === "prompt" && !session.turnCompleted) {
+          yield* self.completeTurn(session, message, "failed", {
+            errorMessage: message.payload.error ?? "Pi prompt failed.",
+          });
+        }
+        return;
       }
       if (message.kind === "prelude") {
         yield* self.offer([
@@ -154,7 +160,20 @@ export class PiEventMapper {
         session.workflowMapper = workflowMapper;
         const events = workflowMapper.map(session, event);
         if (events.length > 0) yield* self.offer(events);
-        if (cursor && terminal) session.workflowRunTurnIds.delete(cursor.runId);
+        if (cursor && terminal) {
+          const turnId = session.workflowRunTurnIds.get(cursor.runId);
+          if (turnId && session.currentTurnId === turnId && !session.turnCompleted) {
+            const failed = workflowRecordFailed(event);
+            const errorMessage = workflowRecordError(event);
+            yield* self.completeTurn(
+              session,
+              message,
+              failed ? "failed" : "completed",
+              failed && errorMessage ? { errorMessage } : {},
+            );
+          }
+          session.workflowRunTurnIds.delete(cursor.runId);
+        }
         if (type === "context_usage_update") yield* self.scheduleUsageRefresh(session);
         return;
       }
@@ -205,8 +224,17 @@ export class PiEventMapper {
 
       if (type === "message_end") {
         const finalText = extractAssistantFinalText(event);
-        if (finalText && !session.assistantItemId)
-          yield* self.emitAssistantDelta(session, message, finalText);
+        if (finalText) {
+          const streamed = session.assistantItemText ?? "";
+          const missing = !streamed
+            ? finalText
+            : finalText.startsWith(streamed)
+              ? finalText.slice(streamed.length)
+              : finalText === streamed
+                ? ""
+                : finalText;
+          if (missing) yield* self.emitAssistantDelta(session, message, missing);
+        }
         if (messageRole(event) === "assistant") yield* self.completeAssistantItem(session, message);
         return yield* self.scheduleUsageRefresh(session);
       }
@@ -314,6 +342,7 @@ export class PiEventMapper {
     const self = this;
     return Effect.gen(function* () {
       const itemId = yield* self.ensureAssistantItem(session, raw);
+      session.assistantItemText = `${session.assistantItemText ?? ""}${delta}`;
       yield* self.offer([
         {
           ...basePiEvent(session, { raw, itemId }),
@@ -348,6 +377,7 @@ export class PiEventMapper {
       if (session.assistantItemId) return session.assistantItemId;
       const itemId = runtimeItemId(`pi-assistant-${randomUUID()}`);
       session.assistantItemId = itemId;
+      session.assistantItemText = "";
       yield* self.offer([
         {
           ...basePiEvent(session, { raw, itemId }),
@@ -365,6 +395,7 @@ export class PiEventMapper {
       const itemId = session.assistantItemId;
       if (!itemId) return;
       delete session.assistantItemId;
+      delete session.assistantItemText;
       yield* self.offer([
         {
           ...basePiEvent(session, { raw, itemId }),
@@ -645,6 +676,15 @@ function isWorkflowArtifactEvent(event: PiRpcEvent): boolean {
       type === "child_pi_event" ||
       type === "context_usage_update")
   );
+}
+
+function workflowRecordFailed(event: PiRpcEvent): boolean {
+  const status = trimText(event.status)?.toLowerCase();
+  return status === "failed" || status === "aborted" || Boolean(trimText(event.error));
+}
+
+function workflowRecordError(event: PiRpcEvent): string | undefined {
+  return trimText(event.error) ?? trimText(event.message);
 }
 
 function assistantMessageEvent(event: PiRpcEvent): Record<string, unknown> | undefined {

@@ -208,10 +208,35 @@ export class PiRpcProcessHandle {
   }
 
   async request(command: PiRpcCommand, timeoutMs: number): Promise<PiRpcResponse> {
+    return await (
+      await this.requestWithWriteAck(command, timeoutMs)
+    ).response;
+  }
+
+  async requestWithWriteAck(
+    command: PiRpcCommand,
+    timeoutMs: number,
+  ): Promise<{ readonly response: Promise<PiRpcResponse> }> {
     const id = `pi-rpc-${++this.nextRequestId}`;
     const withId = { ...command, id };
 
-    return await new Promise<PiRpcResponse>((resolve, reject) => {
+    let acknowledgeWrite: () => void = () => {};
+    let rejectWrite: (error: PiSessionRuntimeError) => void = () => {};
+    let writeSettled = false;
+    const writeAck = new Promise<void>((resolve, reject) => {
+      acknowledgeWrite = () => {
+        if (writeSettled) return;
+        writeSettled = true;
+        resolve();
+      };
+      rejectWrite = (error) => {
+        if (writeSettled) return;
+        writeSettled = true;
+        reject(error);
+      };
+    });
+
+    const response = new Promise<PiRpcResponse>((resolve, reject) => {
       let settled = false;
       const timeout =
         timeoutMs > 0
@@ -219,19 +244,20 @@ export class PiRpcProcessHandle {
               if (settled) return;
               settled = true;
               this.pending.delete(id);
-              reject(
-                new PiRpcTimeoutError({
-                  command: command.type,
-                  timeoutMs,
-                  diagnostics: this.formatDiagnostics(),
-                }),
-              );
+              const error = new PiRpcTimeoutError({
+                command: command.type,
+                timeoutMs,
+                diagnostics: this.formatDiagnostics(),
+              });
+              rejectWrite(error);
+              reject(error);
             }, timeoutMs)
           : null;
 
       const finish = (complete: () => void) => {
         if (settled) return;
         settled = true;
+        acknowledgeWrite();
         if (timeout) NodeTimers.clearTimeout(timeout);
         complete();
       };
@@ -248,16 +274,31 @@ export class PiRpcProcessHandle {
           const pending = this.pending.get(id);
           if (error) {
             this.pending.delete(id);
+            rejectWrite(error);
             finish(() => reject(error));
             return;
           }
           if (pending) pending.writeCompleted = true;
+          acknowledgeWrite();
         });
       } catch (error) {
         this.pending.delete(id);
-        finish(() => reject(error));
+        const normalized =
+          error instanceof PiRpcLifecycleError
+            ? error
+            : this.buildWriteFailureError(command.type, error);
+        rejectWrite(normalized);
+        finish(() => reject(normalized));
       }
     });
+
+    try {
+      await writeAck;
+    } catch (error) {
+      response.catch(() => {});
+      throw error;
+    }
+    return { response };
   }
 
   async send(command: PiRpcCommand): Promise<void> {

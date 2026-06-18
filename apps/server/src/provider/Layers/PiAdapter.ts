@@ -91,6 +91,10 @@ interface PiCompactCommandInput {
   readonly customInstructions?: string;
 }
 
+function isPlainWorkflowContinuationMessage(input: string): boolean {
+  return /^(?:continue|resume|proceed|go on|keep going|yes|ok|okay)\b/i.test(input.trim());
+}
+
 function parsePiCompactCommand(input: string | undefined): PiCompactCommandInput | undefined {
   const text = input?.trim();
   if (!text) return undefined;
@@ -365,6 +369,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       ]);
       delete session.currentTurnId;
       delete session.assistantItemId;
+      delete session.assistantItemText;
       delete session.reasoningItemId;
     });
 
@@ -1245,6 +1250,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     action: "interrupt" | "pause" | "resume" | "abort",
     target: string,
     reason: string,
+    continuationMessage?: string,
   ) {
     yield* session.runtime
       .workflowControl({
@@ -1252,6 +1258,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         target,
         reason,
         ...(action === "resume" ? { policy: "continue-existing-session" as const } : {}),
+        ...(continuationMessage ? { continuationMessage } : {}),
       })
       .pipe(
         Effect.mapError((cause) => mapPiRuntimeError(session.threadId, "workflow_control", cause)),
@@ -1287,6 +1294,38 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     const controlledRun = session.workflowRuns.get(target);
     if (controlledRun)
       yield* startPiWorkflowRunMonitor(session, offer, controlledRun, options?.workflowMonitor);
+  });
+
+  const beginTurn = Effect.fn("beginPiTurn")(function* (
+    session: PiAdapterSessionContext,
+    turnId: TurnId,
+  ) {
+    pruneRetainedPendingTools(session);
+    session.currentTurnId = turnId;
+    session.latestTurnId = turnId;
+    session.turnCompleted = false;
+    session.promptAccepted = true;
+    session.quarantinePromptEventsUntilAcceptedDrain = session.nextTurnRequiresPromptStart;
+    session.requirePromptStartBeforeCompletion = session.nextTurnRequiresPromptStart;
+    session.nextTurnRequiresPromptStart = false;
+    session.cancellingTurnIds.delete(turnId);
+    delete session.activePromptEventId;
+    yield* offer([
+      { ...basePiEvent(session), type: "turn.started", payload: {} } satisfies ProviderRuntimeEvent,
+      {
+        ...basePiEvent(session),
+        type: "session.state.changed",
+        payload: { state: "running" },
+      } satisfies ProviderRuntimeEvent,
+    ]);
+  });
+
+  const finishPromptAcceptanceDrain = Effect.fn("finishPiPromptAcceptanceDrain")(function* (
+    session: PiAdapterSessionContext,
+  ) {
+    if (!session.quarantinePromptEventsUntilAcceptedDrain) return;
+    for (let index = 0; index < 5; index += 1) yield* Effect.yieldNow;
+    session.quarantinePromptEventsUntilAcceptedDrain = false;
   });
 
   const handleWorkflowControlPrompt = Effect.fn("handlePiWorkflowControlPrompt")(function* (
@@ -1325,6 +1364,67 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       ...(currentResumeCursor(session) ? { resumeCursor: currentResumeCursor(session) } : {}),
     };
   });
+
+  const activeWorkflowRuns = (session: PiAdapterSessionContext) =>
+    Array.from(session.workflowRuns.values()).filter(
+      (run) => !isTerminalWorkflowStatus(run.status),
+    );
+
+  const handleWorkflowContinuationPrompt = Effect.fn("handlePiWorkflowContinuationPrompt")(
+    function* (
+      session: PiAdapterSessionContext,
+      input: ProviderSendTurnInput,
+    ): Effect.fn.Return<ProviderTurnStartResult | undefined, ProviderAdapterError> {
+      const message = input.input ?? "";
+      if (!message.trim() || message.trimStart().startsWith("/")) return undefined;
+      if (!isPlainWorkflowContinuationMessage(message)) return undefined;
+      if ((input.attachments ?? []).length > 0) return undefined;
+      const runs = activeWorkflowRuns(session);
+      if (runs.length === 0) return undefined;
+
+      const turnId = TurnId.make(`pi-turn-${++turnCounter}`);
+      yield* beginTurn(session, turnId);
+
+      if (runs.length > 1) {
+        yield* emitWorkflowControlNotice(
+          session,
+          `Multiple active workflow runs are associated with this session. Choose one explicitly with /workflow:resume <runId>.`,
+          { activeWorkflowRuns: runs.map((run) => run.runId), ambiguous: true },
+        );
+        yield* completeTurn(session, undefined, "completed");
+        return {
+          threadId: input.threadId,
+          turnId,
+          ...(currentResumeCursor(session) ? { resumeCursor: currentResumeCursor(session) } : {}),
+        };
+      }
+
+      const run = runs[0]!;
+      session.workflowRunTurnIds.set(run.runId, turnId);
+      yield* startPiWorkflowRunMonitor(session, offer, run, options?.workflowMonitor);
+      yield* runWorkflowControl(
+        session,
+        "resume",
+        run.runId,
+        "User sent a workflow continuation from t3code.",
+        message,
+      ).pipe(
+        Effect.tapError((cause) =>
+          completeTurn(session, undefined, "failed", {
+            errorMessage: describeError(cause, "Pi workflow continuation failed"),
+          }),
+        ),
+      );
+      yield* finishPromptAcceptanceDrain(session);
+      yield* startNoEventWatchdog(session, turnId);
+      yield* scheduleUsageRefresh(session, undefined, true);
+      return {
+        threadId: input.threadId,
+        turnId,
+        ...(currentResumeCursor(session) ? { resumeCursor: currentResumeCursor(session) } : {}),
+      };
+    },
+  );
 
   const handlePiCompactCommand = Effect.fn("handlePiCompactCommand")(function* (
     session: PiAdapterSessionContext,
@@ -1422,62 +1522,38 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       return yield* handlePiCompactCommand(session, input, compactCommand);
     }
 
+    const continuationResult = yield* handleWorkflowContinuationPrompt(session, input);
+    if (continuationResult) return continuationResult;
+
     const images = yield* resolveImageAttachments("turn/start", input);
     yield* applyModelSelection(session, input.modelSelection, "sendTurn");
 
     const turnId = TurnId.make(`pi-turn-${++turnCounter}`);
-    pruneRetainedPendingTools(session);
-    session.currentTurnId = turnId;
-    session.latestTurnId = turnId;
-    session.turnCompleted = false;
-    session.promptAccepted = false;
-    session.quarantinePromptEventsUntilAcceptedDrain = session.nextTurnRequiresPromptStart;
-    session.requirePromptStartBeforeCompletion = session.nextTurnRequiresPromptStart;
-    session.nextTurnRequiresPromptStart = false;
-    session.cancellingTurnIds.delete(turnId);
-    delete session.activePromptEventId;
-    yield* offer([
-      { ...basePiEvent(session), type: "turn.started", payload: {} } satisfies ProviderRuntimeEvent,
-      {
-        ...basePiEvent(session),
-        type: "session.state.changed",
-        payload: { state: "running" },
-      } satisfies ProviderRuntimeEvent,
-    ]);
+    yield* beginTurn(session, turnId);
     yield* startPiWorkflowCommandMonitor(
       session,
       offer,
       input.input ?? "",
       options?.workflowMonitor,
     );
-    const result = yield* Effect.gen(function* () {
-      const providerResult = yield* session.runtime
-        .prompt({ message: input.input ?? "", images })
-        .pipe(
-          Effect.tap((promptResult) =>
-            Effect.gen(function* () {
-              session.promptAccepted = true;
-              const cursor = parsePiResumeCursor(promptResult.resumeCursor);
-              if (cursor?.sessionFile) session.sessionFile = cursor.sessionFile;
-              yield* startNoEventWatchdog(session, turnId);
-            }),
-          ),
-          Effect.tapError((cause) => handlePromptStartFailure(session, cause)),
-          Effect.mapError((cause) => mapPiRuntimeError(input.threadId, "prompt", cause)),
-        );
-      if (session.quarantinePromptEventsUntilAcceptedDrain) {
-        for (let index = 0; index < 5; index += 1) {
-          yield* Effect.yieldNow;
-        }
-        session.quarantinePromptEventsUntilAcceptedDrain = false;
-      }
-      for (let index = 0; index < 5 && !session.turnCompleted; index += 1) {
-        yield* Effect.yieldNow;
-      }
-      return providerResult;
-    }).pipe(Effect.ensuring(scheduleUsageRefresh(session, undefined, true)));
+    yield* session.runtime.promptDetached({ message: input.input ?? "", images }).pipe(
+      Effect.tap((promptResult) =>
+        Effect.sync(() => {
+          const cursor = parsePiResumeCursor(promptResult.resumeCursor);
+          if (cursor?.sessionFile) session.sessionFile = cursor.sessionFile;
+        }),
+      ),
+      Effect.tapError((cause) => handlePromptStartFailure(session, cause)),
+      Effect.mapError((cause) => mapPiRuntimeError(input.threadId, "prompt", cause)),
+      Effect.ensuring(scheduleUsageRefresh(session, undefined, true)),
+    );
+    yield* finishPromptAcceptanceDrain(session);
+    yield* startNoEventWatchdog(session, turnId);
+    for (let index = 0; index < 5 && !session.turnCompleted; index += 1) {
+      yield* Effect.yieldNow;
+    }
     return {
-      threadId: result.threadId,
+      threadId: input.threadId,
       turnId,
       ...(currentResumeCursor(session) ? { resumeCursor: currentResumeCursor(session) } : {}),
     };
@@ -1493,11 +1569,6 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       .steer({ message: input.input ?? "", images })
       .pipe(Effect.mapError((cause) => mapPiRuntimeError(input.threadId, "steer", cause)));
   });
-
-  const activeWorkflowRuns = (session: PiAdapterSessionContext) =>
-    Array.from(session.workflowRuns.values()).filter(
-      (run) => !isTerminalWorkflowStatus(run.status),
-    );
 
   const interruptActiveWorkflows = (session: PiAdapterSessionContext) =>
     Effect.gen(function* () {

@@ -188,7 +188,10 @@ export function replayRun(
       }
       const terminal = isTerminalWorkflowRecord(replay.record);
       const events = mapper.map(session, replay);
-      if (events.length > 0) yield* offer(events);
+      if (events.length > 0) {
+        session.turnActivitySequence += 1;
+        yield* offer(events);
+      }
       if (cursor && terminal) session.workflowRunTurnIds.delete(cursor.runId);
     }
   });

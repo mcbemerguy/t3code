@@ -77,6 +77,10 @@ class FakePiRuntime implements PiSessionRuntimeShape {
         turnId: TurnId.make("pi-provider-turn"),
       }) satisfies ProviderTurnStartResult,
   );
+  promptDetachedImpl = vi.fn(
+    async (input: { readonly message: string; readonly images?: ReadonlyArray<unknown> }) =>
+      await this.promptImpl(input),
+  );
   steerImpl = vi.fn(
     (_input: { readonly message: string; readonly images?: ReadonlyArray<unknown> }) =>
       Promise.resolve(undefined),
@@ -104,6 +108,26 @@ class FakePiRuntime implements PiSessionRuntimeShape {
     this.promptInputs.push(input);
     const script = this.promptScript;
     const runPrompt = this.promptImpl;
+    return (script ? script(this) : Effect.void).pipe(
+      Effect.andThen(
+        Effect.tryPromise({
+          try: () => runPrompt(input),
+          catch: (error) =>
+            error instanceof PiRpcLifecycleError || error instanceof PiRpcTimeoutError
+              ? error
+              : new PiRpcLifecycleError(
+                  error instanceof Error ? error.message : "prompt failed",
+                  error,
+                ),
+        }),
+      ),
+    );
+  }
+
+  promptDetached(input: { readonly message: string; readonly images?: ReadonlyArray<unknown> }) {
+    this.promptInputs.push(input);
+    const script = this.promptScript;
+    const runPrompt = this.promptDetachedImpl;
     return (script ? script(this) : Effect.void).pipe(
       Effect.andThen(
         Effect.tryPromise({
@@ -439,6 +463,39 @@ describe("PiAdapter", () => {
     ),
   );
 
+  it.effect("emits missing final assistant suffix from message_end", () =>
+    withHarness(
+      (fake) => {
+        fake.promptScript = (rt) =>
+          Effect.gen(function* () {
+            yield* rt.emit({ type: "assistant_delta", text: "hel" });
+            yield* rt.emit({
+              type: "message_end",
+              message: { role: "assistant", content: "hello" },
+            });
+            yield* rt.emit({ type: "agent_end" });
+          });
+      },
+      ({ adapter }) =>
+        Effect.gen(function* () {
+          const eventsFiber = yield* collectEventsThroughTurnCompleted(
+            adapter,
+            (event) => event.type === "content.delta",
+          ).pipe(Effect.forkChild);
+          yield* adapter.sendTurn({ threadId, input: "hi" });
+          const events = yield* Fiber.join(eventsFiber);
+
+          assert.equal(
+            events
+              .filter((event) => event.type === "content.delta")
+              .map((event) => event.payload.delta)
+              .join(""),
+            "hello",
+          );
+        }),
+    ),
+  );
+
   it.effect("runs Pi compact as an RPC command instead of a prompt", () =>
     withHarness(undefined, ({ adapter, runtime }) =>
       Effect.gen(function* () {
@@ -643,6 +700,52 @@ describe("PiAdapter", () => {
               ["turn.completed", "pi-turn-1"],
               ["item.completed", "pi-turn-1"],
             ],
+          );
+        }),
+    ),
+  );
+
+  it.effect("routes plain continuation text to a single active workflow run", () =>
+    withHarness(
+      (fake) => {
+        fake.promptScript = (rt) =>
+          rt.promptInputs.length === 1
+            ? Effect.gen(function* () {
+                yield* rt.emit({
+                  type: "run_start",
+                  runId: "run-continuation",
+                  workflowId: "review-fix",
+                  sequence: 1,
+                });
+                yield* rt.emit({ type: "agent_end" });
+              })
+            : Effect.void;
+      },
+      ({ adapter, runtime }) =>
+        Effect.gen(function* () {
+          const firstCompleted = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.type === "turn.completed",
+          ).pipe(Effect.forkChild);
+          yield* adapter.sendTurn({ threadId, input: "/workflow:review-fix" });
+          yield* Fiber.join(firstCompleted);
+
+          const continued = yield* adapter.sendTurn({ threadId, input: "continue with the fix" });
+
+          assert.equal(continued.turnId, "pi-turn-2");
+          assert.deepEqual(runtime.workflowControls, [
+            {
+              action: "resume",
+              target: "run-continuation",
+              reason: "User sent a workflow continuation from t3code.",
+              policy: "continue-existing-session",
+              continuationMessage: "continue with the fix",
+            },
+          ]);
+          assert.deepEqual(
+            runtime.promptInputs.map((input) => input.message),
+            ["/workflow:review-fix"],
           );
         }),
     ),

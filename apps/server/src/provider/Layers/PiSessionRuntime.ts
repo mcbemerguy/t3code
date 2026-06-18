@@ -120,6 +120,10 @@ export interface PiSessionRuntimeShape {
     readonly message: string;
     readonly images?: ReadonlyArray<unknown>;
   }) => Effect.Effect<ProviderTurnStartResult, PiSessionRuntimeError>;
+  readonly promptDetached: (input: {
+    readonly message: string;
+    readonly images?: ReadonlyArray<unknown>;
+  }) => Effect.Effect<ProviderTurnStartResult, PiSessionRuntimeError>;
   readonly steer: (input: {
     readonly message: string;
     readonly images?: ReadonlyArray<unknown>;
@@ -259,6 +263,38 @@ class PiSessionRuntimeImpl implements PiSessionRuntimeShape {
     });
   };
 
+  readonly promptDetached = (input: {
+    readonly message: string;
+    readonly images?: ReadonlyArray<unknown>;
+  }): Effect.Effect<ProviderTurnStartResult, PiSessionRuntimeError> => {
+    const self = this;
+    return Effect.gen(function* () {
+      self.status = "running";
+      const turnId = TurnId.make(`pi-turn-${++self.turnCounter}`);
+      self.activeTurnId = turnId;
+      const { response } = yield* self.requestWithWriteAck(
+        { type: "prompt", message: input.message, images: input.images ?? [] },
+        0,
+      );
+      response
+        .then((message) => {
+          if (message.success) self.applyState(message.data);
+          self.status = "ready";
+        })
+        .catch((error) => {
+          self.status = self.process ? "ready" : "closed";
+          if (error instanceof PiRpcRequestFailedError) self.applyState(error.input.data);
+        });
+      return {
+        threadId: self.options.threadId,
+        turnId,
+        ...(self.sessionFile
+          ? { resumeCursor: { sessionFile: self.sessionFile } satisfies PiResumeCursor }
+          : {}),
+      } satisfies ProviderTurnStartResult;
+    });
+  };
+
   readonly steer = (input: {
     readonly message: string;
     readonly images?: ReadonlyArray<unknown>;
@@ -378,7 +414,7 @@ class PiSessionRuntimeImpl implements PiSessionRuntimeShape {
         const payload = Buffer.from(JSON.stringify(input), "utf8").toString("base64url");
         const fallback = yield* self.requestAndRequireSuccess(
           { type: "prompt", message: `/workflow:control ${payload}` },
-          self.timeouts.prompt,
+          0,
         );
         return fallback.data;
       }
@@ -436,6 +472,24 @@ class PiSessionRuntimeImpl implements PiSessionRuntimeShape {
         );
       return yield* Effect.tryPromise({
         try: () => proc.request(command, timeoutMs),
+        catch: (error) => self.normalizeError(error),
+      });
+    });
+  }
+
+  private requestWithWriteAck(
+    command: PiRpcCommand,
+    timeoutMs: number,
+  ): Effect.Effect<{ readonly response: Promise<PiRpcResponse> }, PiSessionRuntimeError> {
+    const self = this;
+    return Effect.gen(function* () {
+      const proc = self.process;
+      if (!proc)
+        return yield* Effect.fail(
+          new PiRpcLifecycleError(`Pi RPC process has not started; cannot send ${command.type}.`),
+        );
+      return yield* Effect.tryPromise({
+        try: () => proc.requestWithWriteAck(command, timeoutMs),
         catch: (error) => self.normalizeError(error),
       });
     });

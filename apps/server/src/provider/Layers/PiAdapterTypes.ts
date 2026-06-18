@@ -75,6 +75,7 @@ export interface PiAdapterSessionContext {
   nextTurnRequiresPromptStart: boolean;
   readonly completedPromptEventIds: Set<string>;
   assistantItemId?: RuntimeItemId;
+  assistantItemText?: string;
   reasoningItemId?: RuntimeItemId;
   usageRefreshTimerFiber?: Fiber.Fiber<void, never>;
   usageRefreshDrainFiber?: Fiber.Fiber<void, never>;
