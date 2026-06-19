@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
-import { ProviderDriverKind } from "@t3tools/contracts";
+import { CustomAcpSettings, PiSettings, ProviderDriverKind } from "@t3tools/contracts";
 
-import { DRIVER_OPTION_BY_VALUE } from "./providerDriverMeta";
+import { DRIVER_OPTION_BY_VALUE, PROVIDER_CLIENT_DEFINITIONS } from "./providerDriverMeta";
 import {
   deriveProviderSettingsFields,
   nextProviderConfigWithFieldValue,
@@ -19,6 +19,23 @@ describe("ProviderSettingsForm helpers", () => {
       "homePath",
       "shadowHomePath",
     ]);
+  });
+
+  it("exposes Pi and Custom ACP as active provider definitions", () => {
+    const activeValues = PROVIDER_CLIENT_DEFINITIONS.map((definition) => definition.value);
+
+    expect(activeValues).toContain(ProviderDriverKind.make("pi"));
+    expect(activeValues).toContain(ProviderDriverKind.make("customAcp"));
+    expect(activeValues).not.toContain(ProviderDriverKind.make("grok"));
+    expect(activeValues).not.toContain(ProviderDriverKind.make("acpRegistry"));
+
+    const pi = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("pi")];
+    expect(pi).toBeDefined();
+    expect(pi).toMatchObject({ label: "Pi", settingsSchema: PiSettings });
+
+    const customAcp = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("customAcp")];
+    expect(customAcp).toBeDefined();
+    expect(customAcp).toMatchObject({ label: "Custom ACP", settingsSchema: CustomAcpSettings });
   });
 
   it("derives the minimal Pi settings surface", () => {
