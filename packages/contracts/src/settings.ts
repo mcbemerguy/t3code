@@ -351,6 +351,117 @@ export const PiSettings = makeProviderSettingsSchema(
 );
 export type PiSettings = typeof PiSettings.Type;
 
+export const CustomAcpSettings = makeProviderSettingsSchema(
+  {
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    command: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Command",
+        description: "ACP backend executable or script to launch.",
+        providerSettingsForm: {
+          placeholder: "pi",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    args: Schema.String.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Arguments",
+        description: "ACP launch arguments. Use one argument per line or shell-style quoting.",
+        providerSettingsForm: {
+          control: "textarea",
+          placeholder: "acp\n--profile\ndefault",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    env: Schema.String.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Environment",
+        description: "Extra environment variables as KEY=value lines.",
+        providerSettingsForm: {
+          control: "textarea",
+          placeholder: "PI_HOME=/path/to/pi",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    authMethodId: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Auth method ID",
+        description: "Optional ACP auth method. Leave blank to skip authentication.",
+        providerSettingsForm: {
+          placeholder: "cursor_login",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    askQuestionEnabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({
+        title: "Ask-question extension",
+        description: "Handle blocking ACP ask-question extension requests.",
+        providerSettingsForm: { control: "switch", clearWhenEmpty: "omit" },
+      }),
+    ),
+    askQuestionMethod: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("cursor/ask_question")),
+      Schema.annotateKey({
+        title: "Ask-question method",
+        description: "ACP extension method to treat as a blocking user question.",
+        providerSettingsForm: {
+          placeholder: "cursor/ask_question",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    manualModels: Schema.String.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Manual models",
+        description: "Fallback model IDs separated by newlines or commas.",
+        providerSettingsForm: {
+          control: "textarea",
+          placeholder: "default\ngpt-5.4",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    clientCapabilitiesMetaJson: Schema.String.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Client capabilities _meta JSON",
+        description: "Optional JSON object merged into ACP initialize clientCapabilities._meta.",
+        providerSettingsForm: {
+          control: "textarea",
+          placeholder: '{ "feature": true }',
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+  },
+  {
+    order: [
+      "command",
+      "args",
+      "env",
+      "authMethodId",
+      "askQuestionEnabled",
+      "askQuestionMethod",
+      "manualModels",
+      "clientCapabilitiesMetaJson",
+    ],
+  },
+);
+export type CustomAcpSettings = typeof CustomAcpSettings.Type;
+
 export const ObservabilitySettings = Schema.Struct({
   otlpTracesUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   otlpMetricsUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),

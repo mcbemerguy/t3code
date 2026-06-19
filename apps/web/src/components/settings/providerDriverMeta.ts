@@ -2,12 +2,21 @@ import {
   ClaudeSettings,
   CodexSettings,
   CursorSettings,
+  CustomAcpSettings,
   OpenCodeSettings,
   PiSettings,
   ProviderDriverKind,
 } from "@t3tools/contracts";
 import type * as Schema from "effect/Schema";
-import { ClaudeAI, CursorIcon, type Icon, OpenAI, OpenCodeIcon, PiIcon } from "../Icons";
+import {
+  ACPRegistryIcon,
+  ClaudeAI,
+  CursorIcon,
+  type Icon,
+  OpenAI,
+  OpenCodeIcon,
+  PiIcon,
+} from "../Icons";
 
 type ProviderSettingsSchema = {
   readonly fields: Readonly<Record<string, Schema.Top>>;
@@ -65,6 +74,12 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     label: "Pi",
     icon: PiIcon,
     settingsSchema: PiSettings,
+  },
+  {
+    value: ProviderDriverKind.make("customAcp"),
+    label: "Custom ACP",
+    icon: ACPRegistryIcon,
+    settingsSchema: CustomAcpSettings,
   },
 ];
 

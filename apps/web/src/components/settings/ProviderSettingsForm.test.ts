@@ -45,6 +45,57 @@ describe("ProviderSettingsForm helpers", () => {
     expect(cleared).toBeUndefined();
   });
 
+  it("derives the Custom ACP settings surface", () => {
+    const customAcp = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("customAcp")];
+
+    expect(customAcp).toBeDefined();
+    const fields = deriveProviderSettingsFields(customAcp!);
+    expect(fields.map((field) => field.key)).toEqual([
+      "command",
+      "args",
+      "env",
+      "authMethodId",
+      "askQuestionEnabled",
+      "askQuestionMethod",
+      "manualModels",
+      "clientCapabilitiesMetaJson",
+    ]);
+    expect(fields.find((field) => field.key === "args")).toMatchObject({
+      control: "textarea",
+      label: "Arguments",
+    });
+    expect(fields.find((field) => field.key === "askQuestionEnabled")).toMatchObject({
+      control: "switch",
+      defaultBooleanValue: true,
+    });
+  });
+
+  it("edits Custom ACP provider config without changing native Pi semantics", () => {
+    const customAcp = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("customAcp")];
+    expect(customAcp).toBeDefined();
+    const fields = deriveProviderSettingsFields(customAcp!);
+    const command = fields.find((field) => field.key === "command");
+    const askQuestionEnabled = fields.find((field) => field.key === "askQuestionEnabled");
+    expect(command).toBeDefined();
+    expect(askQuestionEnabled).toBeDefined();
+
+    const withCommand = nextProviderConfigWithFieldValue(undefined, command!, "pi");
+    const disabledAskQuestion = nextProviderConfigWithFieldValue(
+      withCommand,
+      askQuestionEnabled!,
+      false,
+    );
+    const defaultAskQuestionCleared = nextProviderConfigWithFieldValue(
+      disabledAskQuestion,
+      askQuestionEnabled!,
+      true,
+    );
+
+    expect(withCommand).toEqual({ command: "pi" });
+    expect(disabledAskQuestion).toEqual({ command: "pi", askQuestionEnabled: false });
+    expect(defaultAskQuestionCleared).toEqual({ command: "pi" });
+  });
+
   it("sources labels and descriptions from schema annotations", () => {
     const opencode = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("opencode")];
     expect(opencode).toBeDefined();

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   DEFAULT_MODEL,
+  DEFAULT_MODEL_BY_PROVIDER,
+  PROVIDER_DISPLAY_NAMES,
   ProviderDriverKind,
   ProviderInstanceId,
   type ModelCapabilities,
@@ -94,6 +97,22 @@ describe("resolveModelSlugForProvider", () => {
     expect(resolveModelSlugForProvider(ProviderDriverKind.make("ollama"), undefined)).toBe(
       DEFAULT_MODEL,
     );
+    expect(resolveModelSlugForProvider(ProviderDriverKind.make("pi"), undefined)).toBe("default");
+    expect(resolveModelSlugForProvider(ProviderDriverKind.make("customAcp"), undefined)).toBe(
+      "default",
+    );
+  });
+
+  it("exposes native Pi and Custom ACP provider metadata without aliasing them", () => {
+    const pi = ProviderDriverKind.make("pi");
+    const customAcp = ProviderDriverKind.make("customAcp");
+
+    expect(DEFAULT_MODEL_BY_PROVIDER[pi]).toBe("default");
+    expect(DEFAULT_MODEL_BY_PROVIDER[customAcp]).toBe("default");
+    expect(DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER[pi]).toBe("default");
+    expect(DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER[customAcp]).toBe("default");
+    expect(PROVIDER_DISPLAY_NAMES[pi]).toBe("Pi");
+    expect(PROVIDER_DISPLAY_NAMES[customAcp]).toBe("Custom ACP");
   });
 
   it("preserves normalized unknown models", () => {
