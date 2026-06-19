@@ -18,16 +18,18 @@ import { createModelSelection } from "@t3tools/shared/model";
 import {
   ApprovalRequestId,
   CursorSettings,
+  EventId,
   ProviderDriverKind,
   type ProviderRuntimeEvent,
   ThreadId,
+  TurnId,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import type { CursorAdapterShape } from "../Services/CursorAdapter.ts";
-import { makeCursorAdapter } from "./CursorAdapter.ts";
+import { makeCursorAdapter, makeCursorAcpContentDeltaRuntimeEvent } from "./CursorAdapter.ts";
 const decodeCursorSettings = Schema.decodeSync(CursorSettings);
 
 // Test-local service tag so the rest of the file can keep using `yield* CursorAdapter`.
@@ -229,6 +231,35 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       }
 
       yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("preserves ACP thought chunks as reasoning stream deltas", () =>
+    Effect.sync(() => {
+      const event = makeCursorAcpContentDeltaRuntimeEvent({
+        stamp: { eventId: EventId.make("event-1"), createdAt: "2026-06-19T00:00:00.000Z" },
+        threadId: ThreadId.make("cursor-thought-chunk-stream-kind"),
+        turnId: TurnId.make("turn-1"),
+        event: {
+          _tag: "ContentDelta",
+          itemId: "assistant:mock-session-1:segment:0",
+          streamKind: "reasoning_text",
+          text: "thinking from mock",
+          rawPayload: {
+            sessionId: "mock-session-1",
+            update: {
+              sessionUpdate: "agent_thought_chunk",
+              content: { type: "text", text: "thinking from mock" },
+            },
+          },
+        },
+      });
+
+      assert.equal(event.type, "content.delta");
+      if (event.type === "content.delta") {
+        assert.equal(event.payload.streamKind, "reasoning_text");
+        assert.equal(event.payload.delta, "thinking from mock");
+      }
     }),
   );
 

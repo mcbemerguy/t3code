@@ -59,6 +59,7 @@ import {
   makeAcpToolCallEvent,
 } from "../acp/AcpCoreRuntimeEvents.ts";
 import {
+  type AcpParsedSessionEvent,
   type AcpSessionMode,
   type AcpSessionModeState,
   parsePermissionRequest,
@@ -83,6 +84,26 @@ const CURSOR_RESUME_VERSION = 1 as const;
 const ACP_PLAN_MODE_ALIASES = ["plan", "architect"];
 const ACP_IMPLEMENT_MODE_ALIASES = ["code", "agent", "default", "chat", "implement"];
 const ACP_APPROVAL_MODE_ALIASES = ["ask"];
+
+type CursorAcpContentDeltaEvent = Extract<AcpParsedSessionEvent, { _tag: "ContentDelta" }>;
+
+export function makeCursorAcpContentDeltaRuntimeEvent(input: {
+  readonly stamp: { readonly eventId: EventId; readonly createdAt: string };
+  readonly threadId: ThreadId;
+  readonly turnId: TurnId | undefined;
+  readonly event: CursorAcpContentDeltaEvent;
+}): ProviderRuntimeEvent {
+  return makeAcpContentDeltaEvent({
+    stamp: input.stamp,
+    provider: PROVIDER,
+    threadId: input.threadId,
+    turnId: input.turnId,
+    ...(input.event.itemId ? { itemId: input.event.itemId } : {}),
+    streamKind: input.event.streamKind,
+    text: input.event.text,
+    rawPayload: input.event.rawPayload,
+  });
+}
 
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
   const result = encodeUnknownJsonStringExit(input);
@@ -828,14 +849,11 @@ export function makeCursorAdapter(
                       "acp.jsonrpc",
                     );
                     yield* offerRuntimeEvent(
-                      makeAcpContentDeltaEvent({
+                      makeCursorAcpContentDeltaRuntimeEvent({
                         stamp: yield* makeEventStamp(),
-                        provider: PROVIDER,
                         threadId: ctx.threadId,
                         turnId: ctx.activeTurnId,
-                        ...(event.itemId ? { itemId: event.itemId } : {}),
-                        text: event.text,
-                        rawPayload: event.rawPayload,
+                        event,
                       }),
                     );
                     return;
