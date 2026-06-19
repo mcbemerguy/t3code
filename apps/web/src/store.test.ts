@@ -6,10 +6,12 @@ import {
   EventId,
   MessageId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
   TurnId,
   type OrchestrationEvent,
+  type OrchestrationShellSnapshot,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -22,7 +24,9 @@ import {
   selectThreadByRef,
   selectThreadExistsByRef,
   setThreadBranch,
+  selectSidebarThreadSummaryByRef,
   selectThreadsAcrossEnvironments,
+  syncServerShellSnapshot,
   type AppState,
   type EnvironmentState,
 } from "./store";
@@ -246,6 +250,123 @@ function makeEvent<T extends OrchestrationEvent["type"]>(
     ...overrides,
   } as Extract<OrchestrationEvent, { type: T }>;
 }
+
+describe("syncServerShellSnapshot", () => {
+  it("heals sidebar and shell session state from an authoritative ready snapshot", () => {
+    const projectId = ProjectId.make("project-1");
+    const threadId = ThreadId.make("thread-1");
+    const turnId = TurnId.make("turn-1");
+    const snapshot: OrchestrationShellSnapshot = {
+      snapshotSequence: 10,
+      projects: [
+        {
+          id: projectId,
+          title: "Project",
+          workspaceRoot: "/tmp/project",
+          repositoryIdentity: null,
+          defaultModelSelection: {
+            instanceId: ProviderInstanceId.make("pi"),
+            model: "gpt-5-codex",
+          },
+          scripts: [],
+          createdAt: "2026-02-13T00:00:00.000Z",
+          updatedAt: "2026-02-13T00:00:00.000Z",
+        },
+      ],
+      threads: [
+        {
+          id: threadId,
+          projectId,
+          title: "Thread",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("pi"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          interactionMode: DEFAULT_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          latestTurn: {
+            turnId,
+            state: "completed",
+            requestedAt: "2026-02-13T00:00:00.000Z",
+            startedAt: "2026-02-13T00:00:01.000Z",
+            completedAt: "2026-02-13T00:00:02.000Z",
+            assistantMessageId: MessageId.make("assistant-1"),
+          },
+          createdAt: "2026-02-13T00:00:00.000Z",
+          updatedAt: "2026-02-13T00:00:02.000Z",
+          archivedAt: null,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "pi",
+            providerInstanceId: ProviderInstanceId.make("pi"),
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: "2026-02-13T00:00:02.000Z",
+          },
+          latestUserMessageAt: "2026-02-13T00:00:00.000Z",
+          hasPendingApprovals: false,
+          hasPendingUserInput: false,
+          hasActionableProposedPlan: false,
+        },
+      ],
+      updatedAt: "2026-02-13T00:00:02.000Z",
+    };
+    const staleState = makeEmptyState({
+      sidebarThreadSummaryById: {
+        [threadId]: {
+          id: threadId,
+          environmentId: localEnvironmentId,
+          projectId,
+          title: "Thread",
+          interactionMode: DEFAULT_INTERACTION_MODE,
+          session: {
+            provider: ProviderDriverKind.make("pi"),
+            providerInstanceId: ProviderInstanceId.make("pi"),
+            status: "running",
+            orchestrationStatus: "running",
+            activeTurnId: turnId,
+            createdAt: "2026-02-13T00:00:01.000Z",
+            updatedAt: "2026-02-13T00:00:01.000Z",
+          },
+          createdAt: "2026-02-13T00:00:00.000Z",
+          archivedAt: null,
+          updatedAt: "2026-02-13T00:00:01.000Z",
+          latestTurn: {
+            turnId,
+            state: "running",
+            requestedAt: "2026-02-13T00:00:00.000Z",
+            startedAt: "2026-02-13T00:00:01.000Z",
+            completedAt: null,
+            assistantMessageId: null,
+          },
+          branch: null,
+          worktreePath: null,
+          latestUserMessageAt: "2026-02-13T00:00:00.000Z",
+          hasPendingApprovals: false,
+          hasPendingUserInput: false,
+          hasActionableProposedPlan: false,
+        },
+      },
+    });
+
+    const healed = syncServerShellSnapshot(staleState, snapshot, localEnvironmentId);
+    const environmentState = localEnvironmentStateOf(healed);
+    const sidebarSummary = selectSidebarThreadSummaryByRef(
+      healed,
+      scopeThreadRef(localEnvironmentId, threadId),
+    );
+
+    expect(environmentState.threadSessionById[threadId]?.status).toBe("ready");
+    expect(environmentState.threadSessionById[threadId]?.activeTurnId).toBeUndefined();
+    expect(environmentState.threadTurnStateById[threadId]?.latestTurn?.state).toBe("completed");
+    expect(sidebarSummary?.session?.status).toBe("ready");
+    expect(sidebarSummary?.latestTurn?.state).toBe("completed");
+  });
+});
 
 describe("environment state removal", () => {
   it("drops local state for removed environments", () => {

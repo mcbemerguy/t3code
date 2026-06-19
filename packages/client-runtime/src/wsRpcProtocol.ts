@@ -3,7 +3,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schedule from "effect/Schedule";
-import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
+import { RpcClient, RpcSchema, RpcSerialization } from "effect/unstable/rpc";
 import * as Socket from "effect/unstable/socket/Socket";
 
 import {
@@ -233,16 +233,6 @@ export function createWsRpcProtocolLayer(
         },
         { once: true },
       );
-      socket.addEventListener("message", (event) => {
-        try {
-          const message = JSON.parse(String(event.data)) as { readonly _tag?: string };
-          if (message._tag === "Pong") {
-            lifecycle.onHeartbeatPong();
-          }
-        } catch {
-          // Ignore malformed messages here; the Effect RPC parser still owns protocol errors.
-        }
-      });
       socket.addEventListener(
         "close",
         (event) => {
@@ -276,33 +266,84 @@ export function createWsRpcProtocolLayer(
     Effect.map(
       RpcClient.makeProtocolSocket({
         retryPolicy,
-        retryTransientErrors: true,
+        // Ping timeouts are reported as SocketOpenError. If Effect suppresses them as
+        // transient, the socket reconnects but active stream RPC requests are not replayed.
+        retryTransientErrors: false,
       }),
-      (protocol) => ({
-        ...protocol,
-        run: (clientId, writeResponse) =>
-          protocol.run(clientId, (response) => {
-            if (response._tag === "Chunk" || response._tag === "Exit") {
-              requestTelemetry?.onRequestAcknowledged?.(response.requestId);
-            } else if (response._tag === "ClientProtocolError" || response._tag === "Defect") {
-              requestTelemetry?.onClearTrackedRequests?.();
+      (protocol) => {
+        const activeRequests = new Map<
+          string,
+          { readonly tag: string; readonly stream: boolean; chunkCount: number }
+        >();
+
+        const isStreamRequest = (tag: string): boolean => {
+          const rpc = WsRpcGroup.requests.get(tag);
+          return rpc ? RpcSchema.isStreamSchema(rpc.successSchema) : false;
+        };
+
+        return {
+          ...protocol,
+          run: (clientId, writeResponse) =>
+            protocol.run(clientId, (response) => {
+              if (response._tag === "Chunk") {
+                requestTelemetry?.onRequestAcknowledged?.(response.requestId);
+                const request = activeRequests.get(response.requestId);
+                if (request && lifecycle.isActive()) {
+                  request.chunkCount += response.values.length;
+                  handlers?.onRequestChunk?.({
+                    id: response.requestId,
+                    tag: request.tag,
+                    chunkCount: request.chunkCount,
+                  });
+                }
+              } else if (response._tag === "Exit") {
+                requestTelemetry?.onRequestAcknowledged?.(response.requestId);
+                const request = activeRequests.get(response.requestId);
+                activeRequests.delete(response.requestId);
+                if (request && lifecycle.isActive()) {
+                  handlers?.onRequestExit?.({
+                    id: response.requestId,
+                    tag: request.tag,
+                    stream: request.stream,
+                  });
+                }
+              } else if (response._tag === "ClientProtocolError" || response._tag === "Defect") {
+                requestTelemetry?.onClearTrackedRequests?.();
+                activeRequests.clear();
+              }
+              return writeResponse(response);
+            }),
+          send: (clientId, request, transferables) => {
+            if (request._tag === "Request") {
+              const stream = isStreamRequest(request.tag);
+              activeRequests.set(request.id, { tag: request.tag, stream, chunkCount: 0 });
+              requestTelemetry?.onRequestSent?.(request.id, request.tag);
+              if (lifecycle.isActive()) {
+                handlers?.onRequestStart?.({
+                  id: request.id,
+                  tag: request.tag,
+                  stream,
+                });
+              }
+              return protocol.send(clientId, request, transferables).pipe(
+                Effect.tapError(() => Effect.sync(() => activeRequests.delete(request.id))),
+              );
             }
-            return writeResponse(response);
-          }),
-        send: (clientId, request, transferables) => {
-          if (request._tag === "Request") {
-            requestTelemetry?.onRequestSent?.(request.id, request.tag);
-            if (lifecycle.isActive()) {
-              handlers?.onRequestStart?.({
-                id: request.id,
-                tag: request.tag,
-                stream: false,
-              });
+            if (request._tag === "Interrupt") {
+              const activeRequest = activeRequests.get(request.requestId);
+              activeRequests.delete(request.requestId);
+              if (lifecycle.isActive()) {
+                handlers?.onRequestInterrupt?.(
+                  activeRequest
+                    ? { id: request.requestId, tag: activeRequest.tag }
+                    : { id: request.requestId },
+                );
+              }
             }
-          }
-          return protocol.send(clientId, request, transferables);
-        },
-      }),
+            return protocol.send(clientId, request, transferables);
+          },
+        };
+      },
     ),
   );
   const connectionHooksLayer = Layer.succeed(
@@ -310,6 +351,9 @@ export function createWsRpcProtocolLayer(
     RpcClient.ConnectionHooks.of({
       onConnect: Effect.void,
       onDisconnect: Effect.void,
+      onPing: Effect.sync(() => lifecycle.onHeartbeatPing()),
+      onPong: Effect.sync(() => lifecycle.onHeartbeatPong()),
+      onPingTimeout: Effect.sync(() => lifecycle.onHeartbeatTimeout()),
     }),
   );
 

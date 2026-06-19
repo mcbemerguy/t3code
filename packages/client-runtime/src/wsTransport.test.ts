@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
+import { createWsRpcProtocolLayer } from "./wsRpcProtocol.ts";
 import { WsTransport } from "./wsTransport.ts";
 
 type WsEventType = "open" | "message" | "close" | "error";
@@ -92,6 +93,22 @@ async function waitFor(assertion: () => void, timeoutMs = 1_000): Promise<void> 
         throw error;
       }
       await Effect.runPromise(Effect.sleep(Duration.millis(10)));
+    }
+  }
+}
+
+async function waitForAdvancingTimers(assertion: () => void, timeoutMs = 1_000): Promise<void> {
+  let elapsedMs = 0;
+  for (;;) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      if (elapsedMs >= timeoutMs) {
+        throw error;
+      }
+      await vi.advanceTimersByTimeAsync(10);
+      elapsedMs += 10;
     }
   }
 }
@@ -421,6 +438,93 @@ describe("WsTransport", () => {
     await transport.dispose();
   });
 
+  it("reports outbound RPC request lifecycle with stream classification", async () => {
+    const onRequestStart = vi.fn();
+    const transport = createTransport("ws://localhost:3020", { onRequestStart });
+
+    const unsubscribe = transport.subscribe(
+      (client) => client[WS_METHODS.subscribeServerLifecycle]({}),
+      vi.fn(),
+    );
+
+    await waitFor(() => {
+      expect(sockets).toHaveLength(1);
+    });
+
+    const socket = getSocket();
+    socket.open();
+
+    await waitFor(() => {
+      expect(socket.sent.some((message) => JSON.parse(message)._tag === "Request")).toBe(true);
+    });
+
+    const streamRequest = socket.sent
+      .map((message) => JSON.parse(message) as { _tag?: string; id?: string; tag?: string })
+      .find(
+        (message): message is { _tag: "Request"; id: string; tag: string } =>
+          message._tag === "Request" && message.tag === WS_METHODS.subscribeServerLifecycle,
+      );
+    if (!streamRequest) {
+      throw new Error("Expected stream request");
+    }
+    expect(onRequestStart).toHaveBeenCalledWith({
+      id: streamRequest.id,
+      tag: WS_METHODS.subscribeServerLifecycle,
+      stream: true,
+    });
+
+    const requestPromise = transport.request((client) =>
+      client[WS_METHODS.serverUpsertKeybinding]({
+        command: "terminal.toggle",
+        key: "ctrl+k",
+      }),
+    );
+
+    await waitFor(() => {
+      const requestCount = socket.sent.filter(
+        (message) => JSON.parse(message)._tag === "Request",
+      ).length;
+      expect(requestCount).toBeGreaterThanOrEqual(2);
+    });
+
+    const unaryRequest = socket.sent
+      .map((message) => JSON.parse(message) as { _tag?: string; id?: string; tag?: string })
+      .find(
+        (message): message is { _tag: "Request"; id: string; tag: string } =>
+          message._tag === "Request" && message.tag === WS_METHODS.serverUpsertKeybinding,
+      );
+    if (!unaryRequest) {
+      throw new Error("Expected unary request");
+    }
+    expect(onRequestStart).toHaveBeenCalledWith({
+      id: unaryRequest.id,
+      tag: WS_METHODS.serverUpsertKeybinding,
+      stream: false,
+    });
+
+    socket.serverMessage(
+      JSON.stringify({
+        _tag: "Exit",
+        requestId: unaryRequest.id,
+        exit: {
+          _tag: "Success",
+          value: {
+            keybindings: [],
+            issues: [],
+          },
+        },
+      }),
+    );
+
+    await expect(requestPromise).resolves.toEqual({
+      keybindings: [],
+      issues: [],
+    });
+
+    unsubscribe();
+    await transport.dispose();
+  });
+
   it("delivers stream chunks to subscribers", async () => {
     const transport = createTransport("ws://localhost:3020");
     const listener = vi.fn();
@@ -692,6 +796,157 @@ describe("WsTransport", () => {
 
     unsubscribe();
     await transport.dispose();
+  });
+
+  it("re-subscribes live stream listeners after a heartbeat timeout reconnect", async () => {
+    vi.useFakeTimers();
+
+    const listener = vi.fn();
+    const onResubscribe = vi.fn();
+    const onHeartbeatTimeout = vi.fn();
+    const transport = createTransport(
+      "ws://localhost:3020",
+      { onHeartbeatTimeout },
+      {
+        createProtocolLayer: (url, handlers) =>
+          createWsRpcProtocolLayer(url, handlers, {
+            backoff: {
+              initialDelayMs: 1,
+              backoffFactor: 1,
+              maxDelayMs: 1,
+              maxRetries: null,
+            },
+          }),
+      },
+    );
+
+    try {
+      const unsubscribe = transport.subscribe(
+        (client) => client[WS_METHODS.subscribeServerLifecycle]({}),
+        listener,
+        { onResubscribe },
+      );
+
+      await waitForAdvancingTimers(() => {
+        expect(sockets).toHaveLength(1);
+      });
+
+      const firstSocket = getSocket();
+      firstSocket.open();
+
+      await waitForAdvancingTimers(() => {
+        expect(firstSocket.sent.some((message) => JSON.parse(message)._tag === "Request")).toBe(
+          true,
+        );
+      });
+
+      const firstRequest = firstSocket.sent
+        .map((message) => JSON.parse(message) as { _tag?: string; id?: string; tag?: string })
+        .find(
+          (message): message is { _tag: "Request"; id: string; tag: string } =>
+            message._tag === "Request",
+        );
+      if (!firstRequest) {
+        throw new Error("Expected initial stream request");
+      }
+
+      const firstEvent = {
+        version: 1,
+        sequence: 1,
+        type: "welcome",
+        payload: {
+          environment: {
+            environmentId: "environment-local",
+            label: "Local environment",
+            platform: { os: "darwin", arch: "arm64" },
+            serverVersion: "0.0.0-test",
+            capabilities: { repositoryIdentity: true },
+          },
+          cwd: "/tmp/one",
+          projectName: "one",
+        },
+      };
+
+      firstSocket.serverMessage(
+        JSON.stringify({
+          _tag: "Chunk",
+          requestId: firstRequest.id,
+          values: [firstEvent],
+        }),
+      );
+
+      await waitForAdvancingTimers(() => {
+        expect(listener).toHaveBeenLastCalledWith(firstEvent);
+      });
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      await waitForAdvancingTimers(() => {
+        expect(firstSocket.sent.some((message) => JSON.parse(message)._tag === "Ping")).toBe(true);
+      });
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      await waitForAdvancingTimers(() => {
+        expect(onHeartbeatTimeout).toHaveBeenCalledOnce();
+        expect(sockets).toHaveLength(2);
+      });
+
+      const secondSocket = getSocket();
+      expect(secondSocket).not.toBe(firstSocket);
+      secondSocket.open();
+
+      await waitForAdvancingTimers(() => {
+        expect(secondSocket.sent.some((message) => JSON.parse(message)._tag === "Request")).toBe(
+          true,
+        );
+      });
+
+      const secondRequest = secondSocket.sent
+        .map((message) => JSON.parse(message) as { _tag?: string; id?: string; tag?: string })
+        .find(
+          (message): message is { _tag: "Request"; id: string; tag: string } =>
+            message._tag === "Request",
+        );
+      if (!secondRequest) {
+        throw new Error("Expected resubscribed stream request");
+      }
+      expect(secondRequest.tag).toBe(WS_METHODS.subscribeServerLifecycle);
+      expect(secondRequest.id).not.toBe(firstRequest.id);
+      expect(onResubscribe).toHaveBeenCalledOnce();
+
+      const secondEvent = {
+        version: 1,
+        sequence: 2,
+        type: "welcome",
+        payload: {
+          environment: {
+            environmentId: "environment-local",
+            label: "Local environment",
+            platform: { os: "darwin", arch: "arm64" },
+            serverVersion: "0.0.0-test",
+            capabilities: { repositoryIdentity: true },
+          },
+          cwd: "/tmp/two",
+          projectName: "two",
+        },
+      };
+
+      secondSocket.serverMessage(
+        JSON.stringify({
+          _tag: "Chunk",
+          requestId: secondRequest.id,
+          values: [secondEvent],
+        }),
+      );
+
+      await waitForAdvancingTimers(() => {
+        expect(listener).toHaveBeenLastCalledWith(secondEvent);
+      });
+
+      unsubscribe();
+    } finally {
+      await transport.dispose();
+      vi.useRealTimers();
+    }
   });
 
   it("does not fire onResubscribe when the first stream attempt exits before any value", async () => {

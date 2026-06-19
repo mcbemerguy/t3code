@@ -71,9 +71,6 @@ export class WsTransport {
   private nextSessionId = 0;
   private activeSessionId = 0;
   private lastHeartbeatPongAt: number | null = null;
-  private readonly streamRequestStartListeners = new Set<
-    (info: { readonly tag: string }) => void
-  >();
   private reconnectChain: Promise<void> = Promise.resolve();
   private session: TransportSession;
 
@@ -138,22 +135,6 @@ export class WsTransport {
       Duration.fromInputUnsafe(options?.retryDelay ?? DEFAULT_SUBSCRIPTION_RETRY_DELAY),
     );
     let cancelCurrentStream: () => void = NOOP;
-    const onStreamRequestStart = (info: { readonly tag: string }) => {
-      if (
-        !hasReceivedValue ||
-        !active ||
-        (options?.tag !== undefined && info.tag !== options.tag)
-      ) {
-        return;
-      }
-
-      try {
-        options?.onResubscribe?.();
-      } catch {
-        // Ignore reconnect hook failures so the stream can recover.
-      }
-    };
-    this.streamRequestStartListeners.add(onStreamRequestStart);
 
     void (async () => {
       for (;;) {
@@ -213,7 +194,6 @@ export class WsTransport {
 
     return () => {
       active = false;
-      this.streamRequestStartListeners.delete(onStreamRequestStart);
       cancelCurrentStream();
     };
   }
@@ -289,12 +269,6 @@ export class WsTransport {
       },
       onRequestStart: (info) => {
         lifecycleHandlers?.onRequestStart?.(info);
-        if (!info.stream) {
-          return;
-        }
-        for (const listener of this.streamRequestStartListeners) {
-          listener({ tag: info.tag });
-        }
       },
     });
     const rootLayer = this.options?.tracingLayer
