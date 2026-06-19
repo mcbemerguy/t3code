@@ -590,6 +590,46 @@ describe("Custom ACP provider", () => {
       }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
+  it.effect("does not attach post-turn workflow notices to the last completed turn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({ env: envText({ T3_ACP_ENABLE_PI_WORKFLOWS: "1" }) }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-post-turn-workflow-notice-no-stale-turn");
+      const pauseNotices: Array<Extract<ProviderRuntimeEvent, { type: "content.delta" }>> = [];
+
+      yield* Stream.runForEach(adapter.streamEvents, (event) => {
+        if (event.threadId !== threadId || event.type !== "content.delta") return Effect.void;
+        if (event.payload.delta.startsWith("Workflow pause requested.")) pauseNotices.push(event);
+        return Effect.void;
+      }).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: {
+          schemaVersion: 2,
+          provider: customAcpDriver,
+          sessionId: "mock-session-1",
+          workflows: {
+            activeRuns: [{ runId: "workflow-run-1", lastSequence: 7 }],
+          },
+        },
+      });
+      const result = yield* adapter.sendTurn({ threadId, input: "hello", attachments: [] });
+      yield* adapter.interruptTurn(threadId);
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 100)));
+
+      assert.lengthOf(pauseNotices, 1);
+      assert.isUndefined(pauseNotices[0]?.turnId);
+      assert.notEqual(pauseNotices[0]?.turnId, result.turnId);
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("queues a new ACP prompt until cancelled-turn drain finishes", () =>
     Effect.gen(function* () {
       const adapter = yield* makeGenericAcpAdapter(
@@ -864,6 +904,77 @@ describe("Custom ACP provider", () => {
             (entry.params as Record<string, unknown> | undefined)?.runId === "workflow-run-1",
         ),
       ).toBe(true);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("completes an active turn after workflow pause without sending ACP cancel", () =>
+    Effect.gen(function* () {
+      const requestLog = yield* Effect.promise(() => tempFile("workflow-pause-active-turn.jsonl"));
+      const adapter = yield* makeGenericAcpAdapter(
+        makeCustomAcpSettings({
+          env: envText({
+            T3_ACP_ENABLE_PI_WORKFLOWS: "1",
+            T3_ACP_HANG_PROMPT: "1",
+            T3_ACP_REQUEST_LOG_PATH: requestLog,
+          }),
+        }),
+        { instanceId: customAcpInstanceId },
+      );
+      const threadId = ThreadId.make("custom-acp-workflow-pause-active-turn");
+      const started =
+        yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "turn.started" }>>();
+      const completedEvents: Array<Extract<ProviderRuntimeEvent, { type: "turn.completed" }>> = [];
+
+      yield* Stream.runForEach(adapter.streamEvents, (event) => {
+        if (event.threadId !== threadId) return Effect.void;
+        if (event.type === "turn.started") {
+          return Deferred.succeed(started, event).pipe(Effect.ignore);
+        }
+        if (event.type === "turn.completed") completedEvents.push(event);
+        return Effect.void;
+      }).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: customAcpDriver,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: {
+          schemaVersion: 2,
+          provider: customAcpDriver,
+          sessionId: "mock-session-1",
+          workflows: {
+            activeRuns: [{ runId: "workflow-run-1", lastSequence: 7 }],
+          },
+        },
+      });
+      const turnFiber = yield* adapter
+        .sendTurn({ threadId, input: "hang during workflow", attachments: [] })
+        .pipe(Effect.forkChild);
+
+      const startedEvent = yield* Deferred.await(started);
+      let turnFinished = false;
+      yield* Fiber.join(turnFiber).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            turnFinished = true;
+          }),
+        ),
+        Effect.forkChild,
+      );
+      yield* adapter.interruptTurn(threadId);
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 1_200)));
+
+      assert.isTrue(turnFinished);
+      assert.lengthOf(completedEvents, 1);
+      assert.equal(completedEvents[0]?.turnId, startedEvent.turnId);
+      assert.equal(completedEvents[0]?.payload.state, "cancelled");
+      assert.equal(completedEvents[0]?.payload.stopReason, "workflow pause requested");
+
+      const methods = jsonRpcMethods(yield* Effect.promise(() => readJsonLines(requestLog)));
+      assert.include(methods, "_pi/workflows/pause");
+      assert.notInclude(methods, "session/cancel");
+      if (yield* adapter.hasSession(threadId)) yield* adapter.stopSession(threadId);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 

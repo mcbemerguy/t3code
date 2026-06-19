@@ -118,6 +118,7 @@ interface GenericAcpSessionContext {
   readonly workflowActionNotices: Set<string>;
   readonly completedTurnIds: Set<TurnId>;
   readonly cancellingTurnIds: Set<TurnId>;
+  readonly turnCancellationReasons: Map<TurnId, string>;
   readonly turnGate: Semaphore.Semaphore;
   turnIdle: Deferred.Deferred<void>;
   readonly turnCancelSignals: Map<TurnId, Deferred.Deferred<void>>;
@@ -452,6 +453,8 @@ export function makeGenericAcpAdapter(
       Effect.gen(function* () {
         ctx.turnCancelSignals.delete(turnId);
         ctx.turnPromptCompletions.delete(turnId);
+        ctx.turnCancellationReasons.delete(turnId);
+        if (ctx.runtimeEventTurnId === turnId) ctx.runtimeEventTurnId = undefined;
         if (ctx.activeTurnId !== turnId) return;
         ctx.activeTurnId = undefined;
         yield* Deferred.succeed(ctx.turnIdle, undefined).pipe(Effect.ignore);
@@ -607,6 +610,47 @@ export function makeGenericAcpAdapter(
           provider,
           threadId: ctx.threadId,
           payload: { exitKind: "graceful" },
+        });
+      });
+
+    const beginTurnCancellation = (
+      ctx: GenericAcpSessionContext,
+      turnId: TurnId,
+      reason: string,
+      drainFailureDetail: string,
+    ) =>
+      Effect.gen(function* () {
+        if (ctx.completedTurnIds.has(turnId)) return;
+        ctx.cancellingTurnIds.add(turnId);
+        ctx.turnCancellationReasons.set(turnId, reason);
+        const cancelSignal = ctx.turnCancelSignals.get(turnId);
+        if (cancelSignal) {
+          yield* Deferred.succeed(cancelSignal, undefined).pipe(Effect.ignore);
+        }
+        const promptCompletion = ctx.turnPromptCompletions.get(turnId);
+        if (!promptCompletion) return;
+        yield* Effect.sync(() => {
+          // @effect-diagnostics-next-line runEffectInsideEffect:off
+          Effect.runFork(
+            Effect.sleep(Duration.millis(ACP_CANCEL_PROMPT_DRAIN_MS)).pipe(
+              Effect.andThen(
+                Effect.gen(function* () {
+                  if (ctx.completedTurnIds.has(turnId) || ctx.stopped) return;
+                  yield* Deferred.succeed(
+                    promptCompletion,
+                    Exit.fail(
+                      new ProviderAdapterRequestError({
+                        provider,
+                        method: "session/prompt",
+                        detail: drainFailureDetail,
+                      }),
+                    ),
+                  ).pipe(Effect.ignore);
+                  yield* stopSessionWithoutWaitingForPrompt(ctx);
+                }),
+              ),
+            ),
+          );
         });
       });
 
@@ -860,6 +904,7 @@ export function makeGenericAcpAdapter(
             workflowActionNotices: new Set(),
             completedTurnIds: new Set(),
             cancellingTurnIds: new Set(),
+            turnCancellationReasons: new Map(),
             turnGate,
             turnIdle,
             turnCancelSignals: new Map(),
@@ -1138,7 +1183,7 @@ export function makeGenericAcpAdapter(
             if (ctx.cancellingTurnIds.has(turnId)) {
               yield* completeTurnLocally(ctx, turnId, {
                 state: "cancelled",
-                stopReason: "session/cancel requested",
+                stopReason: ctx.turnCancellationReasons.get(turnId) ?? "session/cancel requested",
               });
               return undefined;
             }
@@ -1158,6 +1203,8 @@ export function makeGenericAcpAdapter(
         }
 
         const wasCancelling = ctx.cancellingTurnIds.delete(turnId);
+        const cancellationReason =
+          ctx.turnCancellationReasons.get(turnId) ?? "session/cancel requested";
         ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result: promptResult }] });
         const { activeTurnId: _activeTurnId, ...sessionWithoutActiveTurn } = ctx.session;
         void _activeTurnId;
@@ -1196,7 +1243,7 @@ export function makeGenericAcpAdapter(
               wasCancelling || promptResult.stopReason === "cancelled" ? "cancelled" : "completed",
             stopReason:
               wasCancelling && promptResult.stopReason !== "cancelled"
-                ? "session/cancel requested"
+                ? cancellationReason
                 : (promptResult.stopReason ?? null),
           },
         });
@@ -1249,45 +1296,48 @@ export function makeGenericAcpAdapter(
     ) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(threadId);
+        const interruptedTurnId = turnId ?? ctx.activeTurnId;
         const pausedWorkflow = yield* pauseActiveWorkflows(ctx);
         if (pausedWorkflow) {
+          if (interruptedTurnId && !ctx.completedTurnIds.has(interruptedTurnId)) {
+            yield* beginTurnCancellation(
+              ctx,
+              interruptedTurnId,
+              "workflow pause requested",
+              "Prompt did not settle after workflow pause.",
+            );
+          }
           yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
           yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
+          if (interruptedTurnId && !ctx.completedTurnIds.has(interruptedTurnId)) {
+            const promptCompletion = ctx.turnPromptCompletions.get(interruptedTurnId);
+            yield* completeTurnLocally(ctx, interruptedTurnId, {
+              state: "cancelled",
+              stopReason: "workflow pause requested",
+            });
+            if (promptCompletion) {
+              yield* Deferred.succeed(
+                promptCompletion,
+                Exit.fail(
+                  new ProviderAdapterRequestError({
+                    provider,
+                    method: "session/prompt",
+                    detail: "Prompt interrupted after workflow pause.",
+                  }),
+                ),
+              ).pipe(Effect.ignore);
+              yield* stopSessionWithoutWaitingForPrompt(ctx);
+            }
+          }
           return;
         }
-        const interruptedTurnId = turnId ?? ctx.activeTurnId;
         if (interruptedTurnId && !ctx.completedTurnIds.has(interruptedTurnId)) {
-          ctx.cancellingTurnIds.add(interruptedTurnId);
-          const cancelSignal = ctx.turnCancelSignals.get(interruptedTurnId);
-          if (cancelSignal) {
-            yield* Deferred.succeed(cancelSignal, undefined).pipe(Effect.ignore);
-          }
-          const promptCompletion = ctx.turnPromptCompletions.get(interruptedTurnId);
-          if (promptCompletion) {
-            yield* Effect.sync(() => {
-              // @effect-diagnostics-next-line runEffectInsideEffect:off
-              Effect.runFork(
-                Effect.sleep(Duration.millis(ACP_CANCEL_PROMPT_DRAIN_MS)).pipe(
-                  Effect.andThen(
-                    Effect.gen(function* () {
-                      if (ctx.completedTurnIds.has(interruptedTurnId) || ctx.stopped) return;
-                      yield* Deferred.succeed(
-                        promptCompletion,
-                        Exit.fail(
-                          new ProviderAdapterRequestError({
-                            provider,
-                            method: "session/prompt",
-                            detail: "Prompt did not settle after session/cancel.",
-                          }),
-                        ),
-                      ).pipe(Effect.ignore);
-                      yield* stopSessionWithoutWaitingForPrompt(ctx);
-                    }),
-                  ),
-                ),
-              );
-            });
-          }
+          yield* beginTurnCancellation(
+            ctx,
+            interruptedTurnId,
+            "session/cancel requested",
+            "Prompt did not settle after session/cancel.",
+          );
         }
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
