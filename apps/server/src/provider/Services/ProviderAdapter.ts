@@ -64,6 +64,13 @@ export interface ProviderAdapterShape<TError> {
   ) => Effect.Effect<ProviderTurnStartResult, TError>;
 
   /**
+   * Optionally steer an existing active turn without opening a new turn.
+   */
+  readonly sendActiveTurnInput?: (
+    input: ProviderSendTurnInput & { readonly turnId?: TurnId },
+  ) => Effect.Effect<boolean | void, TError>;
+
+  /**
    * Interrupt an active turn.
    */
   readonly interruptTurn: (threadId: ThreadId, turnId?: TurnId) => Effect.Effect<void, TError>;

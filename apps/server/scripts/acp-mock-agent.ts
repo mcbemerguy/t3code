@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off
-import { appendFileSync } from "node:fs";
+// @effect-diagnostics globalTimers:off
+// @effect-diagnostics runEffectInsideEffect:off
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -17,13 +20,44 @@ const emitToolCalls = process.env.T3_ACP_EMIT_TOOL_CALLS === "1";
 const emitInterleavedAssistantToolCalls =
   process.env.T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS === "1";
 const emitGenericToolPlaceholders = process.env.T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS === "1";
+const emitSubagentToolCall = process.env.T3_ACP_EMIT_SUBAGENT_TOOL_CALL === "1";
 const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
-const enableSessionList = process.env.T3_ACP_ENABLE_SESSION_LIST === "1";
-const failLoadSession = process.env.T3_ACP_FAIL_LOAD_SESSION === "1";
-const listExtraCwd = process.env.T3_ACP_LIST_EXTRA_CWD;
+const emitAvailableCommands = process.env.T3_ACP_EMIT_AVAILABLE_COMMANDS === "1";
+const emitAvailableCommandsOnPrompt = process.env.T3_ACP_EMIT_AVAILABLE_COMMANDS_ON_PROMPT === "1";
+const omitModelConfig = process.env.T3_ACP_OMIT_MODEL_CONFIG === "1";
+const emitThoughtLevelConfig = process.env.T3_ACP_EMIT_THOUGHT_LEVEL_CONFIG === "1";
 const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
+const promptDelayMs = Number(process.env.T3_ACP_PROMPT_DELAY_MS ?? "0");
+const permissionOptionIds = {
+  allowOnce: process.env.T3_ACP_ALLOW_ONCE_OPTION_ID ?? "allow-once",
+  allowAlways: process.env.T3_ACP_ALLOW_ALWAYS_OPTION_ID ?? "allow-always",
+  rejectOnce: process.env.T3_ACP_REJECT_ONCE_OPTION_ID ?? "reject-once",
+};
+const failPrompt = process.env.T3_ACP_FAIL_PROMPT === "1";
+const failPromptDetail = process.env.T3_ACP_FAIL_PROMPT_DETAIL ?? "Mock prompt failed";
+const enableSessionList = process.env.T3_ACP_ENABLE_SESSION_LIST === "1";
+const enablePiSteering = process.env.T3_ACP_ENABLE_PI_STEERING === "1";
+const enablePiWorkflows = process.env.T3_ACP_ENABLE_PI_WORKFLOWS === "1";
+const emitWorkflowReplayOnLoad = process.env.T3_ACP_EMIT_WORKFLOW_REPLAY_ON_LOAD === "1";
+const workflowReplaySequence =
+  parseNonNegativeIntOrZero(process.env.T3_ACP_WORKFLOW_REPLAY_SEQUENCE) || 1;
+const workflowListRunIds = parseCommaSeparatedList(process.env.T3_ACP_WORKFLOW_LIST_RUN_IDS);
+const failLoadSession = process.env.T3_ACP_FAIL_LOAD_SESSION === "1";
+const failCreateSessionCount = parseNonNegativeIntOrZero(
+  process.env.T3_ACP_FAIL_CREATE_SESSION_COUNT,
+);
+let statelessFailCreateSessionAttempts = 0;
+const failCreateSessionStatePath = process.env.T3_ACP_FAIL_CREATE_SESSION_STATE_PATH;
+const failCreateSessionDetail =
+  process.env.T3_ACP_FAIL_CREATE_SESSION_DETAIL ?? "Mock failed session/new during startup";
+const failPromptAfterCancel = process.env.T3_ACP_FAIL_PROMPT_AFTER_CANCEL === "1";
+const hangCancel = process.env.T3_ACP_HANG_CANCEL === "1";
+const hangPrompt = process.env.T3_ACP_HANG_PROMPT === "1";
+const hangPromptAfterCancel = process.env.T3_ACP_HANG_PROMPT_AFTER_CANCEL === "1";
+const promptStopReasonCancelled = process.env.T3_ACP_PROMPT_STOP_REASON_CANCELLED === "1";
+const listExtraCwd = process.env.T3_ACP_LIST_EXTRA_CWD;
 const sessionId = "mock-session-1";
 
 let currentModeId = "ask";
@@ -33,6 +67,37 @@ let currentReasoning = "medium";
 let currentContext = "272k";
 let currentFast = false;
 const cancelledSessions = new Set<string>();
+
+function parseNonNegativeIntOrZero(value: string | undefined): number {
+  if (value === undefined) return 0;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function parseCommaSeparatedList(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+}
+
+function readCreateSessionFailureAttempts(): number {
+  if (!failCreateSessionStatePath || !existsSync(failCreateSessionStatePath)) return 0;
+  const raw = readFileSync(failCreateSessionStatePath, "utf8").trim();
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function shouldFailCreateSession(): boolean {
+  if (failCreateSessionCount <= 0) return false;
+  if (!failCreateSessionStatePath) {
+    statelessFailCreateSessionAttempts++;
+    return statelessFailCreateSessionAttempts <= failCreateSessionCount;
+  }
+  const attempts = readCreateSessionFailureAttempts();
+  writeFileSync(failCreateSessionStatePath, String(attempts + 1), "utf8");
+  return attempts < failCreateSessionCount;
+}
 
 function logExit(reason: string): void {
   if (!exitLogPath) {
@@ -54,6 +119,12 @@ process.once("SIGINT", () => {
 process.once("exit", (code) => {
   logExit(`exit:${code}`);
 });
+
+function maybeOmitModelConfig(
+  options: ReadonlyArray<AcpSchema.SessionConfigOption>,
+): ReadonlyArray<AcpSchema.SessionConfigOption> {
+  return omitModelConfig ? options.filter((option) => option.category !== "model") : options;
+}
 
 function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
   if (parameterizedModelPicker) {
@@ -87,7 +158,7 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
 
     switch (currentModelId) {
       case "gpt-5.4":
-        return [
+        return maybeOmitModelConfig([
           ...baseOptions,
           {
             id: "reasoning",
@@ -125,9 +196,9 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
               { value: "true", name: "Fast" },
             ],
           },
-        ];
+        ]);
       case "composer-2":
-        return [
+        return maybeOmitModelConfig([
           ...baseOptions,
           {
             id: "fast",
@@ -140,9 +211,9 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
               { value: "true", name: "Fast" },
             ],
           },
-        ];
+        ]);
       case "claude-opus-4-6":
-        return [
+        return maybeOmitModelConfig([
           ...baseOptions,
           {
             id: "reasoning",
@@ -163,13 +234,13 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
             type: "boolean",
             currentValue: true,
           },
-        ];
+        ]);
       default:
-        return baseOptions;
+        return maybeOmitModelConfig(baseOptions);
     }
   }
 
-  return [
+  const baseOptions: Array<AcpSchema.SessionConfigOption> = [
     {
       id: "model",
       name: "Model",
@@ -184,6 +255,27 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
       ],
     },
   ];
+
+  return maybeOmitModelConfig([
+    ...baseOptions,
+    ...(emitThoughtLevelConfig
+      ? [
+          {
+            id: "thought_level",
+            name: "Thinking level",
+            category: "thought_level",
+            type: "select" as const,
+            currentValue: currentReasoning,
+            options: [
+              { value: "off", name: "Off" },
+              { value: "low", name: "Low" },
+              { value: "medium", name: "Medium" },
+              { value: "high", name: "High" },
+            ],
+          },
+        ]
+      : []),
+  ]);
 }
 
 function modelConfigOptionsFor(modelId: string): ReadonlyArray<AcpSchema.SessionConfigOption> {
@@ -240,6 +332,35 @@ function modeState(): AcpSchema.SessionModeState {
   };
 }
 
+function availableCommands(): ReadonlyArray<AcpSchema.AvailableCommand> {
+  return [
+    {
+      name: "/mock",
+      description: "Run a mock command",
+      input: { hint: "optional input" },
+    },
+    {
+      name: "Mock",
+      description: "Duplicate ignored",
+    },
+  ];
+}
+
+const customAcpModels: ReadonlyArray<AcpSchema.ModelInfo> = [
+  { modelId: "default", name: "Default" },
+  { modelId: "custom-acp-mock-alt", name: "Custom ACP Mock Alt" },
+];
+
+function modelState(): AcpSchema.SessionModelState {
+  const modelId = customAcpModels.some((model) => model.modelId === currentModelId)
+    ? currentModelId
+    : "default";
+  return {
+    currentModelId: modelId,
+    availableModels: customAcpModels,
+  };
+}
+
 const program = Effect.gen(function* () {
   const agent = yield* EffectAcpAgent.AcpAgent;
 
@@ -252,6 +373,29 @@ const program = Effect.gen(function* () {
         agentCapabilities: {
           loadSession: true,
           ...(enableSessionList ? { sessionCapabilities: { list: {} } } : {}),
+          ...(enablePiSteering || enablePiWorkflows
+            ? {
+                _meta: {
+                  piAcp: {
+                    ...(enablePiSteering ? { steering: true, steeringMethod: "_pi/steer" } : {}),
+                    ...(enablePiWorkflows
+                      ? {
+                          workflows: true,
+                          workflowMethods: [
+                            "_pi/workflows/list",
+                            "_pi/workflows/get",
+                            "_pi/workflows/events",
+                            "_pi/workflows/resume",
+                            "_pi/workflows/pause",
+                            "_pi/workflows/abort",
+                          ],
+                          workflowEventsMethod: "_pi/workflows/events",
+                        }
+                      : {}),
+                  },
+                },
+              }
+            : {}),
         },
       };
     }),
@@ -260,10 +404,33 @@ const program = Effect.gen(function* () {
   yield* agent.handleAuthenticate(() => Effect.succeed({}));
 
   yield* agent.handleCreateSession(() =>
-    Effect.succeed({
-      sessionId,
-      modes: modeState(),
-      configOptions: configOptions(),
+    Effect.gen(function* () {
+      if (shouldFailCreateSession()) {
+        return yield* AcpError.AcpRequestError.internalError(failCreateSessionDetail, {
+          method: "session/new",
+        });
+      }
+      return yield* Effect.sync(() => {
+        if (emitAvailableCommands) {
+          queueMicrotask(() => {
+            Effect.runFork(
+              agent.client.sessionUpdate({
+                sessionId,
+                update: {
+                  sessionUpdate: "available_commands_update",
+                  availableCommands: availableCommands(),
+                },
+              }),
+            );
+          });
+        }
+        return {
+          sessionId,
+          modes: modeState(),
+          models: modelState(),
+          configOptions: configOptions(),
+        };
+      });
     }),
   );
 
@@ -298,20 +465,65 @@ const program = Effect.gen(function* () {
             method: "session/load",
           }),
         )
-      : agent.client
-          .sessionUpdate({
-            sessionId: String(request.sessionId ?? sessionId),
+      : Effect.gen(function* () {
+          const requestedSessionId = String(request.sessionId ?? sessionId);
+          yield* agent.client.sessionUpdate({
+            sessionId: requestedSessionId,
             update: {
               sessionUpdate: "user_message_chunk",
               content: { type: "text", text: "replay" },
             },
-          })
-          .pipe(
-            Effect.as({
-              modes: modeState(),
-              configOptions: configOptions(),
-            }),
-          ),
+          });
+          if (emitWorkflowReplayOnLoad) {
+            yield* agent.client.extNotification("_pi/workflows/events", {
+              sessionId: requestedSessionId,
+              runId: "workflow-run-1",
+              sequence: workflowReplaySequence,
+              event: {
+                type: "run_start",
+                runId: "workflow-run-1",
+                sequence: workflowReplaySequence,
+                workflowId: "mock-workflow",
+                runDir: "/tmp/workflow-run-1",
+                auditPath: "/tmp/workflow-run-1/audit.md",
+                status: "running",
+              },
+            });
+            yield* agent.client.sessionUpdate({
+              sessionId: requestedSessionId,
+              update: {
+                sessionUpdate: "tool_call",
+                toolCallId: "workflow:workflow-run-1",
+                title: "Workflow: mock-workflow",
+                kind: "other",
+                status: "in_progress",
+                rawInput: { runId: "workflow-run-1" },
+                _meta: { piWorkflow: { runId: "workflow-run-1" } },
+              },
+            } as AcpSchema.SessionNotification);
+          }
+          return {
+            modes: modeState(),
+            models: modelState(),
+            configOptions: configOptions(),
+          };
+        }),
+  );
+
+  yield* agent.handleSetSessionModel((request) =>
+    Effect.gen(function* () {
+      if (!customAcpModels.some((model) => model.modelId === request.modelId)) {
+        return yield* AcpError.AcpRequestError.invalidParams(
+          `Unknown mock model id: ${request.modelId}`,
+          {
+            method: "session/set_model",
+            params: request,
+          },
+        );
+      }
+      currentModelId = request.modelId;
+      return {};
+    }),
   );
 
   yield* agent.handleSetSessionConfigOption((request) =>
@@ -336,7 +548,10 @@ const program = Effect.gen(function* () {
       if (request.configId === "model" && typeof request.value === "string") {
         currentModelId = request.value;
       }
-      if (request.configId === "reasoning" && typeof request.value === "string") {
+      if (
+        (request.configId === "reasoning" || request.configId === "thought_level") &&
+        typeof request.value === "string"
+      ) {
         currentReasoning = request.value;
       }
       if (request.configId === "context" && typeof request.value === "string") {
@@ -352,14 +567,66 @@ const program = Effect.gen(function* () {
   );
 
   yield* agent.handleCancel(({ sessionId }) =>
-    Effect.sync(() => {
-      cancelledSessions.add(String(sessionId ?? "mock-session-1"));
-    }),
+    hangCancel
+      ? Effect.never
+      : Effect.sync(() => {
+          cancelledSessions.add(String(sessionId ?? "mock-session-1"));
+        }),
   );
+
+  for (const method of [
+    "_pi/workflows/resume",
+    "_pi/workflows/pause",
+    "_pi/workflows/abort",
+  ] as const) {
+    yield* agent.handleExtRequest(method, Schema.Unknown, (params) => {
+      const payload =
+        typeof params === "object" && params !== null ? (params as Record<string, unknown>) : {};
+      const runId = typeof payload.runId === "string" ? payload.runId : "workflow-run-1";
+      return Effect.succeed({
+        run: {
+          id: runId,
+          runId,
+          status:
+            method === "_pi/workflows/abort"
+              ? "aborted"
+              : method === "_pi/workflows/pause"
+                ? "paused"
+                : "recovering",
+        },
+      });
+    });
+  }
 
   yield* agent.handlePrompt((request) =>
     Effect.gen(function* () {
       const requestedSessionId = String(request.sessionId ?? sessionId);
+
+      if (hangPrompt) {
+        return yield* Effect.never;
+      }
+
+      if (Number.isFinite(promptDelayMs) && promptDelayMs > 0) {
+        yield* Effect.sleep(`${promptDelayMs} millis`);
+      }
+
+      if (emitAvailableCommandsOnPrompt) {
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "available_commands_update",
+            availableCommands: availableCommands(),
+          },
+        });
+      }
+
+      if (failPrompt) {
+        return yield* AcpError.AcpRequestError.internalError("Internal error", {
+          details: failPromptDetail,
+          method: "session/prompt",
+          params: request,
+        });
+      }
 
       if (emitInterleavedAssistantToolCalls) {
         const toolCallId = "tool-call-1";
@@ -455,15 +722,30 @@ const program = Effect.gen(function* () {
             ],
           },
           options: [
-            { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
-            { optionId: "allow-always", name: "Allow always", kind: "allow_always" },
-            { optionId: "reject-once", name: "Reject", kind: "reject_once" },
+            { optionId: permissionOptionIds.allowOnce, name: "Allow once", kind: "allow_once" },
+            {
+              optionId: permissionOptionIds.allowAlways,
+              name: "Allow always",
+              kind: "allow_always",
+            },
+            { optionId: permissionOptionIds.rejectOnce, name: "Reject", kind: "reject_once" },
           ],
         });
 
         const cancelled =
           cancelledSessions.delete(requestedSessionId) ||
           permission.outcome.outcome === "cancelled";
+
+        if (cancelled && hangPromptAfterCancel) {
+          return yield* Effect.never;
+        }
+
+        if (cancelled && failPromptAfterCancel) {
+          return yield* AcpError.AcpRequestError.invalidParams("Mock prompt failed after cancel", {
+            method: "session/prompt",
+            params: request,
+          });
+        }
 
         yield* agent.client.sessionUpdate({
           sessionId: requestedSessionId,
@@ -489,7 +771,7 @@ const program = Effect.gen(function* () {
           },
         });
 
-        return { stopReason: cancelled ? "cancelled" : "end_turn" };
+        return { stopReason: cancelled || promptStopReasonCancelled ? "cancelled" : "end_turn" };
       }
 
       if (emitGenericToolPlaceholders) {
@@ -524,6 +806,39 @@ const program = Effect.gen(function* () {
             status: "completed",
             rawOutput: {
               content: "package.json\n",
+            },
+          },
+        });
+
+        return { stopReason: "end_turn" };
+      }
+
+      if (emitSubagentToolCall) {
+        const toolCallId = "tool-call-subagent-1";
+
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId,
+            title: "subagent",
+            kind: "other",
+            status: "in_progress",
+            rawInput: {
+              type: "scout",
+              tasks: ["find ACP tool code", "find t3code rendering code", "find tests"],
+            },
+          },
+        });
+
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId,
+            status: "completed",
+            rawOutput: {
+              content: "scout results",
             },
           },
         });
@@ -577,7 +892,7 @@ const program = Effect.gen(function* () {
         },
       });
 
-      return { stopReason: "end_turn" };
+      return { stopReason: promptStopReasonCancelled ? "cancelled" : "end_turn" };
     }),
   );
 
@@ -585,6 +900,44 @@ const program = Effect.gen(function* () {
     if (method === "cursor/list_available_models") {
       return Effect.succeed({
         models: availableModels(),
+      });
+    }
+
+    if (method.startsWith("_pi/workflows/")) {
+      const payload =
+        typeof params === "object" && params !== null ? (params as Record<string, unknown>) : {};
+      const runId = typeof payload.runId === "string" ? payload.runId : "workflow-run-1";
+      if (method === "_pi/workflows/list") {
+        const listedRunIds = workflowListRunIds.length > 0 ? workflowListRunIds : [runId];
+        return Effect.succeed({
+          runs: listedRunIds.map((listedRunId) => ({
+            id: listedRunId,
+            runId: listedRunId,
+            status: "running",
+            runDir: `/tmp/${listedRunId}`,
+            auditPath: `/tmp/${listedRunId}/audit.md`,
+          })),
+        });
+      }
+      if (method === "_pi/workflows/events") {
+        return Effect.succeed({
+          events: [],
+          nextOffset: 0,
+          lastSequence: 1,
+          malformedLineCount: 0,
+        });
+      }
+      return Effect.succeed({
+        run: {
+          id: runId,
+          runId,
+          status:
+            method === "_pi/workflows/abort"
+              ? "aborted"
+              : method === "_pi/workflows/pause"
+                ? "paused"
+                : "recovering",
+        },
       });
     }
 
