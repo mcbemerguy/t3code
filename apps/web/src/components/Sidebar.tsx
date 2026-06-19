@@ -1641,25 +1641,26 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         if (!confirmed) return;
       }
 
-      const deletedThreadKeys = new Set(threadKeys);
-      const deletedSelectionKeys: string[] = [];
+      const successfulDeletedThreadKeys = new Set<string>();
       let failedCount = 0;
       let firstError: unknown;
       for (const threadKey of threadKeys) {
         const thread = sidebarThreadByKeyRef.current.get(threadKey);
         if (!thread) continue;
+        const deletedThreadKeysForAttempt = new Set(successfulDeletedThreadKeys);
+        deletedThreadKeysForAttempt.add(threadKey);
         try {
           await deleteThread(scopeThreadRef(thread.environmentId, thread.id), {
-            deletedThreadKeys,
+            deletedThreadKeys: deletedThreadKeysForAttempt,
           });
-          deletedSelectionKeys.push(threadKey);
+          successfulDeletedThreadKeys.add(threadKey);
         } catch (error) {
           failedCount += 1;
           firstError ??= error;
         }
       }
-      if (deletedSelectionKeys.length > 0) {
-        removeFromSelection(deletedSelectionKeys);
+      if (successfulDeletedThreadKeys.size > 0) {
+        removeFromSelection([...successfulDeletedThreadKeys]);
       }
       if (failedCount > 0) {
         showThreadDeleteFailedToast(firstError, failedCount);
