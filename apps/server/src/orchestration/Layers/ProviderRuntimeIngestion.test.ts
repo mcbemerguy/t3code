@@ -3017,6 +3017,102 @@ describe("ProviderRuntimeIngestion", () => {
     ).toBe("# Plan title");
   });
 
+  it("projects Pi reasoning deltas into a persisted thought activity", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "item.started",
+      eventId: asEventId("evt-pi-reasoning-started"),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-pi-reasoning-1"),
+      itemId: "pi-reasoning-1",
+      payload: {
+        itemType: "reasoning",
+        status: "inProgress",
+        title: "Reasoning",
+      },
+    });
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-pi-reasoning-delta-1"),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-pi-reasoning-1"),
+      itemId: "pi-reasoning-1",
+      payload: {
+        streamKind: "reasoning_text",
+        delta: "Inspecting repository ",
+      },
+    });
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-pi-reasoning-delta-2"),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-pi-reasoning-1"),
+      itemId: "pi-reasoning-1",
+      payload: {
+        streamKind: "reasoning_text",
+        delta: "state before editing.",
+      },
+    });
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-pi-reasoning-completed"),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-pi-reasoning-1"),
+      itemId: "pi-reasoning-1",
+      payload: {
+        itemType: "reasoning",
+        status: "completed",
+        title: "Reasoning",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity: ProviderRuntimeTestActivity) => {
+        const payload =
+          activity.payload && typeof activity.payload === "object"
+            ? (activity.payload as Record<string, unknown>)
+            : undefined;
+        return payload?.itemType === "reasoning" && payload.status === "completed";
+      }),
+    );
+
+    const reasoningActivities = thread.activities.filter(
+      (activity: ProviderRuntimeTestActivity) => {
+        const payload =
+          activity.payload && typeof activity.payload === "object"
+            ? (activity.payload as Record<string, unknown>)
+            : undefined;
+        return payload?.itemType === "reasoning";
+      },
+    );
+    const [activity] = reasoningActivities;
+    const payload = activity?.payload as Record<string, unknown> | undefined;
+
+    expect(reasoningActivities).toHaveLength(1);
+    expect(activity?.id).toBe("pi-reasoning:thread-1:item:pi-reasoning-1");
+    expect(activity?.kind).toBe("task.progress");
+    expect(activity?.summary).toBe("Reasoning");
+    expect(activity?.tone).toBe("info");
+    expect(activity?.turnId).toBe("turn-pi-reasoning-1");
+    expect(payload?.summary).toBe("Reasoning");
+    expect(payload?.detail).toBe("Inspecting repository state before editing.");
+    expect(payload?.status).toBe("completed");
+    expect(payload?.streamKind).toBe("reasoning_text");
+  });
+
   it("projects structured user input request and resolution as thread activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

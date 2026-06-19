@@ -16,6 +16,7 @@ import {
   type OrchestrationProposedPlan,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
+  EventId,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
@@ -49,13 +50,24 @@ interface AssistantSegmentState {
   activeMessageId: MessageId | null;
 }
 
+interface PiReasoningActivityState {
+  activityId: EventId;
+  text: string;
+  createdAt: string;
+  title: string;
+  streamKind?: "reasoning_text" | "reasoning_summary_text";
+}
+
 const TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY = 10_000;
 const TURN_MESSAGE_IDS_BY_TURN_TTL = Duration.minutes(120);
 const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_CACHE_CAPACITY = 20_000;
 const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL = Duration.minutes(120);
 const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
+const PI_REASONING_ACTIVITY_BY_KEY_CACHE_CAPACITY = 10_000;
+const PI_REASONING_ACTIVITY_BY_KEY_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
+const MAX_PI_REASONING_ACTIVITY_CHARS = 8_000;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
 type TurnStartRequestedDomainEvent = Extract<
@@ -166,6 +178,53 @@ function maxCheckpointTurnCount(
 
 function truncateDetail(value: string, limit = 180): string {
   return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
+}
+
+function appendPiReasoningActivityText(previous: string, delta: string): string {
+  return truncateDetail(`${previous}${delta}`, MAX_PI_REASONING_ACTIVITY_CHARS);
+}
+
+function isPiProviderEvent(event: ProviderRuntimeEvent): boolean {
+  return String(event.provider) === "pi";
+}
+
+function isReasoningContentDelta(
+  event: ProviderRuntimeEvent,
+): event is Extract<ProviderRuntimeEvent, { type: "content.delta" }> {
+  return (
+    event.type === "content.delta" &&
+    (event.payload.streamKind === "reasoning_text" ||
+      event.payload.streamKind === "reasoning_summary_text")
+  );
+}
+
+function isReasoningItemLifecycle(
+  event: ProviderRuntimeEvent,
+): event is Extract<ProviderRuntimeEvent, { type: "item.started" | "item.completed" }> {
+  return (
+    (event.type === "item.started" || event.type === "item.completed") &&
+    event.payload.itemType === "reasoning"
+  );
+}
+
+function piReasoningActivityKey(event: ProviderRuntimeEvent): string {
+  const eventKey = event.itemId
+    ? `item:${event.itemId}`
+    : event.turnId
+      ? `turn:${event.turnId}`
+      : `event:${event.eventId}`;
+  return `${event.threadId}:${eventKey}`;
+}
+
+function piReasoningActivityId(event: ProviderRuntimeEvent): EventId {
+  return EventId.make(`pi-reasoning:${piReasoningActivityKey(event)}`);
+}
+
+function piReasoningActivityTitle(event: ProviderRuntimeEvent): string {
+  if (isReasoningItemLifecycle(event) && event.payload.title) {
+    return event.payload.title;
+  }
+  return "Reasoning";
 }
 
 function normalizeProposedPlanMarkdown(planMarkdown: string | undefined): string | undefined {
@@ -689,6 +748,13 @@ const make = Effect.gen(function* () {
     lookup: () => Effect.succeed({ text: "", createdAt: "" }),
   });
 
+  const piReasoningActivityByKey = yield* Cache.make<string, PiReasoningActivityState>({
+    capacity: PI_REASONING_ACTIVITY_BY_KEY_CACHE_CAPACITY,
+    timeToLive: PI_REASONING_ACTIVITY_BY_KEY_TTL,
+    lookup: () =>
+      Effect.die(new Error("Pi reasoning activity state must be initialized before lookup")),
+  });
+
   const resolveThreadDetail = Effect.fn("resolveThreadDetail")(function* (threadId: ThreadId) {
     return yield* projectionSnapshotQuery
       .getThreadDetailById(threadId)
@@ -757,6 +823,96 @@ const make = Effect.gen(function* () {
 
   const clearAssistantSegmentStateForTurn = (threadId: ThreadId, turnId: TurnId) =>
     Cache.invalidate(assistantSegmentStateByTurnKey, providerTurnKey(threadId, turnId));
+
+  const getPiReasoningActivityState = (event: ProviderRuntimeEvent) =>
+    Cache.getOption(piReasoningActivityByKey, piReasoningActivityKey(event));
+
+  const setPiReasoningActivityState = (
+    event: ProviderRuntimeEvent,
+    state: PiReasoningActivityState,
+  ) => Cache.set(piReasoningActivityByKey, piReasoningActivityKey(event), state);
+
+  const clearPiReasoningActivityState = (event: ProviderRuntimeEvent) =>
+    Cache.invalidate(piReasoningActivityByKey, piReasoningActivityKey(event));
+
+  const dispatchPiReasoningActivity = (
+    event: ProviderRuntimeEvent,
+    state: PiReasoningActivityState,
+    status: "inProgress" | "completed" = "inProgress",
+  ) =>
+    providerCommandId(event, "pi-reasoning-activity-upsert").pipe(
+      Effect.flatMap((commandId) =>
+        orchestrationEngine.dispatch({
+          type: "thread.activity.append",
+          commandId,
+          threadId: event.threadId,
+          activity: {
+            id: state.activityId,
+            createdAt: state.createdAt,
+            tone: "info",
+            kind: "task.progress",
+            summary: state.title,
+            payload: {
+              taskId: String(event.itemId ?? state.activityId),
+              itemType: "reasoning",
+              status,
+              summary: state.title,
+              detail: state.text,
+              ...(state.streamKind ? { streamKind: state.streamKind } : {}),
+            },
+            turnId: toTurnId(event.turnId) ?? null,
+          },
+          createdAt: state.createdAt,
+        }),
+      ),
+    );
+
+  const ingestPiReasoningActivity = Effect.fn("ingestPiReasoningActivity")(function* (
+    event: ProviderRuntimeEvent,
+  ) {
+    if (!isPiProviderEvent(event)) return;
+
+    if (isReasoningItemLifecycle(event)) {
+      const existing = yield* getPiReasoningActivityState(event);
+      const current = Option.getOrUndefined(existing);
+      const next = {
+        activityId: current?.activityId ?? piReasoningActivityId(event),
+        text: current?.text ?? "",
+        createdAt: current?.createdAt ?? event.createdAt,
+        title: event.payload.title ?? current?.title ?? "Reasoning",
+        ...(current?.streamKind ? { streamKind: current.streamKind } : {}),
+      } satisfies PiReasoningActivityState;
+
+      if (event.type === "item.started") {
+        yield* setPiReasoningActivityState(event, next);
+        return;
+      }
+
+      if (next.text.trim().length > 0) {
+        yield* dispatchPiReasoningActivity(event, next, "completed");
+      }
+      yield* clearPiReasoningActivityState(event);
+      return;
+    }
+
+    if (!isReasoningContentDelta(event) || event.payload.delta.length === 0) return;
+
+    const existing = yield* getPiReasoningActivityState(event);
+    const current = Option.getOrUndefined(existing);
+    const streamKind =
+      event.payload.streamKind === "reasoning_summary_text"
+        ? "reasoning_summary_text"
+        : "reasoning_text";
+    const next = {
+      activityId: current?.activityId ?? piReasoningActivityId(event),
+      text: appendPiReasoningActivityText(current?.text ?? "", event.payload.delta),
+      createdAt: current?.createdAt ?? event.createdAt,
+      title: current?.title ?? piReasoningActivityTitle(event),
+      streamKind,
+    } satisfies PiReasoningActivityState;
+    yield* setPiReasoningActivityState(event, next);
+    yield* dispatchPiReasoningActivity(event, next);
+  });
 
   const getActiveAssistantMessageIdForTurn = (threadId: ThreadId, turnId: TurnId) =>
     getAssistantSegmentStateForTurn(threadId, turnId).pipe(
@@ -1623,6 +1779,8 @@ const make = Effect.gen(function* () {
           title: event.payload.name,
         });
       }
+
+      yield* ingestPiReasoningActivity(event);
 
       if (event.type === "turn.diff.updated") {
         const turnId = toTurnId(event.turnId);
