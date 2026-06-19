@@ -7,6 +7,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 import {
   buildProviderInstanceUpdatePatch,
+  deriveProviderSettingsRows,
   formatDiagnosticsDescription,
 } from "./SettingsPanels.logic";
 
@@ -45,6 +46,51 @@ describe("formatDiagnosticsDescription", () => {
         otlpMetricsEnabled: false,
       }),
     ).toBe("Local trace file.");
+  });
+});
+
+describe("deriveProviderSettingsRows", () => {
+  it("renders configured Custom ACP instances without requiring a legacy provider slot", () => {
+    const customAcp = ProviderDriverKind.make("customAcp");
+    const customAcpInstanceId = ProviderInstanceId.make("customAcp_piLocal");
+    const customAcpInstance = {
+      driver: customAcp,
+      enabled: true,
+      config: {
+        command: "node",
+        args: "dist/index.js",
+      },
+    } satisfies ProviderInstanceConfig;
+
+    const rows = deriveProviderSettingsRows({
+      settings: {
+        ...DEFAULT_SERVER_SETTINGS,
+        providerInstances: {
+          [customAcpInstanceId]: customAcpInstance,
+        },
+      },
+      visibleProviderSettings: [
+        { provider: ProviderDriverKind.make("pi") },
+        { provider: customAcp },
+      ],
+    });
+
+    expect(rows.some((row) => row.instanceId === ProviderInstanceId.make("pi"))).toBe(true);
+    const customAcpRow = rows.find((row) => row.instanceId === customAcpInstanceId);
+    expect(customAcpRow).toMatchObject({
+      instance: customAcpInstance,
+      driver: customAcp,
+      isDefault: false,
+    });
+  });
+
+  it("does not synthesize an empty default row for drivers without legacy settings", () => {
+    const rows = deriveProviderSettingsRows({
+      settings: DEFAULT_SERVER_SETTINGS,
+      visibleProviderSettings: [{ provider: ProviderDriverKind.make("customAcp") }],
+    });
+
+    expect(rows).toEqual([]);
   });
 });
 
