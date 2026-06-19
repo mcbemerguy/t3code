@@ -125,6 +125,29 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
       }
     }));
 
+  it("removes persisted bindings without touching provider-owned session files", () =>
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory;
+      const runtimeRepository = yield* ProviderSessionRuntimeRepository;
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-session-file-"));
+      const sessionFile = path.join(tempDir, "pi-session.jsonl");
+      fs.writeFileSync(sessionFile, "{}\n", "utf8");
+
+      const threadId = ThreadId.make("thread-remove-runtime");
+      yield* directory.upsert({
+        provider: ProviderDriverKind.make("pi"),
+        threadId,
+        resumeCursor: { sessionFile },
+      });
+
+      yield* directory.remove(threadId);
+
+      const runtime = yield* runtimeRepository.getByThreadId({ threadId });
+      assert.equal(Option.isNone(runtime), true);
+      assert.equal(fs.existsSync(sessionFile), true);
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }));
+
   it("lists persisted bindings with metadata in oldest-first order", () =>
     Effect.gen(function* () {
       const directory = yield* ProviderSessionDirectory;

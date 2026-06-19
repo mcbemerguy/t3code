@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
+import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { TerminalManager } from "../../terminal/Services/Manager.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -38,6 +39,7 @@ export const logCleanupCauseUnlessInterrupted = <R, E>({
 
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
+  const providerSessionDirectory = yield* ProviderSessionDirectory;
   const providerService = yield* ProviderService;
   const terminalManager = yield* TerminalManager;
 
@@ -45,6 +47,13 @@ const make = Effect.gen(function* () {
     logCleanupCauseUnlessInterrupted({
       effect: providerService.stopSession({ threadId }),
       message: "thread deletion cleanup skipped provider session stop",
+      threadId,
+    });
+
+  const removeProviderSessionBinding = (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
+    logCleanupCauseUnlessInterrupted({
+      effect: providerSessionDirectory.remove(threadId),
+      message: "thread deletion cleanup skipped provider session binding removal",
       threadId,
     });
 
@@ -60,6 +69,7 @@ const make = Effect.gen(function* () {
   ) {
     const { threadId } = event.payload;
     yield* stopProviderSession(threadId);
+    yield* removeProviderSessionBinding(threadId);
     yield* closeThreadTerminals(threadId);
   });
 

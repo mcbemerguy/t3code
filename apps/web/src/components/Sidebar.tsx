@@ -277,6 +277,16 @@ function buildThreadJumpLabelMap(input: {
   return mapping.size > 0 ? mapping : EMPTY_THREAD_JUMP_LABELS;
 }
 
+const showThreadDeleteFailedToast = (error: unknown, count = 1) => {
+  toastManager.add(
+    stackedThreadToast({
+      type: "error",
+      title: count === 1 ? "Failed to delete thread" : `Failed to delete ${count} threads`,
+      description: error instanceof Error ? error.message : "An error occurred.",
+    }),
+  );
+};
+
 interface SidebarThreadRowProps {
   thread: SidebarThreadSummary;
   projectCwd: string | null;
@@ -1632,14 +1642,28 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       }
 
       const deletedThreadKeys = new Set(threadKeys);
+      const deletedSelectionKeys: string[] = [];
+      let failedCount = 0;
+      let firstError: unknown;
       for (const threadKey of threadKeys) {
         const thread = sidebarThreadByKeyRef.current.get(threadKey);
         if (!thread) continue;
-        await deleteThread(scopeThreadRef(thread.environmentId, thread.id), {
-          deletedThreadKeys,
-        });
+        try {
+          await deleteThread(scopeThreadRef(thread.environmentId, thread.id), {
+            deletedThreadKeys,
+          });
+          deletedSelectionKeys.push(threadKey);
+        } catch (error) {
+          failedCount += 1;
+          firstError ??= error;
+        }
       }
-      removeFromSelection(threadKeys);
+      if (deletedSelectionKeys.length > 0) {
+        removeFromSelection(deletedSelectionKeys);
+      }
+      if (failedCount > 0) {
+        showThreadDeleteFailedToast(firstError, failedCount);
+      }
     },
     [
       appSettingsConfirmThreadDelete,
@@ -1964,7 +1988,11 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           return;
         }
       }
-      await deleteThread(threadRef);
+      try {
+        await deleteThread(threadRef);
+      } catch (error) {
+        showThreadDeleteFailedToast(error);
+      }
     },
     [
       appSettingsConfirmThreadDelete,

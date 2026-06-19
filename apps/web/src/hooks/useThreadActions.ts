@@ -154,23 +154,6 @@ export function useThreadActions() {
           ].join("\n"),
         ));
 
-      if (thread.session && thread.session.status !== "closed") {
-        await api.orchestration
-          .dispatchCommand({
-            type: "thread.session.stop",
-            commandId: newCommandId(),
-            threadId: threadRef.threadId,
-            createdAt: new Date().toISOString(),
-          })
-          .catch(() => undefined);
-      }
-
-      try {
-        await api.terminal.close({ threadId: threadRef.threadId, deleteHistory: true });
-      } catch {
-        // Terminal may already be closed.
-      }
-
       const deletedThreadIds = deletedIds ?? new Set<ThreadId>();
       const currentRouteThreadRef = getCurrentRouteThreadRef();
       const shouldNavigateToFallback =
