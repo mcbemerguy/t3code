@@ -11,6 +11,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import * as EffectAcpClient from "effect-acp/client";
 import * as EffectAcpErrors from "effect-acp/errors";
+import type { ServerProviderSlashCommand } from "@t3tools/contracts";
 import type * as EffectAcpSchema from "effect-acp/schema";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
 
@@ -20,6 +21,7 @@ import {
   findSessionConfigOption,
   mergeToolCallState,
   parseSessionModeState,
+  parsePiExtensionEvent,
   parseSessionUpdateEvent,
   type AcpParsedSessionEvent,
   type AcpSessionModeState,
@@ -28,6 +30,27 @@ import {
 
 function formatConfigOptionValue(value: string | boolean): string {
   return JSON.stringify(value);
+}
+
+function extractPiSteeringMethod(response: EffectAcpSchema.InitializeResponse): string | undefined {
+  return (
+    extractPiSteeringMethodFromMeta(response.agentCapabilities?._meta) ??
+    extractPiSteeringMethodFromMeta(response._meta)
+  );
+}
+
+function extractPiSteeringMethodFromMeta(meta: unknown): string | undefined {
+  if (!isRecord(meta)) return undefined;
+  const piAcp = meta.piAcp;
+  if (!isRecord(piAcp)) return undefined;
+  if (piAcp.steering !== true) return undefined;
+  return typeof piAcp.steeringMethod === "string" && piAcp.steeringMethod.trim()
+    ? piAcp.steeringMethod.trim()
+    : "_pi/steer";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export interface AcpSpawnInput {
@@ -41,12 +64,13 @@ export interface AcpSessionRuntimeOptions {
   readonly spawn: AcpSpawnInput;
   readonly cwd: string;
   readonly resumeSessionId?: string;
+  readonly requireResumeSession?: boolean;
   readonly clientCapabilities?: EffectAcpSchema.InitializeRequest["clientCapabilities"];
   readonly clientInfo: {
     readonly name: string;
     readonly version: string;
   };
-  readonly authMethodId: string;
+  readonly authMethodId?: string;
   readonly requestLogger?: (event: AcpSessionRequestLogEvent) => Effect.Effect<void, never>;
   readonly protocolLogging?: {
     readonly logIncoming?: boolean;
@@ -71,6 +95,7 @@ export interface AcpSessionRuntimeStartResult {
     | EffectAcpSchema.NewSessionResponse
     | EffectAcpSchema.ResumeSessionResponse;
   readonly modelConfigId: string | undefined;
+  readonly piSteeringMethod: string | undefined;
 }
 
 export interface AcpSessionRuntimeShape {
@@ -92,6 +117,11 @@ export interface AcpSessionRuntimeShape {
   readonly start: () => Effect.Effect<AcpSessionRuntimeStartResult, EffectAcpErrors.AcpError>;
   readonly getEvents: () => Stream.Stream<AcpParsedSessionEvent, never>;
   readonly getModeState: Effect.Effect<AcpSessionModeState | undefined>;
+  readonly getAvailableCommands: Effect.Effect<ReadonlyArray<ServerProviderSlashCommand>>;
+  readonly getAvailableCommandsState: Effect.Effect<{
+    readonly commands: ReadonlyArray<ServerProviderSlashCommand>;
+    readonly updateCount: number;
+  }>;
   readonly getConfigOptions: Effect.Effect<ReadonlyArray<EffectAcpSchema.SessionConfigOption>>;
   readonly prompt: (
     payload: Omit<EffectAcpSchema.PromptRequest, "sessionId">,
@@ -105,6 +135,9 @@ export interface AcpSessionRuntimeShape {
     value: string | boolean,
   ) => Effect.Effect<EffectAcpSchema.SetSessionConfigOptionResponse, EffectAcpErrors.AcpError>;
   readonly setModel: (model: string) => Effect.Effect<void, EffectAcpErrors.AcpError>;
+  readonly setSessionModel: (
+    modelId: string,
+  ) => Effect.Effect<EffectAcpSchema.SetSessionModelResponse, EffectAcpErrors.AcpError>;
   readonly request: (
     method: string,
     payload: unknown,
@@ -128,6 +161,7 @@ type AcpStartState =
 interface AcpAssistantSegmentState {
   readonly nextSegmentIndex: number;
   readonly activeItemId?: string;
+  readonly activeAcpMessageId?: string;
 }
 
 interface EnsureActiveAssistantSegmentResult {
@@ -162,6 +196,8 @@ const makeAcpSessionRuntime = (
     const eventQueue = yield* Queue.unbounded<AcpParsedSessionEvent>();
     const modeStateRef = yield* Ref.make<AcpSessionModeState | undefined>(undefined);
     const toolCallsRef = yield* Ref.make(new Map<string, AcpToolCallState>());
+    const availableCommandsRef = yield* Ref.make<ReadonlyArray<ServerProviderSlashCommand>>([]);
+    const availableCommandsUpdateCountRef = yield* Ref.make(0);
     const assistantSegmentRef = yield* Ref.make<AcpAssistantSegmentState>({ nextSegmentIndex: 0 });
     const configOptionsRef = yield* Ref.make(sessionConfigOptionsFromSetup(undefined));
     const startStateRef = yield* Ref.make<AcpStartState>({ _tag: "NotStarted" });
@@ -235,9 +271,22 @@ const makeAcpSessionRuntime = (
         queue: eventQueue,
         modeStateRef,
         toolCallsRef,
+        availableCommandsRef,
+        availableCommandsUpdateCountRef,
         assistantSegmentRef,
         params: notification,
       }),
+    );
+
+    yield* acp.raw.notifications.pipe(
+      Stream.runForEach((notification) => {
+        if (notification._tag !== "ExtNotification") {
+          return Effect.void;
+        }
+        const event = parsePiExtensionEvent(notification.method, notification.params);
+        return event ? Queue.offer(eventQueue, event) : Effect.void;
+      }),
+      Effect.forkScoped,
     );
 
     const initializeClientCapabilities = {
@@ -378,15 +427,18 @@ const makeAcpSessionRuntime = (
         acp.agent.initialize(initializePayload),
       );
 
-      const authenticatePayload = {
-        methodId: options.authMethodId,
-      } satisfies EffectAcpSchema.AuthenticateRequest;
+      const authMethodId = options.authMethodId?.trim();
+      if (authMethodId) {
+        const authenticatePayload = {
+          methodId: authMethodId,
+        } satisfies EffectAcpSchema.AuthenticateRequest;
 
-      yield* runLoggedRequest(
-        "authenticate",
-        authenticatePayload,
-        acp.agent.authenticate(authenticatePayload),
-      );
+        yield* runLoggedRequest(
+          "authenticate",
+          authenticatePayload,
+          acp.agent.authenticate(authenticatePayload),
+        );
+      }
 
       let sessionId: string;
       let sessionSetupResult:
@@ -407,6 +459,8 @@ const makeAcpSessionRuntime = (
         if (Exit.isSuccess(resumed)) {
           sessionId = options.resumeSessionId;
           sessionSetupResult = resumed.value;
+        } else if (options.requireResumeSession) {
+          return yield* Effect.failCause(resumed.cause);
         } else {
           const createPayload = {
             cwd: options.cwd,
@@ -442,6 +496,7 @@ const makeAcpSessionRuntime = (
         initializeResult,
         sessionSetupResult,
         modelConfigId: extractModelConfigId(sessionSetupResult),
+        piSteeringMethod: extractPiSteeringMethod(initializeResult),
       } satisfies AcpStartedState;
       return nextState;
     });
@@ -497,6 +552,11 @@ const makeAcpSessionRuntime = (
       start: () => start,
       getEvents: () => Stream.fromQueue(eventQueue),
       getModeState: Ref.get(modeStateRef),
+      getAvailableCommands: Ref.get(availableCommandsRef),
+      getAvailableCommandsState: Effect.all({
+        commands: Ref.get(availableCommandsRef),
+        updateCount: Ref.get(availableCommandsUpdateCountRef),
+      }),
       getConfigOptions: Ref.get(configOptionsRef),
       prompt: (payload) =>
         getStartedState.pipe(
@@ -526,7 +586,14 @@ const makeAcpSessionRuntime = (
           }),
         ),
       cancel: getStartedState.pipe(
-        Effect.flatMap((started) => acp.agent.cancel({ sessionId: started.sessionId })),
+        Effect.flatMap((started) => {
+          const requestPayload = { sessionId: started.sessionId };
+          return runLoggedRequest(
+            "session/cancel",
+            requestPayload,
+            acp.agent.cancel(requestPayload),
+          );
+        }),
       ),
       setMode: (modeId) =>
         Ref.get(modeStateRef).pipe(
@@ -543,8 +610,24 @@ const makeAcpSessionRuntime = (
       setConfigOption,
       setModel: (model) =>
         getStartedState.pipe(
-          Effect.flatMap((started) => setConfigOption(started.modelConfigId ?? "model", model)),
+          Effect.flatMap((started) =>
+            started.modelConfigId ? setConfigOption(started.modelConfigId, model) : Effect.void,
+          ),
           Effect.asVoid,
+        ),
+      setSessionModel: (modelId) =>
+        getStartedState.pipe(
+          Effect.flatMap((started) => {
+            const requestPayload = {
+              sessionId: started.sessionId,
+              modelId,
+            } satisfies EffectAcpSchema.SetSessionModelRequest;
+            return runLoggedRequest(
+              "session/set_model",
+              requestPayload,
+              acp.agent.setSessionModel(requestPayload),
+            );
+          }),
         ),
       request: (method, payload) =>
         runLoggedRequest(method, payload, acp.raw.request(method, payload)),
@@ -580,12 +663,16 @@ const handleSessionUpdate = ({
   queue,
   modeStateRef,
   toolCallsRef,
+  availableCommandsRef,
+  availableCommandsUpdateCountRef,
   assistantSegmentRef,
   params,
 }: {
   readonly queue: Queue.Queue<AcpParsedSessionEvent>;
   readonly modeStateRef: Ref.Ref<AcpSessionModeState | undefined>;
   readonly toolCallsRef: Ref.Ref<Map<string, AcpToolCallState>>;
+  readonly availableCommandsRef: Ref.Ref<ReadonlyArray<ServerProviderSlashCommand>>;
+  readonly availableCommandsUpdateCountRef: Ref.Ref<number>;
   readonly assistantSegmentRef: Ref.Ref<AcpAssistantSegmentState>;
   readonly params: EffectAcpSchema.SessionNotification;
 }): Effect.Effect<void> =>
@@ -597,6 +684,12 @@ const handleSessionUpdate = ({
       );
     }
     for (const event of parsed.events) {
+      if (event._tag === "AvailableCommandsUpdated") {
+        yield* Ref.set(availableCommandsRef, event.commands);
+        yield* Ref.update(availableCommandsUpdateCountRef, (count) => count + 1);
+        yield* Queue.offer(queue, event);
+        continue;
+      }
       if (event._tag === "ToolCallUpdated") {
         yield* closeActiveAssistantSegment({
           queue,
@@ -630,10 +723,23 @@ const handleSessionUpdate = ({
             continue;
           }
         }
+        const currentSegment = yield* Ref.get(assistantSegmentRef);
+        if (
+          event.messageId &&
+          currentSegment.activeItemId &&
+          currentSegment.activeAcpMessageId !== event.messageId
+        ) {
+          yield* closeActiveAssistantSegment({
+            queue,
+            assistantSegmentRef,
+          });
+        }
+
         const itemId = yield* ensureActiveAssistantSegment({
           queue,
           assistantSegmentRef,
           sessionId: params.sessionId,
+          ...(event.messageId ? { acpMessageId: event.messageId } : {}),
         });
         yield* Queue.offer(queue, {
           ...event,
@@ -662,26 +768,34 @@ function shouldEmitToolCallUpdate(
   previous: AcpToolCallState | undefined,
   next: AcpToolCallState,
 ): boolean {
+  if (previous === undefined) {
+    return true;
+  }
   if (next.status === "completed" || next.status === "failed") {
     return true;
   }
-  if (!next.detail) {
-    return false;
-  }
-  return previous === undefined || previous.title !== next.title || previous.detail !== next.detail;
+  return previous.title !== next.title || previous.detail !== next.detail;
 }
 
 const assistantItemId = (sessionId: string, segmentIndex: number) =>
   `assistant:${sessionId}:segment:${segmentIndex}`;
 
+const assistantItemIdForAcpMessage = (
+  sessionId: string,
+  acpMessageId: string,
+  segmentIndex: number,
+) => `assistant:${sessionId}:message:${encodeURIComponent(acpMessageId)}:segment:${segmentIndex}`;
+
 const ensureActiveAssistantSegment = ({
   queue,
   assistantSegmentRef,
   sessionId,
+  acpMessageId,
 }: {
   readonly queue: Queue.Queue<AcpParsedSessionEvent>;
   readonly assistantSegmentRef: Ref.Ref<AcpAssistantSegmentState>;
   readonly sessionId: string;
+  readonly acpMessageId?: string;
 }) =>
   Ref.modify<AcpAssistantSegmentState, EnsureActiveAssistantSegmentResult>(
     assistantSegmentRef,
@@ -689,7 +803,11 @@ const ensureActiveAssistantSegment = ({
       if (current.activeItemId) {
         return [{ itemId: current.activeItemId }, current] as const;
       }
-      const itemId = assistantItemId(sessionId, current.nextSegmentIndex);
+      const segmentIndex = current.nextSegmentIndex;
+      // ACP message ids survive session reloads; the local segment counter does not.
+      const itemId = acpMessageId
+        ? assistantItemIdForAcpMessage(sessionId, acpMessageId, segmentIndex)
+        : assistantItemId(sessionId, segmentIndex);
       return [
         {
           itemId,
@@ -699,8 +817,9 @@ const ensureActiveAssistantSegment = ({
           } satisfies Extract<AcpParsedSessionEvent, { readonly _tag: "AssistantItemStarted" }>,
         },
         {
-          nextSegmentIndex: current.nextSegmentIndex + 1,
+          nextSegmentIndex: segmentIndex + 1,
           activeItemId: itemId,
+          ...(acpMessageId ? { activeAcpMessageId: acpMessageId } : {}),
         } satisfies AcpAssistantSegmentState,
       ] as const;
     },

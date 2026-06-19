@@ -90,6 +90,7 @@ describe("AcpRuntimeModel", () => {
         toolCall: {
           toolCallId: "tool-1",
           kind: "execute",
+          itemType: "command_execution",
           title: "Ran command",
           status: "pending",
           command: "bun run typecheck",
@@ -97,6 +98,7 @@ describe("AcpRuntimeModel", () => {
           data: {
             toolCallId: "tool-1",
             kind: "execute",
+            acpTitle: "Terminal",
             command: "bun run typecheck",
             rawInput: {
               executable: "bun",
@@ -230,6 +232,7 @@ describe("AcpRuntimeModel", () => {
     expect(contentResult.events).toEqual([
       {
         _tag: "ContentDelta",
+        streamKind: "assistant_text",
         text: "hello from acp",
         rawPayload: {
           sessionId: "session-1",
@@ -239,6 +242,77 @@ describe("AcpRuntimeModel", () => {
               type: "text",
               text: "hello from acp",
             },
+          },
+        },
+      },
+    ]);
+
+    const thoughtResult = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "agent_thought_chunk",
+        content: {
+          type: "text",
+          text: "thinking from acp",
+        },
+      },
+    } satisfies EffectAcpSchema.SessionNotification);
+
+    expect(thoughtResult.events).toEqual([
+      {
+        _tag: "ContentDelta",
+        streamKind: "reasoning_text",
+        text: "thinking from acp",
+        rawPayload: {
+          sessionId: "session-1",
+          update: {
+            sessionUpdate: "agent_thought_chunk",
+            content: {
+              type: "text",
+              text: "thinking from acp",
+            },
+          },
+        },
+      },
+    ]);
+  });
+
+  it("parses available_commands_update into a normalized session event", () => {
+    const parsed = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "available_commands_update",
+        availableCommands: [
+          {
+            name: "/mock",
+            description: " Mock command ",
+            input: { hint: " args " },
+          },
+        ],
+      },
+    });
+
+    expect(parsed.events).toEqual([
+      {
+        _tag: "AvailableCommandsUpdated",
+        commands: [
+          {
+            name: "mock",
+            description: "Mock command",
+            input: { hint: "args" },
+          },
+        ],
+        rawPayload: {
+          sessionId: "session-1",
+          update: {
+            sessionUpdate: "available_commands_update",
+            availableCommands: [
+              {
+                name: "/mock",
+                description: " Mock command ",
+                input: { hint: " args " },
+              },
+            ],
           },
         },
       },

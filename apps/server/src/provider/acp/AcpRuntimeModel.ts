@@ -1,6 +1,19 @@
 import type * as EffectAcpSchema from "effect-acp/schema";
 import { deriveToolActivityPresentation } from "@t3tools/shared/toolActivity";
-import type { ToolLifecycleItemType } from "@t3tools/contracts";
+import type {
+  RuntimeContentStreamKind,
+  ServerProviderSlashCommand,
+  ThreadTokenUsageSnapshot,
+  ToolLifecycleItemType,
+} from "@t3tools/contracts";
+
+import { normalizeAcpAvailableCommandsToSlashCommands } from "./AcpAvailableCommands.ts";
+import {
+  normalizeAcpUsageUpdate,
+  normalizePiUsageTelemetry,
+  PI_USAGE_UPDATE_METHOD,
+} from "./AcpUsage.ts";
+import { parsePiWorkflowEventNotification } from "./PiWorkflowExtension.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -20,6 +33,7 @@ export interface AcpSessionModeState {
 export interface AcpToolCallState {
   readonly toolCallId: string;
   readonly kind?: string;
+  readonly itemType?: ToolLifecycleItemType;
   readonly title?: string;
   readonly status?: "pending" | "inProgress" | "completed" | "failed";
   readonly command?: string;
@@ -47,6 +61,11 @@ export type AcpParsedSessionEvent =
       readonly modeId: string;
     }
   | {
+      readonly _tag: "AvailableCommandsUpdated";
+      readonly commands: ReadonlyArray<ServerProviderSlashCommand>;
+      readonly rawPayload: unknown;
+    }
+  | {
       readonly _tag: "AssistantItemStarted";
       readonly itemId: string;
     }
@@ -67,7 +86,24 @@ export type AcpParsedSessionEvent =
   | {
       readonly _tag: "ContentDelta";
       readonly itemId?: string;
+      readonly messageId?: string;
+      readonly streamKind: Extract<
+        RuntimeContentStreamKind,
+        "assistant_text" | "reasoning_text" | "reasoning_summary_text"
+      >;
       readonly text: string;
+      readonly rawPayload: unknown;
+    }
+  | {
+      readonly _tag: "TokenUsageUpdated";
+      readonly usage: ThreadTokenUsageSnapshot;
+      readonly rawPayload: unknown;
+    }
+  | {
+      readonly _tag: "WorkflowEventObserved";
+      readonly runId: string;
+      readonly sequence: number;
+      readonly record: Record<string, unknown>;
       readonly rawPayload: unknown;
     };
 
@@ -250,8 +286,29 @@ function normalizeToolKind(kind: unknown): string | undefined {
   return typeof kind === "string" && kind.trim().length > 0 ? kind.trim() : undefined;
 }
 
-function canonicalItemTypeFromAcpToolKind(kind: string | undefined): ToolLifecycleItemType {
-  switch (kind) {
+function isPiSubagentTool(input: {
+  readonly title?: string | undefined;
+  readonly rawInput?: unknown;
+}): boolean {
+  const title = input.title?.trim().toLowerCase();
+  if (title === "subagent" || title === "sub-agent" || title === "subagent task") {
+    return true;
+  }
+  if (!isRecord(input.rawInput)) {
+    return false;
+  }
+  return typeof input.rawInput.type === "string" && Array.isArray(input.rawInput.tasks);
+}
+
+function canonicalItemTypeFromAcpToolCall(input: {
+  readonly kind: string | undefined;
+  readonly title?: string | undefined;
+  readonly rawInput?: unknown;
+}): ToolLifecycleItemType | undefined {
+  if (isPiSubagentTool(input)) {
+    return "collab_agent_tool_call";
+  }
+  switch (input.kind) {
     case "execute":
       return "command_execution";
     case "edit":
@@ -261,6 +318,8 @@ function canonicalItemTypeFromAcpToolKind(kind: string | undefined): ToolLifecyc
     case "search":
     case "fetch":
       return "web_search";
+    case undefined:
+      return undefined;
     default:
       return "dynamic_tool_call";
   }
@@ -297,6 +356,9 @@ function makeToolCallState(
   if (kind) {
     data.kind = kind;
   }
+  if (title) {
+    data.acpTitle = title;
+  }
   if (command) {
     data.command = command;
   }
@@ -312,16 +374,18 @@ function makeToolCallState(
   if (input.locations !== undefined) {
     data.locations = input.locations;
   }
+  const itemType = canonicalItemTypeFromAcpToolCall({ kind, title, rawInput: input.rawInput });
   const fallbackDetail = command ?? normalizedTitle ?? textContent;
   const hasPresentationSeed =
     title !== undefined ||
     kind !== undefined ||
+    itemType !== undefined ||
     command !== undefined ||
     normalizedTitle !== undefined ||
     textContent !== undefined;
   const presentation = hasPresentationSeed
     ? deriveToolActivityPresentation({
-        itemType: canonicalItemTypeFromAcpToolKind(kind),
+        itemType,
         title,
         detail: fallbackDetail,
         data,
@@ -332,6 +396,7 @@ function makeToolCallState(
   return {
     toolCallId,
     ...(kind ? { kind } : {}),
+    ...(itemType ? { itemType } : {}),
     ...(presentation?.summary ? { title: presentation.summary } : {}),
     ...(status ? { status } : {}),
     ...(command ? { command } : {}),
@@ -367,6 +432,7 @@ export function mergeToolCallState(
 ): AcpToolCallState {
   const nextKind = typeof next.data.kind === "string" ? next.data.kind : undefined;
   const kind = nextKind ?? previous?.kind;
+  const itemType = next.itemType ?? previous?.itemType;
   const title = next.title ?? previous?.title;
   const status = next.status ?? previous?.status;
   const command = next.command ?? previous?.command;
@@ -374,6 +440,7 @@ export function mergeToolCallState(
   return {
     toolCallId: next.toolCallId,
     ...(kind ? { kind } : {}),
+    ...(itemType ? { itemType } : {}),
     ...(title ? { title } : {}),
     ...(status ? { status } : {}),
     ...(command ? { command } : {}),
@@ -414,6 +481,33 @@ export function parsePermissionRequest(
   };
 }
 
+export function parsePiExtensionEvent(
+  method: string,
+  params: unknown,
+): AcpParsedSessionEvent | undefined {
+  if (method === PI_USAGE_UPDATE_METHOD) {
+    const usage = normalizePiUsageTelemetry(params);
+    return usage ? { _tag: "TokenUsageUpdated", usage, rawPayload: params } : undefined;
+  }
+  const workflowEvent = parsePiWorkflowEventNotification(method, params);
+  return workflowEvent
+    ? {
+        _tag: "WorkflowEventObserved",
+        runId: workflowEvent.runId,
+        sequence: workflowEvent.sequence,
+        record: workflowEvent.record,
+        rawPayload: params,
+      }
+    : undefined;
+}
+
+export function parsePiUsageTelemetryEvent(
+  method: string,
+  params: unknown,
+): AcpParsedSessionEvent | undefined {
+  return parsePiExtensionEvent(method, params);
+}
+
 export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotification): {
   readonly modeId?: string;
   readonly events: ReadonlyArray<AcpParsedSessionEvent>;
@@ -431,6 +525,14 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
           modeId,
         });
       }
+      break;
+    }
+    case "available_commands_update": {
+      events.push({
+        _tag: "AvailableCommandsUpdated",
+        commands: normalizeAcpAvailableCommandsToSlashCommands(upd.availableCommands),
+        rawPayload: params,
+      });
       break;
     }
     case "plan": {
@@ -473,11 +575,27 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
       }
       break;
     }
-    case "agent_message_chunk": {
+    case "agent_message_chunk":
+    case "agent_thought_chunk": {
       if (upd.content.type === "text" && upd.content.text.length > 0) {
+        const messageId = typeof upd.messageId === "string" ? upd.messageId.trim() : "";
         events.push({
           _tag: "ContentDelta",
+          ...(messageId ? { messageId } : {}),
+          streamKind:
+            upd.sessionUpdate === "agent_message_chunk" ? "assistant_text" : "reasoning_text",
           text: upd.content.text,
+          rawPayload: params,
+        });
+      }
+      break;
+    }
+    case "usage_update": {
+      const usage = normalizeAcpUsageUpdate(upd);
+      if (usage) {
+        events.push({
+          _tag: "TokenUsageUpdated",
+          usage,
           rawPayload: params,
         });
       }

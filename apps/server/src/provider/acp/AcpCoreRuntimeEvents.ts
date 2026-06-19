@@ -6,6 +6,7 @@ import {
   type ProviderApprovalDecision,
   type ProviderDriverKind,
   type ProviderRuntimeEvent,
+  type RuntimeContentStreamKind,
   type RuntimeRequestId,
   type ThreadId,
   type ToolLifecycleItemType,
@@ -177,7 +178,7 @@ export function makeAcpToolCallEvent(input: {
     turnId: input.turnId,
     itemId: RuntimeItemId.make(input.toolCall.toolCallId),
     payload: {
-      itemType: canonicalItemTypeFromAcpToolKind(input.toolCall.kind),
+      itemType: input.toolCall.itemType ?? canonicalItemTypeFromAcpToolKind(input.toolCall.kind),
       ...(runtimeStatus ? { status: runtimeStatus } : {}),
       ...(input.toolCall.title ? { title: input.toolCall.title } : {}),
       ...(input.toolCall.detail ? { detail: input.toolCall.detail } : {}),
@@ -219,6 +220,7 @@ export function makeAcpContentDeltaEvent(input: {
   readonly threadId: ThreadId;
   readonly turnId: TurnId | undefined;
   readonly itemId?: string;
+  readonly streamKind?: RuntimeContentStreamKind;
   readonly text: string;
   readonly rawPayload: unknown;
 }): ProviderRuntimeEvent {
@@ -230,7 +232,7 @@ export function makeAcpContentDeltaEvent(input: {
     turnId: input.turnId,
     ...(input.itemId ? { itemId: RuntimeItemId.make(input.itemId) } : {}),
     payload: {
-      streamKind: "assistant_text",
+      streamKind: input.streamKind ?? "assistant_text",
       delta: input.text,
     },
     raw: {
