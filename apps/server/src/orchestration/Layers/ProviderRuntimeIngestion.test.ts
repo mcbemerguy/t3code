@@ -344,6 +344,16 @@ describe("ProviderRuntimeIngestion", () => {
       createdAt: now,
     });
 
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      status: "running",
+      runtimeMode: "approval-required",
+      threadId: asThreadId("thread-1"),
+      activeTurnId: asTurnId("turn-bind"),
+      createdAt: now,
+      updatedAt: now,
+    });
+
     harness.emit({
       type: "turn.started",
       eventId: asEventId("evt-turn-started-user-bind"),
@@ -361,6 +371,56 @@ describe("ProviderRuntimeIngestion", () => {
     );
     const message = thread.messages.find((entry) => entry.id === asMessageId("user-message-bind"));
     expect(message?.text).toBe("bind this message");
+    expect(message?.updatedAt).not.toBe(now);
+  });
+
+  it("does not attach a pending user message for an unexpected provider turn start", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("cmd-turn-start-user-bind-mismatch"),
+      threadId: asThreadId("thread-1"),
+      message: {
+        messageId: asMessageId("user-message-bind-mismatch"),
+        role: "user",
+        text: "do not bind this message to a stale turn",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: now,
+    });
+
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      status: "running",
+      runtimeMode: "approval-required",
+      threadId: asThreadId("thread-1"),
+      activeTurnId: asTurnId("expected-turn"),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-user-bind-mismatch"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: asTurnId("stale-turn"),
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.activeTurnId === asTurnId("stale-turn"),
+    );
+    const message = thread.messages.find(
+      (entry) => entry.id === asMessageId("user-message-bind-mismatch"),
+    );
+    expect(message?.text).toBe("do not bind this message to a stale turn");
+    expect(message?.turnId).toBeNull();
   });
 
   it("maps turn started/completed events into thread session updates", async () => {

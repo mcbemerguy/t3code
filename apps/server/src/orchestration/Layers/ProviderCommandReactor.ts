@@ -16,6 +16,7 @@ import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shar
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -187,6 +188,7 @@ const make = Effect.gen(function* () {
   const serverCommandId = (tag: string) =>
     crypto.randomUUIDv4.pipe(Effect.map((uuid) => CommandId.make(`server:${tag}:${uuid}`)));
   const serverEventId = () => crypto.randomUUIDv4.pipe(Effect.map(EventId.make));
+  const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   const handledTurnStartKeys = yield* Cache.make<string, true>({
     capacity: HANDLED_TURN_START_KEY_MAX,
     timeToLive: HANDLED_TURN_START_KEY_TTL,
@@ -797,21 +799,33 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    yield* providerService.sendTurn(sendTurnRequest.value).pipe(
-      Effect.tap((turn) =>
-        serverCommandId("user-message-provider-turn-bind").pipe(
-          Effect.flatMap((commandId) =>
-            orchestrationEngine.dispatch({
-              type: "thread.message.user.attach-to-turn",
-              commandId,
+    const attachUserMessageToProviderTurn = (turnId: TurnId) =>
+      Effect.gen(function* () {
+        const commandId = yield* serverCommandId("user-message-provider-turn-bind");
+        yield* orchestrationEngine.dispatch({
+          type: "thread.message.user.attach-to-turn",
+          commandId,
+          threadId: event.payload.threadId,
+          messageId: event.payload.messageId,
+          turnId,
+          createdAt: yield* nowIso,
+        });
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning(
+            "provider command reactor failed to bind user message to provider turn",
+            {
               threadId: event.payload.threadId,
               messageId: event.payload.messageId,
-              turnId: turn.turnId,
-              createdAt: event.payload.createdAt,
-            }),
+              turnId,
+              cause: Cause.pretty(cause),
+            },
           ),
         ),
-      ),
+      );
+
+    yield* providerService.sendTurn(sendTurnRequest.value).pipe(
+      Effect.tap((turn) => attachUserMessageToProviderTurn(turn.turnId)),
       Effect.catchCause(recoverTurnStartFailure),
       Effect.forkScoped,
     );

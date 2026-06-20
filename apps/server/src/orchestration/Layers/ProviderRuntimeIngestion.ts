@@ -22,6 +22,7 @@ import {
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -69,6 +70,7 @@ const PI_REASONING_ACTIVITY_BY_KEY_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 const MAX_PI_REASONING_ACTIVITY_CHARS = 8_000;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
+const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
 type TurnStartRequestedDomainEvent = Extract<
   OrchestrationEvent,
@@ -1336,6 +1338,21 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const getPendingTurnStartForAcceptedTurnStart = Effect.fn(
+    "getPendingTurnStartForAcceptedTurnStart",
+  )(function* (threadId: ThreadId, eventTurnId: TurnId | undefined) {
+    if (eventTurnId === undefined) {
+      return Option.none();
+    }
+
+    const expectedTurnId = yield* getExpectedProviderTurnIdForThread(threadId);
+    if (!sameId(expectedTurnId, eventTurnId)) {
+      return Option.none();
+    }
+
+    return yield* projectionTurnRepository.getPendingTurnStartByThreadId({ threadId });
+  });
+
   const getSourceProposedPlanReferenceForAcceptedTurnStart = Effect.fn(
     "getSourceProposedPlanReferenceForAcceptedTurnStart",
   )(function* (threadId: ThreadId, eventTurnId: TurnId | undefined) {
@@ -1433,7 +1450,7 @@ const make = Effect.gen(function* () {
       })();
       const pendingTurnStartForAcceptedTurnStart =
         event.type === "turn.started" && shouldApplyThreadLifecycle
-          ? yield* projectionTurnRepository.getPendingTurnStartByThreadId({ threadId: thread.id })
+          ? yield* getPendingTurnStartForAcceptedTurnStart(thread.id, eventTurnId)
           : Option.none();
       const acceptedTurnStartedSourcePlan =
         event.type === "turn.started" && shouldApplyThreadLifecycle
@@ -1533,7 +1550,7 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               messageId: pendingTurnStartForAcceptedTurnStart.value.messageId,
               turnId: eventTurnId,
-              createdAt: now,
+              createdAt: yield* nowIso,
             });
           }
         }

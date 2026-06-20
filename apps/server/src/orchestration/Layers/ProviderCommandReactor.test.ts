@@ -460,6 +460,7 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
     expect(message?.turnId).toBe(asTurnId("turn-1"));
+    expect(message?.updatedAt).not.toBe(now);
   });
 
   it("generates a thread title on the first turn", async () => {
