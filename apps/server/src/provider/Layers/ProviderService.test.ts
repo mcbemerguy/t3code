@@ -135,6 +135,12 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     },
   );
 
+  const sendActiveTurnInput = vi.fn(
+    (
+      _input: ProviderSendTurnInput & { readonly turnId?: TurnId },
+    ): Effect.Effect<boolean, ProviderAdapterError> => Effect.succeed(true),
+  );
+
   const interruptTurn = vi.fn(
     (_threadId: ThreadId, _turnId?: TurnId): Effect.Effect<void, ProviderAdapterError> =>
       Effect.void,
@@ -210,6 +216,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     },
     startSession,
     sendTurn,
+    sendActiveTurnInput,
     interruptTurn,
     respondToRequest,
     respondToUserInput,
@@ -245,6 +252,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     updateSession,
     startSession,
     sendTurn,
+    sendActiveTurnInput,
     interruptTurn,
     respondToRequest,
     respondToUserInput,
@@ -1173,6 +1181,35 @@ routing.layer("ProviderServiceLive routing", (it) => {
 
       const remaining = yield* provider.listSessions();
       assert.equal(remaining.length, 0);
+    }),
+  );
+
+  it.effect("routes active turn input through the bound adapter", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-active-turn-input");
+      yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const accepted = yield* provider.sendActiveTurnInput({
+        threadId,
+        turnId: asTurnId("turn-active"),
+        input: "steer active turn",
+        attachments: [],
+      });
+
+      assert.equal(accepted, true);
+      assert.equal(routing.codex.sendActiveTurnInput.mock.calls.length, 1);
+      assert.deepEqual(routing.codex.sendActiveTurnInput.mock.calls[0]?.[0], {
+        threadId,
+        turnId: asTurnId("turn-active"),
+        input: "steer active turn",
+        attachments: [],
+      });
     }),
   );
 

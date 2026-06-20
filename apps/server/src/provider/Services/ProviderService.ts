@@ -12,6 +12,7 @@
  * @module ProviderService
  */
 import type {
+  ProviderActiveTurnInput,
   ProviderInterruptTurnInput,
   ProviderInstanceId,
   ProviderRespondToRequestInput,
@@ -50,6 +51,10 @@ export interface ProviderServiceShape {
   readonly sendTurn: (
     input: ProviderSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, ProviderServiceError>;
+
+  readonly sendActiveTurnInput: (
+    input: ProviderActiveTurnInput,
+  ) => Effect.Effect<boolean, ProviderServiceError>;
 
   /**
    * Interrupt a running provider turn.

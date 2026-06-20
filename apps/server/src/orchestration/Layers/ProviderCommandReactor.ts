@@ -2,6 +2,7 @@ import {
   type ChatAttachment,
   CommandId,
   EventId,
+  type MessageId,
   type ModelSelection,
   type OrchestrationEvent,
   ProviderDriverKind,
@@ -714,6 +715,64 @@ const make = Effect.gen(function* () {
       return;
     }
 
+    const attachUserMessageToProviderTurn = (input: {
+      readonly threadId: ThreadId;
+      readonly messageId: MessageId;
+      readonly turnId: TurnId;
+    }) =>
+      Effect.gen(function* () {
+        const commandId = yield* serverCommandId("user-message-provider-turn-bind");
+        yield* orchestrationEngine.dispatch({
+          type: "thread.message.user.attach-to-turn",
+          commandId,
+          threadId: input.threadId,
+          messageId: input.messageId,
+          turnId: input.turnId,
+          createdAt: yield* nowIso,
+        });
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning(
+            "provider command reactor failed to bind user message to provider turn",
+            {
+              threadId: input.threadId,
+              messageId: input.messageId,
+              turnId: input.turnId,
+              cause: Cause.pretty(cause),
+            },
+          ),
+        ),
+      );
+
+    const activeTurnId = thread.session?.activeTurnId ?? null;
+    if (activeTurnId && thread.session?.status === "running") {
+      const accepted = yield* providerService
+        .sendActiveTurnInput({
+          threadId: event.payload.threadId,
+          turnId: activeTurnId,
+          input: message.text,
+          ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+        })
+        .pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("provider command reactor failed to steer active turn", {
+              threadId: event.payload.threadId,
+              messageId: event.payload.messageId,
+              turnId: activeTurnId,
+              cause: Cause.pretty(cause),
+            }).pipe(Effect.as(false)),
+          ),
+        );
+      if (accepted) {
+        yield* attachUserMessageToProviderTurn({
+          threadId: event.payload.threadId,
+          messageId: event.payload.messageId,
+          turnId: activeTurnId,
+        });
+        return;
+      }
+    }
+
     const isFirstUserMessageTurn =
       thread.messages.filter((entry) => entry.role === "user").length === 1;
     if (isFirstUserMessageTurn) {
@@ -799,33 +858,14 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const attachUserMessageToProviderTurn = (turnId: TurnId) =>
-      Effect.gen(function* () {
-        const commandId = yield* serverCommandId("user-message-provider-turn-bind");
-        yield* orchestrationEngine.dispatch({
-          type: "thread.message.user.attach-to-turn",
-          commandId,
+    yield* providerService.sendTurn(sendTurnRequest.value).pipe(
+      Effect.tap((turn) =>
+        attachUserMessageToProviderTurn({
           threadId: event.payload.threadId,
           messageId: event.payload.messageId,
-          turnId,
-          createdAt: yield* nowIso,
-        });
-      }).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning(
-            "provider command reactor failed to bind user message to provider turn",
-            {
-              threadId: event.payload.threadId,
-              messageId: event.payload.messageId,
-              turnId,
-              cause: Cause.pretty(cause),
-            },
-          ),
-        ),
-      );
-
-    yield* providerService.sendTurn(sendTurnRequest.value).pipe(
-      Effect.tap((turn) => attachUserMessageToProviderTurn(turn.turnId)),
+          turnId: turn.turnId,
+        }),
+      ),
       Effect.catchCause(recoverTurnStartFailure),
       Effect.forkScoped,
     );

@@ -1,3 +1,4 @@
+/* eslint-disable t3code/no-manual-effect-runtime-in-tests */
 // @effect-diagnostics nodeBuiltinImport:off
 import fs from "node:fs";
 import os from "node:os";
@@ -217,6 +218,7 @@ describe("ProviderCommandReactor", () => {
         turnId: asTurnId("turn-1"),
       }),
     );
+    const sendActiveTurnInput = vi.fn((_: unknown) => Effect.succeed(true));
     const interruptTurn = vi.fn((_: unknown) => Effect.void);
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
     const respondToUserInput = vi.fn<ProviderServiceShape["respondToUserInput"]>(() => Effect.void);
@@ -285,6 +287,7 @@ describe("ProviderCommandReactor", () => {
     const service: ProviderServiceShape = {
       startSession: startSession as ProviderServiceShape["startSession"],
       sendTurn: sendTurn as ProviderServiceShape["sendTurn"],
+      sendActiveTurnInput: sendActiveTurnInput as ProviderServiceShape["sendActiveTurnInput"],
       interruptTurn: interruptTurn as ProviderServiceShape["interruptTurn"],
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
@@ -400,6 +403,7 @@ describe("ProviderCommandReactor", () => {
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
       startSession,
       sendTurn,
+      sendActiveTurnInput,
       interruptTurn,
       respondToRequest,
       respondToUserInput,
@@ -461,6 +465,112 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.runtimeMode).toBe("approval-required");
     expect(message?.turnId).toBe(asTurnId("turn-1"));
     expect(message?.updatedAt).not.toBe(now);
+  });
+
+  it("routes new user messages into an active provider turn when steering is accepted", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const activeTurnId = asTurnId("active-turn-1");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-active-turn"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "customAcp",
+          providerInstanceId: ProviderInstanceId.make("pi_acp"),
+          runtimeMode: "approval-required",
+          activeTurnId,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-active-steer"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-active-steer"),
+          role: "user",
+          text: "please steer the active workflow",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendActiveTurnInput.mock.calls.length === 1);
+    expect(harness.sendActiveTurnInput.mock.calls[0]?.[0]).toMatchObject({
+      threadId: ThreadId.make("thread-1"),
+      turnId: activeTurnId,
+      input: "please steer the active workflow",
+      attachments: [],
+    });
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+    expect(harness.startSession).not.toHaveBeenCalled();
+
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      const message = thread?.messages.find(
+        (entry) => entry.id === asMessageId("user-message-active-steer"),
+      );
+      return message?.turnId === activeTurnId;
+    });
+  });
+
+  it("starts a new provider turn when active-turn steering is declined", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.sendActiveTurnInput.mockReturnValue(Effect.succeed(false));
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-active-turn-declined"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "customAcp",
+          providerInstanceId: ProviderInstanceId.make("pi_acp"),
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("active-turn-declined"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-after-steer-declined"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-steer-declined"),
+          role: "user",
+          text: "start a fresh turn instead",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendActiveTurnInput.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
   });
 
   it("generates a thread title on the first turn", async () => {

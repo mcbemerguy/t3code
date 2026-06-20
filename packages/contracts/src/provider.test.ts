@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
 import {
+  ProviderActiveTurnInput,
   ProviderEvent,
   ProviderSendTurnInput,
   ProviderSession,
@@ -10,6 +11,7 @@ import {
 
 const decodeProviderSessionStartInput = Schema.decodeUnknownSync(ProviderSessionStartInput);
 const decodeProviderSendTurnInput = Schema.decodeUnknownSync(ProviderSendTurnInput);
+const decodeProviderActiveTurnInput = Schema.decodeUnknownSync(ProviderActiveTurnInput);
 const decodeProviderSession = Schema.decodeUnknownSync(ProviderSession);
 const decodeProviderEvent = Schema.decodeUnknownSync(ProviderEvent);
 
@@ -150,6 +152,21 @@ describe("ProviderSendTurnInput", () => {
     expect(parsed.modelSelection?.instanceId).toBe("claudeAgent");
     expect(getOptionValue(parsed.modelSelection?.options, "effort")).toBe("ultrathink");
     expect(getOptionValue(parsed.modelSelection?.options, "fastMode")).toBe(true);
+  });
+});
+
+describe("ProviderActiveTurnInput", () => {
+  it("accepts active turn steering payloads", () => {
+    const parsed = decodeProviderActiveTurnInput({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      input: "steer the running workflow",
+      attachments: [],
+    });
+
+    expect(parsed.threadId).toBe("thread-1");
+    expect(parsed.turnId).toBe("turn-1");
+    expect(parsed.input).toBe("steer the running workflow");
   });
 });
 
