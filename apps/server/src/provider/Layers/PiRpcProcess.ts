@@ -22,6 +22,7 @@ import {
   windowsProcessTreeKillCommand,
   type PiRpcCommand,
   type PiRpcEvent,
+  type PiRpcProcessStatus,
   type PiRpcResponse,
   type PiRpcRuntimeMessage,
   type PiSessionRuntimeError,
@@ -162,6 +163,7 @@ export class PiRpcProcessHandle {
       this.closeCode = code;
       this.closeSignal = signal;
       this.rejectPendingForProcessExit();
+      this.offer({ kind: "process.closed", status: this.getStatus() });
     });
 
     child.on("error", (error) => {
@@ -210,6 +212,36 @@ export class PiRpcProcessHandle {
 
   consumePreludeLines(): ReadonlyArray<string> {
     return this.preludeLines.splice(0, this.preludeLines.length);
+  }
+
+  getStatus(): PiRpcProcessStatus {
+    const stdin = this.child.stdin;
+    const stdinWritable =
+      stdin.writable &&
+      !stdin.writableEnded &&
+      !(stdin as { readonly destroyed?: boolean }).destroyed;
+    const state = this.childError
+      ? "error"
+      : this.closed || this.exited
+        ? "closed"
+        : this.spawned && stdinWritable
+          ? "healthy"
+          : this.spawned
+            ? "error"
+            : "starting";
+    return {
+      state,
+      spawned: this.spawned,
+      exited: this.exited,
+      closed: this.closed,
+      stdinWritable,
+      exitCode: this.exitCode,
+      exitSignal: this.exitSignal,
+      closeCode: this.closeCode,
+      closeSignal: this.closeSignal,
+      ...(this.childError ? { error: errorMessage(this.childError) } : {}),
+      diagnostics: this.formatDiagnostics({ includeStdin: true }),
+    };
   }
 
   async request(command: PiRpcCommand, timeoutMs: number): Promise<PiRpcResponse> {

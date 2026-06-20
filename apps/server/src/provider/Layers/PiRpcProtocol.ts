@@ -116,10 +116,26 @@ export interface PiRpcResponse {
 }
 
 export type PiRpcEvent = Record<string, unknown>;
+
+export interface PiRpcProcessStatus {
+  readonly state: "not-started" | "starting" | "healthy" | "closed" | "error";
+  readonly spawned: boolean;
+  readonly exited: boolean;
+  readonly closed: boolean;
+  readonly stdinWritable?: boolean;
+  readonly exitCode?: number | null;
+  readonly exitSignal?: NodeJS.Signals | null;
+  readonly closeCode?: number | null;
+  readonly closeSignal?: NodeJS.Signals | null;
+  readonly error?: string;
+  readonly diagnostics?: string;
+}
+
 export type PiRpcRuntimeMessage =
   | { readonly kind: "event"; readonly payload: PiRpcEvent }
   | { readonly kind: "response"; readonly payload: PiRpcResponse; readonly correlated: boolean }
-  | { readonly kind: "prelude"; readonly line: string };
+  | { readonly kind: "prelude"; readonly line: string }
+  | { readonly kind: "process.closed"; readonly status: PiRpcProcessStatus };
 
 export interface PiSessionRuntimeOptions {
   readonly threadId: ThreadId;

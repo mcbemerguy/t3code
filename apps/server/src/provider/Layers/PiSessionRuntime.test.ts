@@ -262,7 +262,8 @@ describe("PiSessionRuntime", () => {
           raw.map((message) => {
             if (message.kind === "event") return message.payload.type;
             if (message.kind === "response") return message.payload.command;
-            return message.line;
+            if (message.kind === "prelude") return message.line;
+            return message.kind;
           }),
           ["assistant_delta", "prompt", "assistant_delta"],
         );

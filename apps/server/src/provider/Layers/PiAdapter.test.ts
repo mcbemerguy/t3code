@@ -36,6 +36,7 @@ import {
   PiRpcLifecycleError,
   PiRpcTimeoutError,
   type PiExtensionUiResponseInput,
+  type PiRpcProcessStatus,
   type PiRpcRuntimeMessage,
   type PiSessionRuntimeOptions,
   type PiSessionRuntimeShape,
@@ -77,6 +78,13 @@ class FakePiRuntime implements PiSessionRuntimeShape {
   modelOptionOperations: Array<string> = [];
   currentModel: string | undefined;
   sessionResumeCursor: ProviderSession["resumeCursor"] | null | undefined;
+  health: PiRpcProcessStatus = {
+    state: "healthy",
+    spawned: true,
+    exited: false,
+    closed: false,
+    stdinWritable: true,
+  };
 
   startImpl = vi.fn(() => Promise.resolve(this.session("ready")));
   promptImpl = vi.fn(
@@ -111,7 +119,10 @@ class FakePiRuntime implements PiSessionRuntimeShape {
     return Effect.promise(() => this.startImpl());
   }
 
-  getSession = Effect.sync(() => this.session("ready"));
+  getSession = Effect.sync(() =>
+    this.session(this.health.state === "healthy" ? "ready" : "closed"),
+  );
+  getHealth = Effect.sync(() => this.health);
 
   prompt(input: { readonly message: string; readonly images?: ReadonlyArray<unknown> }) {
     this.promptInputs.push(input);
@@ -2188,11 +2199,15 @@ describe("PiAdapter", () => {
         const index = created;
         created += 1;
         if (index === 0) {
-          fake.promptDetachedImpl = vi.fn(async () => {
-            throw new PiRpcLifecycleError(
-              "Pi RPC process exited before prompt could be sent. process status: spawned=true, exited=true, closed=true",
-            );
-          });
+          fake.health = {
+            state: "closed",
+            spawned: true,
+            exited: true,
+            closed: true,
+            stdinWritable: false,
+            exitCode: 0,
+            closeCode: 0,
+          };
         } else {
           fake.promptScript = (rt) => rt.emit({ type: "agent_end", success: true });
         }
@@ -2220,12 +2235,15 @@ describe("PiAdapter", () => {
         const index = created;
         created += 1;
         if (index === 0) {
-          fake.getMessagesImpl = () =>
-            Effect.fail(
-              new PiRpcLifecycleError(
-                "Pi RPC process exited before get_messages could be sent. process status: spawned=true, exited=true, closed=true",
-              ),
-            );
+          fake.health = {
+            state: "closed",
+            spawned: true,
+            exited: true,
+            closed: true,
+            stdinWritable: false,
+            exitCode: 0,
+            closeCode: 0,
+          };
         } else {
           fake.messages = [{ id: "resumed-message", role: "assistant", content: "resumed" }];
         }

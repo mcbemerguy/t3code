@@ -54,7 +54,13 @@ export function basePiEvent(
 ): Omit<ProviderRuntimeEvent, "type" | "payload"> {
   const raw = input?.raw;
   const rawPayload =
-    raw?.kind === "event" || raw?.kind === "response" ? sanitizeRawPayload(raw.payload) : raw?.line;
+    raw?.kind === "event" || raw?.kind === "response"
+      ? sanitizeRawPayload(raw.payload)
+      : raw?.kind === "prelude"
+        ? raw.line
+        : raw?.kind === "process.closed"
+          ? raw.status
+          : undefined;
   const method =
     raw?.kind === "event"
       ? readPiEventType(raw.payload)
@@ -62,7 +68,9 @@ export function basePiEvent(
         ? raw.payload.command
         : raw?.kind === "prelude"
           ? "prelude"
-          : undefined;
+          : raw?.kind === "process.closed"
+            ? "process.closed"
+            : undefined;
   const turnId = input?.turnId ?? session.currentTurnId;
   return {
     eventId: EventId.make(`pi-${randomUUID()}`),

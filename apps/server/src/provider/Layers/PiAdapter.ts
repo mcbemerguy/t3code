@@ -52,6 +52,7 @@ import {
   PiRpcSpawnError,
   PiRpcTimeoutError,
   makePiSessionRuntime,
+  type PiRpcProcessStatus,
   type PiRpcRuntimeMessage,
   type PiSessionRuntimeError,
   type PiSessionRuntimeOptions,
@@ -162,6 +163,44 @@ export interface PiAdapterShape extends ProviderAdapterShape<ProviderAdapterErro
   readonly sendActiveTurnInput: (
     input: ProviderSendTurnInput,
   ) => Effect.Effect<void, ProviderAdapterError>;
+}
+
+function isRuntimeClosedHealth(health: PiRpcProcessStatus): boolean {
+  return health.state === "closed" || health.state === "error";
+}
+
+function runtimeClosedReason(operation: string, health: PiRpcProcessStatus): string {
+  const code = health.closeCode ?? health.exitCode;
+  const signal = health.closeSignal ?? health.exitSignal;
+  const detail = [
+    code !== undefined && code !== null ? `code=${code}` : undefined,
+    signal ? `signal=${signal}` : undefined,
+    health.error ? `error=${health.error}` : undefined,
+  ]
+    .filter(Boolean)
+    .join(", ");
+  return `Pi RPC runtime was ${health.state} before ${operation}${detail ? ` (${detail})` : ""}.`;
+}
+
+function isClosedBeforeDeliveryError(
+  error: unknown,
+  command: string,
+): error is PiRpcLifecycleError {
+  if (!(error instanceof PiRpcLifecycleError)) return false;
+  const escaped = command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    `(process exited before ${escaped} could be sent|stdin is not writable before ${escaped} could be sent|process has not started; cannot send ${escaped})`,
+    "i",
+  ).test(error.message);
+}
+
+function isClosedRuntimeLifecycleError(error: unknown): error is PiRpcLifecycleError {
+  return (
+    error instanceof PiRpcLifecycleError &&
+    /(process exited|stdin is not writable|process has not started|process.*closed|exited=true|closed=true)/i.test(
+      error.message,
+    )
+  );
 }
 
 function mapPiRuntimeError(
@@ -636,6 +675,16 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     return Stream.runForEach(Stream.chunks(runtime.events), (messages) =>
       Effect.gen(function* () {
         for (const message of messages) {
+          if (message.kind === "process.closed") {
+            if (!session.stopped && !session.runtimeRecovery) {
+              yield* markRuntimeForRecovery(
+                session,
+                runtimeClosedReason("the next operation", message.status),
+                { skipEventFiberInterrupt: true, skipRuntimeClose: true },
+              );
+            }
+            continue;
+          }
           if (message.kind === "event") {
             session.turnActivitySequence += 1;
             session.noEventWarningEmitted = false;
@@ -672,60 +721,70 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       } satisfies ProviderRuntimeEvent,
     ]);
 
+  const markRuntimeForRecovery = Effect.fn("markPiRuntimeForRecovery")(function* (
+    session: PiAdapterSessionContext,
+    reason: string,
+    options?: {
+      readonly skipEventFiberInterrupt?: boolean;
+      readonly skipRuntimeClose?: boolean;
+    },
+  ) {
+    if (session.runtimeRecovery) return;
+    const providerSession = yield* session.runtime.getSession;
+    syncSessionFile(session, providerSession);
+    const resumeCursor = currentResumeCursor(session);
+    const discardedAt = DateTime.formatIso(yield* DateTime.now);
+    if (resumeCursor) {
+      session.runtimeOptions = {
+        ...session.runtimeOptions,
+        resumeCursor,
+        ...(providerSession.model ? { model: providerSession.model } : {}),
+      };
+    }
+    session.runtimeRecovery = {
+      reason,
+      discardedAt,
+      ...(resumeCursor ? { resumeCursor } : { missingResumeErrorEmitted: true }),
+    };
+    if (session.eventFiber && !options?.skipEventFiberInterrupt) {
+      yield* Fiber.interrupt(session.eventFiber).pipe(Effect.ignore);
+      delete session.eventFiber;
+    }
+    yield* clearNoEventWatchdog(session);
+    yield* stopWorkflowMonitors(session);
+    if (!options?.skipRuntimeClose) yield* session.runtime.close.pipe(Effect.ignore);
+    if (resumeCursor) {
+      yield* offer([
+        {
+          ...basePiEvent(session),
+          type: "runtime.warning",
+          payload: {
+            message:
+              "Pi RPC became unavailable; T3 will restart from the saved Pi session before the next request. The previous prompt is not being replayed.",
+            detail: {
+              diagnosticKind: "pi.rpcDiscardedForRecovery",
+              reason,
+              sessionFile: resumeCursor.sessionFile,
+              discardedAt,
+            },
+          },
+        } satisfies ProviderRuntimeEvent,
+      ]);
+      return;
+    }
+    yield* emitRuntimeRecoveryError(
+      session,
+      "Pi RPC became unavailable and no saved Pi session file is available. Start or recover the thread explicitly to avoid creating an unrelated Pi conversation.",
+      { reason, discardedAt },
+    );
+  });
+
   const discardRuntimeForRecovery = Effect.fn("discardPiRuntimeForRecovery")(function* (
     session: PiAdapterSessionContext,
     reason: string,
   ) {
     return yield* session.runtimeRecoveryLock.withPermits(1)(
-      Effect.gen(function* () {
-        const providerSession = yield* session.runtime.getSession;
-        syncSessionFile(session, providerSession);
-        const resumeCursor = currentResumeCursor(session);
-        const discardedAt = DateTime.formatIso(yield* DateTime.now);
-        if (resumeCursor) {
-          session.runtimeOptions = {
-            ...session.runtimeOptions,
-            resumeCursor,
-            ...(providerSession.model ? { model: providerSession.model } : {}),
-          };
-        }
-        session.runtimeRecovery = {
-          reason,
-          discardedAt,
-          ...(resumeCursor ? { resumeCursor } : { missingResumeErrorEmitted: true }),
-        };
-        if (session.eventFiber) {
-          yield* Fiber.interrupt(session.eventFiber).pipe(Effect.ignore);
-          delete session.eventFiber;
-        }
-        yield* clearNoEventWatchdog(session);
-        yield* stopWorkflowMonitors(session);
-        yield* session.runtime.close.pipe(Effect.ignore);
-        if (resumeCursor) {
-          yield* offer([
-            {
-              ...basePiEvent(session),
-              type: "runtime.warning",
-              payload: {
-                message:
-                  "Pi RPC became unresponsive; T3 closed it and will restart from the saved Pi session before the next request.",
-                detail: {
-                  diagnosticKind: "pi.rpcDiscardedForRecovery",
-                  reason,
-                  sessionFile: resumeCursor.sessionFile,
-                  discardedAt,
-                },
-              },
-            } satisfies ProviderRuntimeEvent,
-          ]);
-          return;
-        }
-        yield* emitRuntimeRecoveryError(
-          session,
-          "Pi RPC became unresponsive and no saved Pi session file is available. Start or recover the thread explicitly to avoid creating an unrelated Pi conversation.",
-          { reason, discardedAt },
-        );
-      }),
+      markRuntimeForRecovery(session, reason),
     );
   });
 
@@ -849,7 +908,13 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
   ): Effect.fn.Return<void, ProviderAdapterError> {
     return yield* session.runtimeRecoveryLock.withPermits(1)(
       Effect.gen(function* () {
-        const recovery = session.runtimeRecovery;
+        let recovery = session.runtimeRecovery;
+        if (!recovery) {
+          const health = yield* session.runtime.getHealth;
+          if (!isRuntimeClosedHealth(health)) return;
+          yield* markRuntimeForRecovery(session, runtimeClosedReason(operation, health));
+          recovery = session.runtimeRecovery;
+        }
         if (!recovery) return;
         if (!recovery.resumeCursor) {
           const message =
@@ -869,6 +934,10 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           });
         }
 
+        if (session.eventFiber) {
+          yield* Fiber.interrupt(session.eventFiber).pipe(Effect.ignore);
+          delete session.eventFiber;
+        }
         const runtimeInput: PiSessionRuntimeOptions = {
           ...session.runtimeOptions,
           resumeCursor: recovery.resumeCursor,
@@ -984,6 +1053,15 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         `Pi RPC prompt acknowledgement timed out after ${cause.input.timeoutMs}ms.`,
       );
     }
+  });
+
+  const recoverClosedRuntime = Effect.fn("recoverClosedPiRuntime")(function* (
+    session: PiAdapterSessionContext,
+    operation: string,
+    cause: PiRpcLifecycleError,
+  ): Effect.fn.Return<void, ProviderAdapterError> {
+    yield* discardRuntimeForRecovery(session, describeError(cause, "Pi RPC runtime closed"));
+    yield* ensureRuntimeReady(session, operation);
   });
 
   const isProviderAdapterError = (cause: unknown): cause is ProviderAdapterError => {
@@ -1303,17 +1381,30 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     reason: string,
     continuationMessage?: string,
   ) {
-    yield* session.runtime
-      .workflowControl({
-        action,
-        target,
-        reason,
-        ...(action === "resume" ? { policy: "continue-existing-session" as const } : {}),
-        ...(continuationMessage ? { continuationMessage } : {}),
-      })
-      .pipe(
-        Effect.mapError((cause) => mapPiRuntimeError(session.threadId, "workflow_control", cause)),
-      );
+    const controlInput = {
+      action,
+      target,
+      reason,
+      ...(action === "resume" ? { policy: "continue-existing-session" as const } : {}),
+      ...(continuationMessage ? { continuationMessage } : {}),
+    };
+    yield* ensureRuntimeReady(session, "workflow_control");
+    const controlResult = yield* session.runtime.workflowControl(controlInput).pipe(Effect.result);
+    if (Result.isFailure(controlResult)) {
+      const cause = controlResult.failure;
+      if (isClosedRuntimeLifecycleError(cause)) {
+        yield* recoverClosedRuntime(session, "workflow_control", cause);
+        yield* session.runtime
+          .workflowControl(controlInput)
+          .pipe(
+            Effect.mapError((retryCause) =>
+              mapPiRuntimeError(session.threadId, "workflow_control", retryCause),
+            ),
+          );
+      } else {
+        return yield* mapPiRuntimeError(session.threadId, "workflow_control", cause);
+      }
+    }
     const status =
       action === "resume"
         ? "recovering"
@@ -1587,17 +1678,39 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       input.input ?? "",
       workflowMonitorOptions(),
     );
-    yield* session.runtime.promptDetached({ message: input.input ?? "", images }).pipe(
-      Effect.tap((promptResult) =>
-        Effect.sync(() => {
-          const cursor = parsePiResumeCursor(promptResult.resumeCursor);
-          if (cursor?.sessionFile) session.sessionFile = cursor.sessionFile;
-        }),
-      ),
-      Effect.tapError((cause) => handlePromptStartFailure(session, cause)),
-      Effect.mapError((cause) => mapPiRuntimeError(input.threadId, "prompt", cause)),
+    const startPrompt = () =>
+      session.runtime.promptDetached({ message: input.input ?? "", images }).pipe(
+        Effect.tap((promptResult) =>
+          Effect.sync(() => {
+            const cursor = parsePiResumeCursor(promptResult.resumeCursor);
+            if (cursor?.sessionFile) session.sessionFile = cursor.sessionFile;
+          }),
+        ),
+      );
+    const promptResult = yield* startPrompt().pipe(
+      Effect.result,
       Effect.ensuring(scheduleUsageRefresh(session, undefined, true)),
     );
+    if (Result.isFailure(promptResult)) {
+      const cause = promptResult.failure;
+      if (isClosedBeforeDeliveryError(cause, "prompt")) {
+        yield* recoverClosedRuntime(session, "turn/start", cause).pipe(
+          Effect.tapError((recoveryCause) =>
+            completeTurn(session, undefined, "failed", {
+              errorMessage: describeError(recoveryCause, "Pi prompt failed"),
+            }),
+          ),
+        );
+        yield* startPrompt().pipe(
+          Effect.tapError((retryCause) => handlePromptStartFailure(session, retryCause)),
+          Effect.mapError((retryCause) => mapPiRuntimeError(input.threadId, "prompt", retryCause)),
+          Effect.ensuring(scheduleUsageRefresh(session, undefined, true)),
+        );
+      } else {
+        yield* handlePromptStartFailure(session, cause);
+        return yield* mapPiRuntimeError(input.threadId, "prompt", cause);
+      }
+    }
     yield* finishPromptAcceptanceDrain(session);
     yield* startNoEventWatchdog(session, turnId);
     for (let index = 0; index < 5 && !session.turnCompleted; index += 1) {
@@ -1729,11 +1842,11 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
             yield* discardRuntimeForRecovery(session, reason);
           } else if (Exit.isFailure(abortResult.value)) {
             const abortCause = Cause.squash(abortResult.value.cause);
-            yield* emitLocalInterruptAbortWarning(
-              session,
-              interruptedTurnId,
-              describeError(abortCause, "Pi RPC abort failed"),
-            );
+            const reason = describeError(abortCause, "Pi RPC abort failed");
+            yield* emitLocalInterruptAbortWarning(session, interruptedTurnId, reason);
+            if (isClosedRuntimeLifecycleError(abortCause)) {
+              yield* discardRuntimeForRecovery(session, reason);
+            }
           }
           if (workflowInterruptFailure) return yield* workflowInterruptFailure;
         }),
@@ -1746,7 +1859,15 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       Effect.flatMap((session) =>
         ensureRuntimeReady(session, "get_messages").pipe(Effect.as(session)),
       ),
-      Effect.flatMap((session) => session.runtime.getMessages),
+      Effect.flatMap((session) =>
+        session.runtime.getMessages.pipe(
+          Effect.catchIf(isClosedRuntimeLifecycleError, (cause) =>
+            recoverClosedRuntime(session, "get_messages", cause).pipe(
+              Effect.flatMap(() => session.runtime.getMessages),
+            ),
+          ),
+        ),
+      ),
       Effect.mapError((cause) =>
         isProviderAdapterError(cause) ? cause : mapPiRuntimeError(threadId, "get_messages", cause),
       ),

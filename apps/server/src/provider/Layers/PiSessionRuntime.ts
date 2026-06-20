@@ -39,6 +39,7 @@ import {
   type PiResumeCursor,
   type PiRpcCommand,
   type PiRpcEvent,
+  type PiRpcProcessStatus,
   type PiRpcResponse,
   type PiRpcRuntimeMessage,
   type PiSessionRuntimeError,
@@ -72,6 +73,7 @@ export {
   type PiResumeCursor,
   type PiRpcCommand,
   type PiRpcEvent,
+  type PiRpcProcessStatus,
   type PiRpcResponse,
   type PiRpcRuntimeMessage,
   type PiSessionRuntimeError,
@@ -116,6 +118,7 @@ function readTrimmedString(value: unknown): string | undefined {
 export interface PiSessionRuntimeShape {
   readonly start: () => Effect.Effect<ProviderSession, PiSessionRuntimeError>;
   readonly getSession: Effect.Effect<ProviderSession>;
+  readonly getHealth: Effect.Effect<PiRpcProcessStatus>;
   readonly prompt: (input: {
     readonly message: string;
     readonly images?: ReadonlyArray<unknown>;
@@ -214,12 +217,15 @@ class PiSessionRuntimeImpl implements PiSessionRuntimeShape {
     const self = this;
     return Effect.gen(function* () {
       const updatedAt = DateTime.formatIso(yield* DateTime.now);
+      const health = self.currentHealth();
+      const status = self.sessionStatusFromHealth(health);
+      if (status !== self.status && self.status !== "running") self.status = status;
       return {
         provider: PROVIDER,
         ...(self.options.providerInstanceId
           ? { providerInstanceId: self.options.providerInstanceId }
           : {}),
-        status: self.status,
+        status,
         runtimeMode: self.options.runtimeMode,
         cwd: self.options.cwd,
         ...(self.currentModel ? { model: self.currentModel } : {}),
@@ -230,9 +236,12 @@ class PiSessionRuntimeImpl implements PiSessionRuntimeShape {
         ...(self.activeTurnId ? { activeTurnId: self.activeTurnId } : {}),
         createdAt: self.createdAt,
         updatedAt,
+        ...(health.error ? { lastError: health.error } : {}),
       } satisfies ProviderSession;
     });
   });
+
+  readonly getHealth: Effect.Effect<PiRpcProcessStatus> = Effect.sync(() => this.currentHealth());
 
   readonly prompt = (input: {
     readonly message: string;
@@ -527,6 +536,28 @@ class PiSessionRuntimeImpl implements PiSessionRuntimeShape {
     timeoutMs: number,
   ): Effect.Effect<void, PiSessionRuntimeError> {
     return Effect.asVoid(this.requestAndRequireSuccess(command, timeoutMs));
+  }
+
+  private currentHealth(): PiRpcProcessStatus {
+    const proc = this.process;
+    if (!proc) {
+      return {
+        state: this.status === "closed" ? "closed" : "not-started",
+        spawned: false,
+        exited: false,
+        closed: this.status === "closed",
+      };
+    }
+    return proc.getStatus();
+  }
+
+  private sessionStatusFromHealth(health: PiRpcProcessStatus): ProviderSession["status"] {
+    if (this.status === "running" && health.state === "healthy") return "running";
+    if (health.state === "closed") return "closed";
+    if (health.state === "not-started") return this.status;
+    if (health.state === "error") return "error";
+    if (health.state === "starting") return "connecting";
+    return this.status === "running" ? "running" : "ready";
   }
 
   private applyState(data: unknown): void {
