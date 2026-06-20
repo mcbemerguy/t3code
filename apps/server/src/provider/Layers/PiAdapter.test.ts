@@ -65,6 +65,7 @@ class FakePiRuntime implements PiSessionRuntimeShape {
   statsResponses: Array<unknown> = [];
   statsReadCount = 0;
   getSessionStatsImpl: (() => Effect.Effect<unknown, PiRpcLifecycleError>) | undefined;
+  getMessagesImpl: (() => Effect.Effect<unknown, PiRpcLifecycleError>) | undefined;
   messages: unknown = [{ id: "message-turn-1", role: "assistant", content: "hello" }];
   promptScript: ((runtime: FakePiRuntime) => Effect.Effect<void>) | undefined;
   promptInputs: Array<{ readonly message: string; readonly images?: ReadonlyArray<unknown> }> = [];
@@ -200,7 +201,7 @@ class FakePiRuntime implements PiSessionRuntimeShape {
       ? Effect.fail(new PiRpcLifecycleError(response.message, response))
       : Effect.succeed(response);
   });
-  getMessages = Effect.sync(() => this.messages);
+  getMessages = Effect.suspend(() => this.getMessagesImpl?.() ?? Effect.succeed(this.messages));
   workflowControl = (input: PiWorkflowControlInput) =>
     Effect.tryPromise({
       try: async () => {
@@ -363,6 +364,7 @@ type WorkflowRunFixture = {
 function createWorkflowRunFixture(input: {
   readonly runId?: string;
   readonly status?: string;
+  readonly parentSessionFile?: string;
   readonly events?: ReadonlyArray<Record<string, unknown>>;
 }): WorkflowRunFixture {
   const root = mkdtempSync(join(tmpdir(), "t3-pi-workflow-"));
@@ -381,6 +383,7 @@ function createWorkflowRunFixture(input: {
       runDir,
       auditPath,
       status: input.status ?? "running",
+      parentSessionFile: input.parentSessionFile,
       endedAt: input.status === "completed" ? "2026-01-01T00:00:00.000Z" : undefined,
     })}\n`,
     "utf8",
@@ -2178,6 +2181,67 @@ describe("PiAdapter", () => {
     ).pipe(Effect.provide(TestClock.layer()));
   });
 
+  it.effect("restarts an idle-exited Pi runtime from the saved session before sendTurn", () => {
+    let created = 0;
+    return withHarness(
+      (fake) => {
+        const index = created;
+        created += 1;
+        if (index === 0) {
+          fake.promptDetachedImpl = vi.fn(async () => {
+            throw new PiRpcLifecycleError(
+              "Pi RPC process exited before prompt could be sent. process status: spawned=true, exited=true, closed=true",
+            );
+          });
+        } else {
+          fake.promptScript = (rt) => rt.emit({ type: "agent_end", success: true });
+        }
+      },
+      ({ adapter, runtimes }) =>
+        Effect.gen(function* () {
+          const result = yield* adapter.sendTurn({ threadId, input: "after idle exit" });
+
+          assert.equal(result.turnId, "pi-turn-1");
+          assert.equal(runtimes.length, 2);
+          assert.equal(runtimes[0]?.closeImpl.mock.calls.length, 1);
+          assert.equal(runtimes[1]?.options.resumeCursor?.sessionFile, "/tmp/pi-session.json");
+          assert.deepEqual(
+            runtimes[1]?.promptInputs.map((input) => input.message),
+            ["after idle exit"],
+          );
+        }),
+    );
+  });
+
+  it.effect("restarts an idle-exited Pi runtime before read-only thread reads", () => {
+    let created = 0;
+    return withHarness(
+      (fake) => {
+        const index = created;
+        created += 1;
+        if (index === 0) {
+          fake.getMessagesImpl = () =>
+            Effect.fail(
+              new PiRpcLifecycleError(
+                "Pi RPC process exited before get_messages could be sent. process status: spawned=true, exited=true, closed=true",
+              ),
+            );
+        } else {
+          fake.messages = [{ id: "resumed-message", role: "assistant", content: "resumed" }];
+        }
+      },
+      ({ adapter, runtimes }) =>
+        Effect.gen(function* () {
+          const thread = yield* adapter.readThread(threadId);
+
+          assert.equal(runtimes.length, 2);
+          assert.equal(runtimes[0]?.closeImpl.mock.calls.length, 1);
+          assert.equal(runtimes[1]?.options.resumeCursor?.sessionFile, "/tmp/pi-session.json");
+          assert.equal(thread.turns[0]?.id, "resumed-message");
+        }),
+    );
+  });
+
   it.effect("does not ingest stale events from a discarded Pi runtime after recovery", () => {
     let created = 0;
     return withHarness(
@@ -2589,6 +2653,50 @@ describe("PiAdapter", () => {
         }),
     ).pipe(Effect.provide(TestClock.layer())),
   );
+
+  it.effect("does not retry an ambiguous prompt delivery after Pi accepts the write", () => {
+    let created = 0;
+    return withHarness(
+      (fake) => {
+        const index = created;
+        created += 1;
+        if (index === 0) {
+          fake.promptDetachedImpl = vi.fn(async () => {
+            throw new PiRpcLifecycleError(
+              "Pi RPC process exited before a response to prompt was received; request write completed; delivery/processing state is ambiguous. process status: spawned=true, exited=true, closed=true",
+            );
+          });
+        } else {
+          fake.promptScript = (rt) => rt.emit({ type: "agent_end", success: true });
+        }
+      },
+      ({ adapter, runtimes }) =>
+        Effect.gen(function* () {
+          const completedFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.type === "turn.completed",
+          ).pipe(Effect.forkChild);
+
+          const result = yield* adapter
+            .sendTurn({ threadId, input: "maybe delivered" })
+            .pipe(Effect.result);
+          const completed = yield* Fiber.join(completedFiber);
+
+          assert.equal(Result.isFailure(result), true);
+          assert.equal(runtimes.length, 1);
+          assert.deepEqual(
+            runtimes[0]?.promptInputs.map((input) => input.message),
+            ["maybe delivered"],
+          );
+          assert.equal(completed[0]?.type, "turn.completed");
+          if (completed[0]?.type === "turn.completed") {
+            assert.equal(completed[0].payload.state, "failed");
+            assert.match(completed[0].payload.errorMessage ?? "", /ambiguous/);
+          }
+        }),
+    );
+  });
 
   it.effect("recovers Pi runtime after prompt acknowledgement timeout", () => {
     let created = 0;
@@ -3467,6 +3575,46 @@ describe("PiAdapter", () => {
   );
 
   it.effect(
+    "discovers active workflow artifacts on resume when workflow cursor metadata is missing",
+    () => {
+      const sessionFile = "/tmp/pi-session.json";
+      const fixture = createWorkflowRunFixture({
+        status: "running",
+        parentSessionFile: sessionFile,
+        events: [{ type: "run_start", sequence: 1, status: "running" }],
+      });
+      return withHarness(
+        undefined,
+        ({ adapter }) =>
+          Effect.gen(function* () {
+            yield* Effect.yieldNow;
+            const sessions = yield* adapter.listSessions();
+
+            assert.deepEqual(sessions[0]?.resumeCursor, {
+              schemaVersion: 1,
+              provider: "pi",
+              providerInstanceId: "pi",
+              sessionFile,
+              workflows: {
+                activeRuns: [
+                  {
+                    runId: fixture.runId,
+                    lastSequence: 1,
+                    runDir: fixture.runDir,
+                    auditPath: fixture.auditPath,
+                    status: "running",
+                  },
+                ],
+              },
+            });
+          }),
+        { resumeCursor: makePiResumeCursor({ sessionFile }) },
+        { workflowMonitor: { workflowRunsDir: fixture.root, pollIntervalMs: 10 } },
+      );
+    },
+  );
+
+  it.effect(
     "attaches restored active workflow runs and interrupts them without passive pause",
     () => {
       const fixture = createWorkflowRunFixture({
@@ -3837,6 +3985,68 @@ describe("PiAdapter", () => {
       );
     });
   });
+
+  it.effect(
+    "restarts a dead Pi runtime before workflow control when artifacts identify an active run",
+    () => {
+      const fixture = createWorkflowRunFixture({
+        status: "running",
+        events: [{ type: "run_start", sequence: 1, status: "running" }],
+      });
+      let created = 0;
+      return withHarness(
+        (fake) => {
+          const index = created;
+          created += 1;
+          if (index === 0) {
+            fake.workflowControlImpl.mockRejectedValueOnce(
+              new PiRpcLifecycleError(
+                "Pi RPC process exited before workflow_control could be sent. process status: spawned=true, exited=true, closed=true",
+              ),
+            );
+          }
+        },
+        ({ adapter, runtimes }) =>
+          Effect.gen(function* () {
+            yield* adapter.sendTurn({ threadId, input: `/workflow:pause ${fixture.runId}` });
+            const sessions = yield* adapter.listSessions();
+
+            assert.equal(runtimes.length, 2);
+            assert.equal(runtimes[0]?.closeImpl.mock.calls.length, 1);
+            assert.equal(runtimes[1]?.options.resumeCursor?.sessionFile, "/tmp/pi-session.json");
+            assert.deepEqual(runtimes[1]?.workflowControls[0], {
+              action: "pause",
+              target: fixture.runId,
+              reason: "User requested workflow pause from t3code.",
+            });
+            assert.deepEqual(sessions[0]?.resumeCursor, {
+              schemaVersion: 1,
+              provider: "pi",
+              providerInstanceId: "pi",
+              sessionFile: "/tmp/pi-session.json",
+              workflows: {
+                activeRuns: [
+                  {
+                    runId: fixture.runId,
+                    lastSequence: 1,
+                    runDir: fixture.runDir,
+                    status: "paused",
+                  },
+                ],
+              },
+            });
+          }),
+        {
+          resumeCursor: makePiResumeCursor({
+            sessionFile: "/tmp/pi-session.json",
+            activeWorkflowRuns: [
+              { runId: fixture.runId, lastSequence: 1, runDir: fixture.runDir, status: "running" },
+            ],
+          }),
+        },
+      );
+    },
+  );
 
   it.effect(
     "maps explicit workflow pause, resume, and abort prompts to Pi workflow_control",

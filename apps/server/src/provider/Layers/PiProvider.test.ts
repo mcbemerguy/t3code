@@ -97,16 +97,29 @@ it.layer(NodeServices.layer)("checkPiProviderStatus", (it) => {
     }),
   );
 
-  it.effect("keeps the provider available with fallback models when RPC discovery fails", () =>
+  it.effect("does not report ready when Pi RPC model discovery fails", () =>
     Effect.gen(function* () {
       const binaryPath = yield* Effect.promise(() =>
         makeMockPiWrapper({ MOCK_PI_RPC_FAIL_COMMAND: "get_available_models" }),
       );
       const provider = yield* checkPiProviderStatus({ enabled: true, binaryPath });
 
-      expect(provider.status).toBe("ready");
+      expect(provider.status).not.toBe("ready");
       expect(provider.models.map((model) => model.slug)).toEqual(["default"]);
       expect(provider.message).toContain("mock failure: get_available_models");
+    }),
+  );
+
+  it.effect("does not report ready when Pi RPC startup fails after version succeeds", () =>
+    Effect.gen(function* () {
+      const binaryPath = yield* Effect.promise(() =>
+        makeMockPiWrapper({ MOCK_PI_RPC_EXIT_ON_START: "1" }),
+      );
+      const provider = yield* checkPiProviderStatus({ enabled: true, binaryPath });
+
+      expect(provider.status).not.toBe("ready");
+      expect(provider.models.map((model) => model.slug)).toEqual(["default"]);
+      expect(provider.message).toContain("mock startup failure");
     }),
   );
 
