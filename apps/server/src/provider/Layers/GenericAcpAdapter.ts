@@ -454,7 +454,6 @@ export function makeGenericAcpAdapter(
         ctx.turnCancelSignals.delete(turnId);
         ctx.turnPromptCompletions.delete(turnId);
         ctx.turnCancellationReasons.delete(turnId);
-        if (ctx.runtimeEventTurnId === turnId) ctx.runtimeEventTurnId = undefined;
         if (ctx.activeTurnId !== turnId) return;
         ctx.activeTurnId = undefined;
         yield* Deferred.succeed(ctx.turnIdle, undefined).pipe(Effect.ignore);
@@ -1455,7 +1454,7 @@ export function makeGenericAcpAdapter(
 
     return {
       provider,
-      capabilities: { sessionModelSwitch: "in-session" },
+      capabilities: { sessionModelSwitch: "in-session", sendTurnCompletion: "turn-settled" },
       startSession,
       sendTurn,
       sendActiveTurnInput,

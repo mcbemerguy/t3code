@@ -1,4 +1,4 @@
-import { ThreadId } from "@t3tools/contracts";
+import { IsoDateTime, ProviderInstanceId, RuntimeMode, ThreadId } from "@t3tools/contracts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import * as Effect from "effect/Effect";
@@ -18,14 +18,33 @@ import {
   type ProviderSessionRuntimeRepositoryShape,
 } from "../Services/ProviderSessionRuntime.ts";
 
-const ProviderSessionRuntimeDbRowSchema = ProviderSessionRuntime.mapFields(
+const ProviderSessionRuntimeDbRequestSchema = ProviderSessionRuntime.mapFields(
   Struct.assign({
     resumeCursor: Schema.NullOr(Schema.fromJsonString(Schema.Unknown)),
     runtimePayload: Schema.NullOr(Schema.fromJsonString(Schema.Unknown)),
   }),
 );
 
+const ProviderSessionRuntimeDbResultSchema = Schema.Struct({
+  threadId: ThreadId,
+  providerName: Schema.String,
+  providerInstanceId: Schema.NullOr(ProviderInstanceId),
+  adapterKey: Schema.String,
+  runtimeMode: RuntimeMode,
+  status: Schema.String,
+  lastSeenAt: IsoDateTime,
+  resumeCursor: Schema.NullOr(Schema.fromJsonString(Schema.Unknown)),
+  runtimePayload: Schema.NullOr(Schema.fromJsonString(Schema.Unknown)),
+});
+
 const decodeRuntime = Schema.decodeUnknownEffect(ProviderSessionRuntime);
+
+function normalizeLegacyRuntimeRow(row: typeof ProviderSessionRuntimeDbResultSchema.Type) {
+  return {
+    ...row,
+    status: row.status === "ready" ? "running" : row.status,
+  };
+}
 
 const GetRuntimeRequestSchema = Schema.Struct({
   threadId: ThreadId,
@@ -44,7 +63,7 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
   const upsertRuntimeRow = SqlSchema.void({
-    Request: ProviderSessionRuntimeDbRowSchema,
+    Request: ProviderSessionRuntimeDbRequestSchema,
     execute: (runtime) =>
       sql`
         INSERT INTO provider_session_runtime (
@@ -84,7 +103,7 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
 
   const getRuntimeRowByThreadId = SqlSchema.findOneOption({
     Request: GetRuntimeRequestSchema,
-    Result: ProviderSessionRuntimeDbRowSchema,
+    Result: ProviderSessionRuntimeDbResultSchema,
     execute: ({ threadId }) =>
       sql`
         SELECT
@@ -104,7 +123,7 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
 
   const listRuntimeRows = SqlSchema.findAll({
     Request: Schema.Void,
-    Result: ProviderSessionRuntimeDbRowSchema,
+    Result: ProviderSessionRuntimeDbResultSchema,
     execute: () =>
       sql`
         SELECT
@@ -153,7 +172,7 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
         Option.match(runtimeRowOption, {
           onNone: () => Effect.succeed(Option.none()),
           onSome: (row) =>
-            decodeRuntime(row).pipe(
+            decodeRuntime(normalizeLegacyRuntimeRow(row)).pipe(
               Effect.mapError(
                 toPersistenceDecodeError(
                   "ProviderSessionRuntimeRepository.getByThreadId:rowToRuntime",
@@ -177,7 +196,7 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
         Effect.forEach(
           rows,
           (row) =>
-            decodeRuntime(row).pipe(
+            decodeRuntime(normalizeLegacyRuntimeRow(row)).pipe(
               Effect.mapError(
                 toPersistenceDecodeError("ProviderSessionRuntimeRepository.list:rowToRuntime"),
               ),

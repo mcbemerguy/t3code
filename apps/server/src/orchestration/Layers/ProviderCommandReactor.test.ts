@@ -447,10 +447,19 @@ describe("ProviderCommandReactor", () => {
       runtimeMode: "approval-required",
     });
 
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      const message = thread?.messages.find((entry) => entry.id === asMessageId("user-message-1"));
+      return message?.turnId === asTurnId("turn-1");
+    });
+
     const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    const message = thread?.messages.find((entry) => entry.id === asMessageId("user-message-1"));
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
+    expect(message?.turnId).toBe(asTurnId("turn-1"));
   });
 
   it("generates a thread title on the first turn", async () => {

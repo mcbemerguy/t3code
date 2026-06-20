@@ -658,6 +658,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         ...(input.modelSelection?.model ? { "provider.model": input.modelSelection.model } : {}),
       });
       const turn = yield* routed.adapter.sendTurn(input);
+      const sendTurnCompletion = routed.adapter.capabilities.sendTurnCompletion ?? "turn-started";
+      const isSettledTurn = sendTurnCompletion === "turn-settled";
       yield* directory.upsert({
         threadId: input.threadId,
         provider: routed.adapter.provider,
@@ -666,8 +668,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         ...(turn.resumeCursor !== undefined ? { resumeCursor: turn.resumeCursor } : {}),
         runtimePayload: {
           ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
-          activeTurnId: turn.turnId,
-          lastRuntimeEvent: "provider.sendTurn",
+          activeTurnId: isSettledTurn ? null : turn.turnId,
+          ...(isSettledTurn ? { settledTurnId: turn.turnId } : {}),
+          lastRuntimeEvent: isSettledTurn ? "provider.sendTurn.settled" : "provider.sendTurn",
           lastRuntimeEventAt: yield* nowIso,
         },
       });

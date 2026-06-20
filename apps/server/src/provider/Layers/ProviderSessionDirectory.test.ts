@@ -125,6 +125,48 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
       }
     }));
 
+  it("normalizes legacy ready runtime rows while listing bindings", () =>
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory;
+      const runtimeRepository = yield* ProviderSessionRuntimeRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-runtime-legacy-ready");
+
+      yield* sql`
+        INSERT INTO provider_session_runtime (
+          thread_id,
+          provider_name,
+          provider_instance_id,
+          adapter_key,
+          runtime_mode,
+          status,
+          last_seen_at,
+          resume_cursor_json,
+          runtime_payload_json
+        ) VALUES (
+          ${threadId},
+          ${"codex"},
+          ${null},
+          ${"codex"},
+          ${"full-access"},
+          ${"ready"},
+          ${"2026-04-14T12:00:00.000Z"},
+          ${null},
+          ${null}
+        )
+      `;
+
+      const runtime = yield* runtimeRepository.getByThreadId({ threadId });
+      assert.equal(Option.isSome(runtime), true);
+      if (Option.isSome(runtime)) {
+        assert.equal(runtime.value.status, "running");
+      }
+
+      const bindings = yield* directory.listBindings();
+      const binding = bindings.find((entry) => entry.threadId === threadId);
+      assert.equal(binding?.status, "running");
+    }));
+
   it("removes persisted bindings without touching provider-owned session files", () =>
     Effect.gen(function* () {
       const directory = yield* ProviderSessionDirectory;

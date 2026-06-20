@@ -24,12 +24,14 @@ import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
+export type ProviderSendTurnCompletionMode = "turn-started" | "turn-settled";
 
 export interface ProviderAdapterCapabilities {
   /**
    * Declares whether changing the model on an existing session is supported.
    */
   readonly sessionModelSwitch: ProviderSessionModelSwitchMode;
+  readonly sendTurnCompletion?: ProviderSendTurnCompletionMode;
 }
 
 export interface ProviderThreadTurnSnapshot {

@@ -325,9 +325,9 @@ export function createWsRpcProtocolLayer(
                   stream,
                 });
               }
-              return protocol.send(clientId, request, transferables).pipe(
-                Effect.tapError(() => Effect.sync(() => activeRequests.delete(request.id))),
-              );
+              return protocol
+                .send(clientId, request, transferables)
+                .pipe(Effect.tapError(() => Effect.sync(() => activeRequests.delete(request.id))));
             }
             if (request._tag === "Interrupt") {
               const activeRequest = activeRequests.get(request.requestId);
