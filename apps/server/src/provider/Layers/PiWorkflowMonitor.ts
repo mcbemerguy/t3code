@@ -39,6 +39,7 @@ export function restorePiWorkflowRuns(
   options: PiWorkflowMonitorOptions = {},
 ): Effect.Effect<void> {
   return Effect.gen(function* () {
+    discoverSessionWorkflowRuns(session, options);
     for (const run of Array.from(session.workflowRuns.values())) {
       yield* replayRun(session, offer, run, { ...options, includeTerminalFallback: false });
       if (!isTerminalWorkflowStatus(session.workflowRuns.get(run.runId)?.status)) {
@@ -46,6 +47,43 @@ export function restorePiWorkflowRuns(
       }
     }
   });
+}
+
+function discoverSessionWorkflowRuns(
+  session: PiAdapterSessionContext,
+  options: PiWorkflowMonitorOptions,
+): void {
+  if (!session.sessionFile) return;
+  const root = options.workflowRunsDir ?? defaultPiWorkflowRunsDir();
+  const discovered = listPiWorkflowRuns(root).filter(
+    (run) => run.parentSessionFile === session.sessionFile && !isTerminalWorkflowStatus(run.status),
+  );
+  if (discovered.length === 0) return;
+
+  const discoveredIds = new Set(discovered.map((run) => run.id));
+  for (const run of Array.from(session.workflowRuns.values())) {
+    if (discoveredIds.has(run.runId)) continue;
+    const record = readPiWorkflowRun(run.runDir ?? run.runId, root);
+    if (!record || record.parentSessionFile === session.sessionFile) {
+      session.workflowRuns.delete(run.runId);
+      session.workflowTails.delete(run.runId);
+      session.workflowRunTurnIds.delete(run.runId);
+    }
+  }
+
+  for (const run of discovered) {
+    const cursor: PiWorkflowRunCursor = {
+      runId: run.id,
+      lastSequence: 0,
+      runDir: run.runDir,
+      ...(run.auditPath ? { auditPath: run.auditPath } : {}),
+      status: run.status,
+    };
+    session.workflowRuns.set(
+      run.id,
+      mergeWorkflowRunCursor(session.workflowRuns.get(run.id), cursor),
+    );
+  }
 }
 
 export function startPiWorkflowCommandMonitor(
