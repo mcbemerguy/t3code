@@ -744,6 +744,42 @@ const make = Effect.gen(function* () {
         ),
       );
 
+    const handleTurnStartFailure = (cause: Cause.Cause<unknown>) => {
+      if (Cause.hasInterruptsOnly(cause)) {
+        return Effect.void;
+      }
+      const detail = formatFailureDetail(cause);
+      return setThreadSessionErrorOnTurnStartFailure({
+        threadId: event.payload.threadId,
+        detail,
+        createdAt: event.payload.createdAt,
+      }).pipe(
+        Effect.flatMap(() =>
+          appendProviderFailureActivity({
+            threadId: event.payload.threadId,
+            kind: "provider.turn.start.failed",
+            summary: "Provider turn start failed",
+            detail,
+            turnId: null,
+            createdAt: event.payload.createdAt,
+          }),
+        ),
+        Effect.asVoid,
+      );
+    };
+
+    const recoverTurnStartFailure = (cause: Cause.Cause<unknown>) =>
+      handleTurnStartFailure(cause).pipe(
+        Effect.catchCause((recoveryCause) =>
+          Effect.logWarning("provider command reactor failed to recover turn start failure", {
+            eventType: event.type,
+            threadId: event.payload.threadId,
+            cause: Cause.pretty(recoveryCause),
+            originalCause: Cause.pretty(cause),
+          }),
+        ),
+      );
+
     const activeTurnId = thread.session?.activeTurnId ?? null;
     if (activeTurnId && thread.session?.status === "running") {
       const accepted = yield* providerService
@@ -754,16 +790,15 @@ const make = Effect.gen(function* () {
           ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
         })
         .pipe(
+          Effect.map(Option.some),
           Effect.catchCause((cause) =>
-            Effect.logWarning("provider command reactor failed to steer active turn", {
-              threadId: event.payload.threadId,
-              messageId: event.payload.messageId,
-              turnId: activeTurnId,
-              cause: Cause.pretty(cause),
-            }).pipe(Effect.as(false)),
+            recoverTurnStartFailure(cause).pipe(Effect.as(Option.none())),
           ),
         );
-      if (accepted) {
+      if (Option.isNone(accepted)) {
+        return;
+      }
+      if (accepted.value) {
         yield* attachUserMessageToProviderTurn({
           threadId: event.payload.threadId,
           messageId: event.payload.messageId,
@@ -803,42 +838,6 @@ const make = Effect.gen(function* () {
         }).pipe(Effect.forkScoped);
       }
     }
-
-    const handleTurnStartFailure = (cause: Cause.Cause<unknown>) => {
-      if (Cause.hasInterruptsOnly(cause)) {
-        return Effect.void;
-      }
-      const detail = formatFailureDetail(cause);
-      return setThreadSessionErrorOnTurnStartFailure({
-        threadId: event.payload.threadId,
-        detail,
-        createdAt: event.payload.createdAt,
-      }).pipe(
-        Effect.flatMap(() =>
-          appendProviderFailureActivity({
-            threadId: event.payload.threadId,
-            kind: "provider.turn.start.failed",
-            summary: "Provider turn start failed",
-            detail,
-            turnId: null,
-            createdAt: event.payload.createdAt,
-          }),
-        ),
-        Effect.asVoid,
-      );
-    };
-
-    const recoverTurnStartFailure = (cause: Cause.Cause<unknown>) =>
-      handleTurnStartFailure(cause).pipe(
-        Effect.catchCause((recoveryCause) =>
-          Effect.logWarning("provider command reactor failed to recover turn start failure", {
-            eventType: event.type,
-            threadId: event.payload.threadId,
-            cause: Cause.pretty(recoveryCause),
-            originalCause: Cause.pretty(cause),
-          }),
-        ),
-      );
 
     const sendTurnRequest = yield* buildSendTurnRequestForThread({
       threadId: event.payload.threadId,

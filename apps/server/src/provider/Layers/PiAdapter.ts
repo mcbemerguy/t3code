@@ -42,6 +42,7 @@ import { basePiEvent, PiEventMapper } from "./PiEventMapper.ts";
 import type {
   PiAdapterSessionContext,
   PiAdapterTimeouts,
+  PiRuntimeRecoveryState,
   PiUsageRefreshOptions,
 } from "./PiAdapterTypes.ts";
 import { parsePiModelSelection } from "./PiModels.ts";
@@ -161,8 +162,8 @@ export interface PiAdapterLiveOptions {
 
 export interface PiAdapterShape extends ProviderAdapterShape<ProviderAdapterError> {
   readonly sendActiveTurnInput: (
-    input: ProviderSendTurnInput,
-  ) => Effect.Effect<void, ProviderAdapterError>;
+    input: ProviderSendTurnInput & { readonly turnId?: TurnId },
+  ) => Effect.Effect<boolean, ProviderAdapterError>;
 }
 
 function isRuntimeClosedHealth(health: PiRpcProcessStatus): boolean {
@@ -685,6 +686,12 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
             }
             continue;
           }
+          if (
+            session.runtimeRecovery?.discardedRuntime === runtime ||
+            session.runtime !== runtime
+          ) {
+            continue;
+          }
           if (message.kind === "event") {
             session.turnActivitySequence += 1;
             session.noEventWarningEmitted = false;
@@ -741,11 +748,22 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         ...(providerSession.model ? { model: providerSession.model } : {}),
       };
     }
-    session.runtimeRecovery = {
+    const runtimeRecovery: PiRuntimeRecoveryState = {
       reason,
       discardedAt,
-      ...(resumeCursor ? { resumeCursor } : { missingResumeErrorEmitted: true }),
+      discardedRuntime: session.runtime,
     };
+    session.runtimeRecovery = resumeCursor
+      ? { ...runtimeRecovery, resumeCursor }
+      : { ...runtimeRecovery, missingResumeErrorEmitted: true };
+    if (!session.turnCompleted) {
+      yield* cancelPendingUserInputs(session);
+      session.nextTurnRequiresPromptStart = true;
+      yield* completeTurn(session, undefined, "failed", {
+        errorMessage: reason,
+        stopReason: "runtime_closed",
+      });
+    }
     if (session.eventFiber && !options?.skipEventFiberInterrupt) {
       yield* Fiber.interrupt(session.eventFiber).pipe(Effect.ignore);
       delete session.eventFiber;
@@ -1724,14 +1742,31 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
   });
 
   const sendActiveTurnInput = Effect.fn("sendPiActiveTurnInput")(function* (
-    input: ProviderSendTurnInput,
-  ): Effect.fn.Return<void, ProviderAdapterError> {
+    input: ProviderSendTurnInput & { readonly turnId?: TurnId },
+  ): Effect.fn.Return<boolean, ProviderAdapterError> {
     const session = yield* requireSession(input.threadId);
     yield* ensureRuntimeReady(session, "turn/active-input");
+    if (input.turnId !== undefined && input.turnId !== session.currentTurnId) {
+      return false;
+    }
+    const compactCommand = parsePiCompactCommand(input.input);
+    const controlResult = yield* handleWorkflowControlPrompt(session, input);
+    if (controlResult) {
+      yield* scheduleUsageRefresh(session, undefined, true);
+      return true;
+    }
+    if (compactCommand) {
+      return yield* new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method: "compact",
+        detail: "Finish or stop the current Pi turn before compacting the session context.",
+      });
+    }
     const images = yield* resolveImageAttachments("turn/start", input);
     yield* session.runtime
       .steer({ message: input.input ?? "", images })
       .pipe(Effect.mapError((cause) => mapPiRuntimeError(input.threadId, "steer", cause)));
+    return true;
   });
 
   const interruptActiveWorkflows = (session: PiAdapterSessionContext) =>

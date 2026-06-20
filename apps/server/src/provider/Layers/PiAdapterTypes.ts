@@ -100,6 +100,7 @@ export interface PiWorkflowTailCursor {
 export interface PiRuntimeRecoveryState {
   readonly reason: string;
   readonly discardedAt: string;
+  readonly discardedRuntime: PiSessionRuntimeShape;
   readonly resumeCursor?: PiResumeCursor;
   readonly missingResumeErrorEmitted?: boolean;
 }

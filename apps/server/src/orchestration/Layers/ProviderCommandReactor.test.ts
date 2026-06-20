@@ -218,7 +218,9 @@ describe("ProviderCommandReactor", () => {
         turnId: asTurnId("turn-1"),
       }),
     );
-    const sendActiveTurnInput = vi.fn((_: unknown) => Effect.succeed(true));
+    const sendActiveTurnInput = vi.fn<ProviderServiceShape["sendActiveTurnInput"]>((_) =>
+      Effect.succeed(true),
+    );
     const interruptTurn = vi.fn((_: unknown) => Effect.void);
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
     const respondToUserInput = vi.fn<ProviderServiceShape["respondToUserInput"]>(() => Effect.void);
@@ -571,6 +573,67 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.sendActiveTurnInput.mock.calls.length === 1);
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+  });
+
+  it("does not start a second provider turn when active-turn steering fails", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.sendActiveTurnInput.mockReturnValue(
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: ProviderDriverKind.make("pi"),
+          method: "steer",
+          detail: "steer timed out after delivery status was unknown",
+        }),
+      ) as ReturnType<ProviderServiceShape["sendActiveTurnInput"]>,
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-active-turn-failed"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "customAcp",
+          providerInstanceId: ProviderInstanceId.make("pi_acp"),
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("active-turn-failed"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-after-steer-failed"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-steer-failed"),
+          role: "user",
+          text: "do not duplicate me",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendActiveTurnInput.mock.calls.length === 1);
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      return (
+        thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed") ??
+        false
+      );
+    });
+    expect(harness.sendTurn).not.toHaveBeenCalled();
   });
 
   it("generates a thread title on the first turn", async () => {

@@ -238,6 +238,20 @@ class FakePiRuntime implements PiSessionRuntimeShape {
     return Queue.offer(this.eventQueue, { kind: "event", payload });
   }
 
+  emitProcessClosed(status: Partial<PiRpcProcessStatus> = {}) {
+    const closedStatus: PiRpcProcessStatus = {
+      state: "closed",
+      spawned: true,
+      exited: true,
+      closed: true,
+      stdinWritable: false,
+      closeCode: 0,
+      ...status,
+    };
+    this.health = closedStatus;
+    return Queue.offer(this.eventQueue, { kind: "process.closed", status: closedStatus });
+  }
+
   readySession(): ProviderSession {
     return this.session("ready");
   }
@@ -558,6 +572,44 @@ describe("PiAdapter", () => {
         assert.equal(Result.isFailure(result), true);
         assert.deepEqual(runtime.compactInputs, []);
         assert.equal(runtime.steerImpl.mock.calls.length, 0);
+      }),
+    ),
+  );
+
+  it.effect("rejects Pi compact through direct active-turn input", () =>
+    withHarness(undefined, ({ adapter, runtime }) =>
+      Effect.gen(function* () {
+        const started = yield* adapter.sendTurn({ threadId, input: "start long turn" });
+        const result = yield* adapter
+          .sendActiveTurnInput({ threadId, turnId: started.turnId, input: "/compact" })
+          .pipe(Effect.result);
+
+        assert.equal(Result.isFailure(result), true);
+        assert.deepEqual(runtime.compactInputs, []);
+        assert.equal(runtime.steerImpl.mock.calls.length, 0);
+      }),
+    ),
+  );
+
+  it.effect("handles workflow control commands through direct active-turn input", () =>
+    withHarness(undefined, ({ adapter, runtime }) =>
+      Effect.gen(function* () {
+        const noticeFiber = yield* collectEvents(
+          adapter,
+          1,
+          (event) => event.type === "content.delta" && event.raw?.source === "pi.workflow.artifact",
+        ).pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
+        const started = yield* adapter.sendTurn({ threadId, input: "start long turn" });
+        const accepted = yield* adapter.sendActiveTurnInput({
+          threadId,
+          turnId: started.turnId,
+          input: "/workflow:pause",
+        });
+        const notice = yield* Fiber.join(noticeFiber);
+
+        assert.equal(accepted, true);
+        assert.equal(runtime.steerImpl.mock.calls.length, 0);
+        assert.equal(Option.isSome(notice), true);
       }),
     ),
   );
@@ -2224,6 +2276,52 @@ describe("PiAdapter", () => {
             runtimes[1]?.promptInputs.map((input) => input.message),
             ["after idle exit"],
           );
+        }),
+    );
+  });
+
+  it.effect("fails an active turn and restarts from a prompt when Pi exits mid-turn", () => {
+    let created = 0;
+    return withHarness(
+      () => {
+        created += 1;
+      },
+      ({ adapter, runtimes }) =>
+        Effect.gen(function* () {
+          const completedFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.type === "turn.completed" && event.payload.state === "failed",
+          ).pipe(Effect.forkChild);
+
+          const started = yield* adapter.sendTurn({ threadId, input: "start" });
+          yield* runtimes[0]!.emitProcessClosed({ closeCode: 9 });
+          const completed = yield* Fiber.join(completedFiber);
+
+          assert.equal(completed[0]?.turnId, started.turnId);
+          assert.equal(
+            completed[0]?.type === "turn.completed" ? completed[0].payload.stopReason : null,
+            "runtime_closed",
+          );
+
+          const staleActiveInputAccepted = yield* adapter.sendActiveTurnInput({
+            threadId,
+            turnId: started.turnId,
+            input: "must not steer the restarted runtime",
+          });
+          const resumed = yield* adapter.sendTurn({ threadId, input: "after restart" });
+
+          assert.equal(created, 2);
+          assert.equal(staleActiveInputAccepted, false);
+          assert.equal(resumed.turnId, "pi-turn-2");
+          assert.equal(runtimes.length, 2);
+          assert.equal(runtimes[1]?.options.resumeCursor?.sessionFile, "/tmp/pi-session.json");
+          assert.deepEqual(
+            runtimes[1]?.promptInputs.map((input) => input.message),
+            ["after restart"],
+          );
+          assert.equal(runtimes[0]?.steerImpl.mock.calls.length, 0);
+          assert.equal(runtimes[1]?.steerImpl.mock.calls.length, 0);
         }),
     );
   });
