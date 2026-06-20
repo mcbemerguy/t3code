@@ -37,6 +37,7 @@ export const DEFAULT_PI_MODELS: ReadonlyArray<ServerProviderModel> = FALLBACK_PI
 interface PiModelDiscoveryResult {
   readonly models: ReadonlyArray<ServerProviderModel>;
   readonly usedFallback: boolean;
+  readonly rpcHealthy: boolean;
   readonly detail?: string;
 }
 
@@ -81,6 +82,7 @@ function modelResultFromResponse(response: {
     return {
       models: FALLBACK_PI_MODELS,
       usedFallback: true,
+      rpcHealthy: false,
       detail: response.error ?? "Pi RPC get_available_models returned an unsuccessful response.",
     };
   }
@@ -88,6 +90,7 @@ function modelResultFromResponse(response: {
   return {
     models,
     usedFallback: models === FALLBACK_PI_MODELS,
+    rpcHealthy: true,
   };
 }
 
@@ -142,6 +145,7 @@ export const discoverPiCapabilitiesViaRpc = Effect.fn("discoverPiCapabilitiesVia
           models: FALLBACK_PI_MODELS,
           usedFallback: true,
           detail: modelResponse.failure.message,
+          rpcHealthy: false,
         } satisfies PiModelDiscoveryResult);
     const commands = Result.isSuccess(commandResponse)
       ? commandResultFromResponse(commandResponse.success)
@@ -172,6 +176,7 @@ export const discoverPiModelsViaRpc = Effect.fn("discoverPiModelsViaRpc")(functi
   return {
     models: discovery.models,
     usedFallback: discovery.usedFallback,
+    rpcHealthy: discovery.rpcHealthy,
     ...(discovery.detail ? { detail: discovery.detail } : {}),
   } satisfies PiModelDiscoveryResult;
 });
@@ -316,6 +321,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
           detail: Result.isFailure(capabilitiesDiscovery)
             ? capabilitiesDiscovery.failure.message
             : "Pi RPC capability discovery timed out.",
+          rpcHealthy: false,
         } satisfies PiCapabilitiesDiscoveryResult);
   const modelFallbackDetail = discoveredCapabilities.usedFallback
     ? discoveredCapabilities.detail
@@ -326,6 +332,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
     ? ` Command discovery failed: ${discoveredCapabilities.commandDetail}`
     : "";
 
+  const rpcReady = discoveredCapabilities.rpcHealthy;
   return buildServerProvider({
     driver: PROVIDER,
     presentation: PI_PRESENTATION,
@@ -337,9 +344,11 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
     probe: {
       installed: true,
       version: parsedVersion,
-      status: "ready",
-      auth: { status: "unknown", label: "Managed by Pi" },
-      message: `Pi CLI is installed. Native Pi chat sessions are available through Pi RPC.${modelFallbackDetail}${commandFailureDetail}`,
+      status: rpcReady ? "ready" : "warning",
+      auth: rpcReady ? { status: "unknown", label: "Managed by Pi" } : { status: "unknown" },
+      message: rpcReady
+        ? `Pi CLI is installed. Native Pi chat sessions are available through Pi RPC.${modelFallbackDetail}${commandFailureDetail}`
+        : `Pi CLI is installed, but native Pi RPC model discovery is not currently usable.${modelFallbackDetail}${commandFailureDetail}`,
     },
   });
 });

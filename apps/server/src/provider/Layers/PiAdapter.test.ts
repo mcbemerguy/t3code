@@ -180,14 +180,16 @@ class FakePiRuntime implements PiSessionRuntimeShape {
 
   getState = Effect.succeed({ sessionFile: "/tmp/pi-session.json" });
   getAvailableModels = Effect.succeed({ providers: [] });
-  setModel = (provider: string, modelId: string) =>
+  setModel = (provider: string, modelId: string): Effect.Effect<unknown, PiRpcLifecycleError> =>
     Effect.sync(() => {
       this.modelSelections.push({ provider, modelId });
       this.modelOptionOperations.push(`set_model:${provider}/${modelId}`);
       this.currentModel = `${provider}/${modelId}`;
       return {};
     });
-  setThinkingLevel = (level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh") =>
+  setThinkingLevel = (
+    level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh",
+  ): Effect.Effect<unknown, PiRpcLifecycleError> =>
     Effect.sync(() => {
       this.thinkingLevels.push(level);
       this.modelOptionOperations.push(`set_thinking_level:${level}`);
@@ -2811,6 +2813,125 @@ describe("PiAdapter", () => {
             assert.match(completed[0].payload.errorMessage ?? "", /ambiguous/);
           }
         }),
+    );
+  });
+
+  it.effect("retries a prompt once after a clear pre-delivery runtime failure", () => {
+    let created = 0;
+    return withHarness(
+      (fake) => {
+        const index = created;
+        created += 1;
+        if (index === 0) {
+          fake.promptDetachedImpl = vi.fn(async () => {
+            throw new PiRpcLifecycleError(
+              "Pi RPC process exited before prompt could be sent. process status: spawned=true, exited=true, closed=true",
+            );
+          });
+        } else {
+          fake.promptScript = (rt) => rt.emit({ type: "agent_end", success: true });
+        }
+      },
+      ({ adapter, runtimes }) =>
+        Effect.gen(function* () {
+          const completedFiber = yield* collectEvents(
+            adapter,
+            1,
+            (event) => event.type === "turn.completed",
+          ).pipe(Effect.forkChild);
+
+          const result = yield* adapter.sendTurn({ threadId, input: "safe retry" });
+          const completed = yield* Fiber.join(completedFiber);
+
+          assert.equal(result.turnId, "pi-turn-1");
+          assert.equal(runtimes.length, 2);
+          assert.deepEqual(
+            runtimes[0]?.promptInputs.map((input) => input.message),
+            ["safe retry"],
+          );
+          assert.deepEqual(
+            runtimes[1]?.promptInputs.map((input) => input.message),
+            ["safe retry"],
+          );
+          assert.equal(completed[0]?.type, "turn.completed");
+          if (completed[0]?.type === "turn.completed") {
+            assert.equal(completed[0].payload.state, "completed");
+          }
+        }),
+    );
+  });
+
+  it.effect("recovers model selection after a clear pre-delivery set_model failure", () => {
+    let created = 0;
+    return withHarness(
+      (fake) => {
+        const index = created;
+        created += 1;
+        if (index === 0) {
+          fake.setModel = () =>
+            Effect.fail(
+              new PiRpcLifecycleError(
+                "Pi RPC process exited before set_model could be sent. process status: spawned=true, exited=true, closed=true",
+              ),
+            );
+        } else {
+          fake.promptScript = (rt) => rt.emit({ type: "agent_end", success: true });
+        }
+      },
+      ({ adapter, runtimes }) =>
+        Effect.gen(function* () {
+          yield* adapter.sendTurn({
+            threadId,
+            input: "after model recovery",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("pi"),
+              model: "mock/model-b",
+            },
+          });
+
+          assert.equal(runtimes.length, 2);
+          assert.deepEqual(runtimes[1]?.modelSelections, [
+            { provider: "mock", modelId: "model-b" },
+          ]);
+          assert.deepEqual(
+            runtimes[1]?.promptInputs.map((input) => input.message),
+            ["after model recovery"],
+          );
+        }),
+    );
+  });
+
+  it.effect("does not retry ambiguous workflow continuations after Pi may accept them", () => {
+    let created = 0;
+    return withHarness(
+      (fake) => {
+        const index = created;
+        created += 1;
+        if (index === 0) {
+          fake.workflowControlImpl.mockRejectedValueOnce(
+            new PiRpcLifecycleError(
+              "Pi RPC process exited before a response to workflow_control was received; request write completed; delivery/processing state is ambiguous. process status: spawned=true, exited=true, closed=true",
+            ),
+          );
+        }
+      },
+      ({ adapter, runtimes }) =>
+        Effect.gen(function* () {
+          const result = yield* adapter
+            .sendTurn({ threadId, input: "continue" })
+            .pipe(Effect.result);
+
+          assert.equal(Result.isFailure(result), true);
+          assert.equal(runtimes.length, 1);
+          assert.equal(runtimes[0]?.workflowControls.length, 1);
+          assert.equal(runtimes[0]?.workflowControls[0]?.continuationMessage, "continue");
+        }),
+      {
+        resumeCursor: makePiResumeCursor({
+          sessionFile: "/tmp/pi-session.json",
+          activeWorkflowRuns: [{ runId: "run-1", lastSequence: 0, status: "running" }],
+        }),
+      },
     );
   });
 
