@@ -3615,6 +3615,58 @@ describe("PiAdapter", () => {
   );
 
   it.effect(
+    "discovers active workflow artifacts on resume when workflow cursor metadata is stale",
+    () => {
+      const sessionFile = "/tmp/pi-session.json";
+      const fixture = createWorkflowRunFixture({
+        status: "running",
+        parentSessionFile: sessionFile,
+        events: [{ type: "run_start", sequence: 1, status: "running" }],
+      });
+      return withHarness(
+        undefined,
+        ({ adapter }) =>
+          Effect.gen(function* () {
+            yield* Effect.yieldNow;
+            const sessions = yield* adapter.listSessions();
+
+            assert.deepEqual(sessions[0]?.resumeCursor, {
+              schemaVersion: 1,
+              provider: "pi",
+              providerInstanceId: "pi",
+              sessionFile,
+              workflows: {
+                activeRuns: [
+                  {
+                    runId: fixture.runId,
+                    lastSequence: 1,
+                    runDir: fixture.runDir,
+                    auditPath: fixture.auditPath,
+                    status: "running",
+                  },
+                ],
+              },
+            });
+          }),
+        {
+          resumeCursor: makePiResumeCursor({
+            sessionFile,
+            activeWorkflowRuns: [
+              {
+                runId: "stale-run",
+                lastSequence: 99,
+                runDir: join(fixture.root, "stale-run"),
+                status: "running",
+              },
+            ],
+          }),
+        },
+        { workflowMonitor: { workflowRunsDir: fixture.root, pollIntervalMs: 10 } },
+      );
+    },
+  );
+
+  it.effect(
     "attaches restored active workflow runs and interrupts them without passive pause",
     () => {
       const fixture = createWorkflowRunFixture({
@@ -3986,67 +4038,79 @@ describe("PiAdapter", () => {
     });
   });
 
-  it.effect(
-    "restarts a dead Pi runtime before workflow control when artifacts identify an active run",
-    () => {
-      const fixture = createWorkflowRunFixture({
-        status: "running",
-        events: [{ type: "run_start", sequence: 1, status: "running" }],
-      });
-      let created = 0;
-      return withHarness(
-        (fake) => {
-          const index = created;
-          created += 1;
-          if (index === 0) {
-            fake.workflowControlImpl.mockRejectedValueOnce(
-              new PiRpcLifecycleError(
-                "Pi RPC process exited before workflow_control could be sent. process status: spawned=true, exited=true, closed=true",
-              ),
-            );
-          }
-        },
-        ({ adapter, runtimes }) =>
-          Effect.gen(function* () {
-            yield* adapter.sendTurn({ threadId, input: `/workflow:pause ${fixture.runId}` });
-            const sessions = yield* adapter.listSessions();
+  for (const { action, expectedStatus, expectedPolicy } of [
+    { action: "pause", expectedStatus: "paused" },
+    { action: "resume", expectedStatus: "recovering", expectedPolicy: "continue-existing-session" },
+    { action: "abort", expectedStatus: "aborting" },
+  ] as const) {
+    it.effect(
+      `restarts a dead Pi runtime before workflow ${action} when artifacts identify an active run`,
+      () => {
+        const fixture = createWorkflowRunFixture({
+          status: "running",
+          events: [{ type: "run_start", sequence: 1, status: "running" }],
+        });
+        let created = 0;
+        return withHarness(
+          (fake) => {
+            const index = created;
+            created += 1;
+            if (index === 0) {
+              fake.workflowControlImpl.mockRejectedValueOnce(
+                new PiRpcLifecycleError(
+                  "Pi RPC process exited before workflow_control could be sent. process status: spawned=true, exited=true, closed=true",
+                ),
+              );
+            }
+          },
+          ({ adapter, runtimes }) =>
+            Effect.gen(function* () {
+              yield* adapter.sendTurn({ threadId, input: `/workflow:${action} ${fixture.runId}` });
+              const sessions = yield* adapter.listSessions();
 
-            assert.equal(runtimes.length, 2);
-            assert.equal(runtimes[0]?.closeImpl.mock.calls.length, 1);
-            assert.equal(runtimes[1]?.options.resumeCursor?.sessionFile, "/tmp/pi-session.json");
-            assert.deepEqual(runtimes[1]?.workflowControls[0], {
-              action: "pause",
-              target: fixture.runId,
-              reason: "User requested workflow pause from t3code.",
-            });
-            assert.deepEqual(sessions[0]?.resumeCursor, {
-              schemaVersion: 1,
-              provider: "pi",
-              providerInstanceId: "pi",
+              assert.equal(runtimes.length, 2);
+              assert.equal(runtimes[0]?.closeImpl.mock.calls.length, 1);
+              assert.equal(runtimes[1]?.options.resumeCursor?.sessionFile, "/tmp/pi-session.json");
+              assert.deepEqual(runtimes[1]?.workflowControls[0], {
+                action,
+                target: fixture.runId,
+                reason: `User requested workflow ${action} from t3code.`,
+                ...(expectedPolicy ? { policy: expectedPolicy } : {}),
+              });
+              assert.deepEqual(sessions[0]?.resumeCursor, {
+                schemaVersion: 1,
+                provider: "pi",
+                providerInstanceId: "pi",
+                sessionFile: "/tmp/pi-session.json",
+                workflows: {
+                  activeRuns: [
+                    {
+                      runId: fixture.runId,
+                      lastSequence: 1,
+                      runDir: fixture.runDir,
+                      status: expectedStatus,
+                    },
+                  ],
+                },
+              });
+            }),
+          {
+            resumeCursor: makePiResumeCursor({
               sessionFile: "/tmp/pi-session.json",
-              workflows: {
-                activeRuns: [
-                  {
-                    runId: fixture.runId,
-                    lastSequence: 1,
-                    runDir: fixture.runDir,
-                    status: "paused",
-                  },
-                ],
-              },
-            });
-          }),
-        {
-          resumeCursor: makePiResumeCursor({
-            sessionFile: "/tmp/pi-session.json",
-            activeWorkflowRuns: [
-              { runId: fixture.runId, lastSequence: 1, runDir: fixture.runDir, status: "running" },
-            ],
-          }),
-        },
-      );
-    },
-  );
+              activeWorkflowRuns: [
+                {
+                  runId: fixture.runId,
+                  lastSequence: 1,
+                  runDir: fixture.runDir,
+                  status: "running",
+                },
+              ],
+            }),
+          },
+        );
+      },
+    );
+  }
 
   it.effect(
     "maps explicit workflow pause, resume, and abort prompts to Pi workflow_control",

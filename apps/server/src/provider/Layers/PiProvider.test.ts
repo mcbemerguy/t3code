@@ -110,6 +110,19 @@ it.layer(NodeServices.layer)("checkPiProviderStatus", (it) => {
     }),
   );
 
+  it.effect("does not report ready when Pi RPC model discovery times out", () =>
+    Effect.gen(function* () {
+      const binaryPath = yield* Effect.promise(() =>
+        makeMockPiWrapper({ MOCK_PI_RPC_IGNORE_COMMAND: "get_available_models" }),
+      );
+      const provider = yield* checkPiProviderStatus({ enabled: true, binaryPath });
+
+      expect(provider.status).not.toBe("ready");
+      expect(provider.models.map((model) => model.slug)).toEqual(["default"]);
+      expect(provider.message).toContain("get_available_models timed out");
+    }),
+  );
+
   it.effect("does not report ready when Pi RPC startup fails after version succeeds", () =>
     Effect.gen(function* () {
       const binaryPath = yield* Effect.promise(() =>
